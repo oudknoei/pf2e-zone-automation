@@ -1,61 +1,61 @@
 {
-  "id": "pf2e-zone-automation",
-  "title": "PF2e Zone Automation",
-  "description": "Automated Pathfinder 2e emanations and area-effect zones.",
-  "version": "0.1.2",
-  "compatibility": {
-    "minimum": "14",
-    "verified": "14"
-  },
-  "relationships": {
-    "systems": [
-      {
-        "id": "pf2e",
-        "type": "system",
-        "compatibility": {
-          "minimum": "8.5.1"
-        }
-      }
-    ],
-    "requires": [
-      {
-        "id": "advanced-macros",
-        "type": "module",
-        "compatibility": {
-          "minimum": "2.4.0"
-        }
-      },
-      {
-        "id": "pf2e-flatcheck-helper",
-        "type": "module",
-        "compatibility": {
-          "minimum": "0.21.0"
-        }
-      }
-    ]
-  },
-  "socket": true,
-  "esmodules": [
-    "scripts/main.js"
-  ],
-  "styles": [
-    "styles/pf2e-zone.css"
-  ],
-  "url": "https://github.com/oudknoei/pf2e-zone-automation",
-  "manifest": "https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module.json",
-  "download": "https://github.com/oudknoei/pf2e-zone-automation/releases/download/v0.1.1/module.zip",
-  "packs": [
-    {
-      "name": "zone-effects",
-      "label": "PF2e Zone Effects",
-      "path": "packs/zone-effects",
-      "type": "Item",
-      "system": "pf2e",
-      "ownership": {
-        "PLAYER": "OBSERVER",
-        "TRUSTED": "OBSERVER",
-        "ASSISTANT": "OWNER"
-      }
-    }
-  ]
+    "id":  "pf2e-zone-automation",
+    "title":  "PF2e Zone Automation",
+    "description":  "Automated Pathfinder 2e emanations and area-effect zones.",
+    "version":  "0.1.3",
+    "compatibility":  {
+                          "minimum":  "14",
+                          "verified":  "14"
+                      },
+    "relationships":  {
+                          "systems":  [
+                                          {
+                                              "id":  "pf2e",
+                                              "type":  "system",
+                                              "compatibility":  {
+                                                                    "minimum":  "8.5.1"
+                                                                }
+                                          }
+                                      ],
+                          "requires":  [
+                                           {
+                                               "id":  "advanced-macros",
+                                               "type":  "module",
+                                               "compatibility":  {
+                                                                     "minimum":  "2.4.0"
+                                                                 }
+                                           },
+                                           {
+                                               "id":  "pf2e-flatcheck-helper",
+                                               "type":  "module",
+                                               "compatibility":  {
+                                                                     "minimum":  "0.21.0"
+                                                                 }
+                                           }
+                                       ]
+                      },
+    "socket":  true,
+    "esmodules":  [
+                      "scripts/main.js"
+                  ],
+    "styles":  [
+                   "styles/pf2e-zone.css"
+               ],
+    "url":  "https://github.com/oudknoei/pf2e-zone-automation",
+    "manifest":  "https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module.json",
+    "download":  "https://github.com/oudknoei/pf2e-zone-automation/releases/download/v0.1.3/module.zip",
+    "packs":  [
+                  {
+                      "name":  "zone-effects",
+                      "label":  "PF2e Zone Effects",
+                      "path":  "packs/zone-effects",
+                      "type":  "Item",
+                      "system":  "pf2e",
+                      "ownership":  {
+                                        "PLAYER":  "OBSERVER",
+                                        "TRUSTED":  "OBSERVER",
+                                        "ASSISTANT":  "OWNER"
+                                    }
+                  }
+              ]
 }
