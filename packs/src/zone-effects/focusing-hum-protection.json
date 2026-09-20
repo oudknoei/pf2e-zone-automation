@@ -1,0 +1,51 @@
+{
+  "name": "Focusing Hum Protection",
+  "type": "effect",
+  "effects": [],
+  "system": {
+    "_migration": {
+      "version": 0.959,
+      "previous": null
+    },
+    "description": {
+      "value": "<p>Focusing Hum: The DC of flat checks to Cast a Spell while stupefied is 2 lower. If confused, you don't attack anyone, including yourself; instead, you can't speak coherently.</p>",
+      "gm": ""
+    },
+    "publication": {
+      "title": "",
+      "authors": "",
+      "license": "OGL",
+      "remaster": false
+    },
+    "rules": [],
+    "slug": null,
+    "traits": {
+      "otherTags": [],
+      "value": []
+    },
+    "level": {
+      "value": 1
+    },
+    "duration": {
+      "value": -1,
+      "unit": "unlimited",
+      "expiry": null,
+      "sustained": false
+    },
+    "tokenIcon": {
+      "show": true
+    },
+    "unidentified": false,
+    "start": {
+      "value": 0,
+      "initiative": null
+    },
+    "badge": null,
+    "fromSpell": false,
+    "context": null
+  },
+  "img": "modules/pf2e-zone-automation/assets/effects/focusing-hum-protection.png",
+  "flags": {},
+  "_id": "j42JjZYGnRM1wf6R",
+  "_key": "!items!j42JjZYGnRM1wf6R"
+}

@@ -1,0 +1,72 @@
+{
+  "name": "Shadow Raid - Obscured Vision",
+  "type": "effect",
+  "effects": [],
+  "system": {
+    "_migration": {
+      "version": 0.959,
+      "previous": null
+    },
+    "description": {
+      "value": "<p>While you are an enemy inside <strong data-start=\"438\" data-end=\"453\">Shadow Raid</strong>, all creatures are concealed to you. You must succeed at a <strong data-start=\"513\" data-end=\"532\">DC 5 flat check</strong> when targeting a creature with an attack, spell, or other non-area effect.</p><p dir=\"auto\" data-start=\"614\" data-end=\"773\">If you successfully disbelieve Shadow Raid, the shadows no longer impede your vision and you take half damage from the spell for the remainder of its duration.</p>",
+      "gm": ""
+    },
+    "publication": {
+      "title": "",
+      "authors": "",
+      "license": "OGL",
+      "remaster": false
+    },
+    "rules": [
+      {
+        "key": "Note",
+        "selector": "attack-roll",
+        "title": "Shadow Raid – Obscured Vision",
+        "text": "Your target is concealed to you because of Shadow Raid. Attempt a @Check[flat|dc:5|showDC:all] flat check before resolving this attack."
+      },
+      {
+        "key": "RollOption",
+        "domain": "all",
+        "option": "shadow-raid-obscured-vision"
+      },
+      {
+        "key": "fc-TreatAs",
+        "condition": "observed",
+        "treatAs": "concealed",
+        "mode": "upgrade",
+        "affects": "self",
+        "slug": "shadow-raid-obscured-vision",
+        "label": "Shadow Raid – Obscured Vision"
+      }
+    ],
+    "slug": "shadow-raid-obscured-vision",
+    "traits": {
+      "otherTags": [],
+      "value": []
+    },
+    "level": {
+      "value": 1
+    },
+    "duration": {
+      "value": -1,
+      "unit": "unlimited",
+      "expiry": null,
+      "sustained": false
+    },
+    "tokenIcon": {
+      "show": true
+    },
+    "unidentified": false,
+    "start": {
+      "value": 0,
+      "initiative": null
+    },
+    "badge": null,
+    "fromSpell": false,
+    "context": null
+  },
+  "img": "modules/pf2e-zone-automation/assets/effects/shadow-raid-obscured-vision.png",
+  "flags": {},
+  "_id": "WGhBnNhQNH3uVgP1",
+  "_key": "!items!WGhBnNhQNH3uVgP1"
+}

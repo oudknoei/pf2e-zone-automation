@@ -1,0 +1,4309 @@
+/*
+ * PF2e Zone Automation - Player Builder / Runtime
+ * Target: Foundry VTT v14 + Pathfinder Second Edition 8.5.1
+ * Dependencies: Advanced Macros 2.4.0+ for player-initiated GM operations
+ *
+ * Builds portable zone configurations and creates self-contained Foundry V14
+ * Regions with embedded Execute Script runtime behavior. The UI runs on the
+ * invoking client; privileged player operations are delegated to the companion
+ * PF2e Zone GM Worker macro through Advanced Macros.
+ *
+ * Targeted and source-checked against PF2e 8.5.1 / Foundry VTT V14.
+ */
+
+(async () => {
+  "use strict";
+
+  const BUILDER_VERSION = "0.5.13";
+  const RUNTIME_VERSION = "0.5.13";
+  const SCHEMA_VERSION = 7;
+  const ZONE_COLOR_LIGHTEN = 0.1;
+  const GM_WORKER_NAME = "PF2e Zone GM Worker";
+  const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
+  const DialogV2 = foundry.applications.api.DialogV2;
+  const fu = foundry.utils;
+
+  if (game.system.id !== "pf2e") {
+    ui.notifications.error("PF2e Zone Builder requires the Pathfinder Second Edition system.");
+    return;
+  }
+
+  if (!canvas?.ready) {
+    ui.notifications.error("PF2e Zone Builder requires an active Scene.");
+    return;
+  }
+
+  function selectedSourceToken({ notify = true } = {}) {
+    const selected = canvas.tokens.controlled;
+    if (selected.length !== 1) {
+      if (notify) {
+        ui.notifications.warn(
+          selected.length === 0
+            ? "Select exactly one source token before using PF2e Zone Builder."
+            : "PF2e Zone Builder requires exactly one selected source token."
+        );
+      }
+      return null;
+    }
+    if (!selected[0].actor) {
+      if (notify) ui.notifications.warn("The selected token does not have an Actor.");
+      return null;
+    }
+    return selected[0];
+  }
+
+  let sourceToken = selectedSourceToken();
+  if (!sourceToken) return;
+  let sourceActor = sourceToken.actor;
+
+  const esc = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
+  const titleCase = (slug) => String(slug ?? "")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+
+  const localize = (key, fallback) => {
+    if (typeof key !== "string") return fallback;
+    const localized = game.i18n.localize(key);
+    return localized && localized !== key ? localized : fallback;
+  };
+
+  const newId = () => fu.randomID?.(8) ?? crypto.randomUUID().slice(0, 8);
+
+  const clone = (obj) => {
+    if (globalThis.structuredClone) return structuredClone(obj);
+    return JSON.parse(JSON.stringify(obj));
+  };
+
+  function lightenZoneColor(value, amount = ZONE_COLOR_LIGHTEN) {
+    const raw = String(value ?? "#999999").trim();
+    const short = raw.match(/^#?([0-9a-f]{3})$/i);
+    const full = raw.match(/^#?([0-9a-f]{6})$/i);
+    const hex = full?.[1] ?? (short ? short[1].split("").map((c) => `${c}${c}`).join("") : null);
+    if (!hex) return raw || "#999999";
+
+    const t = Math.clamp(Number(amount) || 0, 0, 1);
+    const channels = [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+    const mixed = channels.map((channel) => Math.round(channel + (255 - channel) * t));
+    return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  function workerSetupProblem() {
+    if (game.user.isGM) return null;
+    if (!game.modules.get("advanced-macros")?.active) {
+      return "Advanced Macros must be active for players to create or dismiss PF2e Zones.";
+    }
+    if (!game.users.activeGM) {
+      return "An active GM must be logged into the world for player PF2e Zone operations.";
+    }
+    const worker = game.macros.getName(GM_WORKER_NAME);
+    if (!worker) {
+      return `Required macro '${GM_WORKER_NAME}' was not found.`;
+    }
+    if (worker.getFlag("advanced-macros", "runForSpecificUser") !== "GM") {
+      return `'${GM_WORKER_NAME}' must be configured in Advanced Macros to run as Gamemaster.`;
+    }
+    if (!worker.canUserExecute?.(game.user)) {
+      return `You do not have permission to execute '${GM_WORKER_NAME}'. Give players at least Limited/Observer permission, but not Owner.`;
+    }
+    return null;
+  }
+
+  async function callGMWorker(action, data = {}) {
+    const problem = workerSetupProblem();
+    if (problem) throw new Error(problem);
+
+    const worker = game.macros.getName(GM_WORKER_NAME);
+    if (!worker) throw new Error(`Required macro '${GM_WORKER_NAME}' was not found.`);
+    const request = {
+      protocol: 1,
+      builderVersion: BUILDER_VERSION,
+      action,
+      requesterUserId: game.user.id,
+      ...clone(data)
+    };
+
+    const response = await worker.execute({ pf2eZoneWorkerRequest: request });
+    if (!response?.ok) {
+      throw new Error(response?.error || `PF2e Zone GM Worker failed '${action}'.`);
+    }
+    return response;
+  }
+
+  async function waitForRegion(sceneId, regionId, timeoutMs = 3000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const region = game.scenes.get(sceneId)?.regions.get(regionId) ?? null;
+      if (region) return region;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return game.scenes.get(sceneId)?.regions.get(regionId) ?? null;
+  }
+
+  function hideBuilderForAreaPlacement() {
+    const element = dialog?.element ?? dialog?.window?.element ?? null;
+    if (!element?.style) return () => {};
+
+    const prior = {
+      display: element.style.display,
+      visibility: element.style.visibility,
+      pointerEvents: element.style.pointerEvents
+    };
+    let restored = false;
+    element.style.display = "none";
+
+    return () => {
+      if (restored) return;
+      restored = true;
+      if (!element?.style || !element.isConnected) return;
+      element.style.display = prior.display;
+      element.style.visibility = prior.visibility;
+      element.style.pointerEvents = prior.pointerEvents;
+    };
+  }
+
+  async function pickAreaCenter(name, radius) {
+    if (!canvas?.ready || !canvas.scene) throw new Error("An active Scene is required to place an area.");
+    const canvasElement = canvas.app?.canvas ?? canvas.app?.view;
+    if (!canvasElement) throw new Error("Foundry canvas element is unavailable.");
+
+    ui.notifications.info(`Click the center of the ${radius}-foot ${name} area. Press Escape to cancel.`);
+    const priorCursor = canvasElement.style.cursor;
+    canvasElement.style.cursor = "crosshair";
+
+    return await new Promise((resolve) => {
+      let done = false;
+      const cleanup = () => {
+        canvasElement.removeEventListener("pointerdown", onPointer, true);
+        window.removeEventListener("keydown", onKey, true);
+        canvasElement.style.cursor = priorCursor;
+      };
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(value);
+      };
+      const onPointer = (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        const point = canvas.canvasCoordinatesFromClient({ x: event.clientX, y: event.clientY });
+        finish({ x: Number(point.x), y: Number(point.y) });
+      };
+      const onKey = (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        finish(null);
+      };
+      canvasElement.addEventListener("pointerdown", onPointer, true);
+      window.addEventListener("keydown", onKey, true);
+    });
+  }
+
+  async function canCurrentUserDismiss(payload) {
+    if (game.user.isGM) return true;
+    if (!payload?.config?.duration?.dismissible) return false;
+    const actor = payload?.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null;
+    return Boolean(actor?.testUserPermission?.(game.user, "OWNER"));
+  }
+
+
+  /**
+   * Self-contained Region runtime entrypoint. The function is serialized into
+   * every created Region's Execute Script behavior. It therefore must not rely
+   * on lexical variables from the builder macro.
+   */
+  async function zoneRuntimeEntrypoint(explicitContext = null) {
+
+    const VERSION = "0.5.13";
+    const FLAG_SCOPE = "world";
+    const FLAG_KEY = "pf2eZone";
+    const SAVE_PREFIX = "pf2e-zone";
+    const fu = foundry.utils;
+
+    const clone = (obj) => {
+      if (globalThis.structuredClone) return structuredClone(obj);
+      return JSON.parse(JSON.stringify(obj));
+    };
+
+    const escHtml = (value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+    const titleCaseLocal = (slug) => String(slug ?? "")
+      .replaceAll("-", " ")
+      .replace(/\b\w/g, (m) => m.toUpperCase());
+
+    const randomId = () => fu.randomID?.(12) ?? crypto.randomUUID().slice(0, 12);
+    const nowWorld = () => Number(game.time?.worldTime ?? 0);
+    const stateKey = (...parts) => parts
+      .map((part) => String(part ?? "").replace(/[^A-Za-z0-9_-]/g, "_"))
+      .join("__");
+
+    const compareVersions = (a, b) => {
+      const pa = String(a ?? "0").split(".").map((n) => Number(n) || 0);
+      const pb = String(b ?? "0").split(".").map((n) => Number(n) || 0);
+      const length = Math.max(pa.length, pb.length);
+      for (let i = 0; i < length; i++) {
+        const delta = (pa[i] ?? 0) - (pb[i] ?? 0);
+        if (delta) return Math.sign(delta);
+      }
+      return 0;
+    };
+
+    function createRuntime() {
+      const rt = {
+        version: VERSION,
+        locks: new Map(),
+        hooksInstalled: false,
+        endingZones: new Set(),
+        deletingItems: new Set(),
+        chatAlertBatches: new Set(),
+        regionReconcileTimers: new Map(),
+
+        isAuthority() {
+          const activeGM = game.users?.activeGM ?? null;
+          return activeGM ? activeGM.id === game.user.id : Boolean(game.user?.isGM);
+        },
+
+        readPayload(region) {
+          const raw = region?.getFlag?.(FLAG_SCOPE, FLAG_KEY);
+          if (!raw || typeof raw !== "object") return null;
+          const payload = clone(raw);
+          payload.state ??= {};
+          payload.state.pendingSaves ??= {};
+          payload.state.resolvedSaves ??= {};
+          payload.state.repeat ??= {};
+          payload.state.immunities ??= {};
+          payload.state.applied ??= {};
+          payload.state.damageRolls ??= {};
+          payload.state.healingRolls ??= {};
+          payload.state.recoveryWatchers ??= {};
+          payload.state.turnStartEvents ??= {};
+          payload.state.activation ??= {};
+          payload.state.activationTargets ??= {};
+          payload.state.initialOccupants ??= {};
+          payload.state.activationPending ??= !payload.state.activationProcessed;
+          payload.state.activationFinalizeScheduled ??= false;
+          payload.state.duration ??= {};
+          payload.state.lastSourceTriggerTurnKey ??= null;
+          return payload;
+        },
+
+        isLiveRegion(region) {
+          const scene = region?.parent;
+          return Boolean(scene?.regions?.get?.(region.id));
+        },
+
+        async writePayload(region, payload) {
+          if (!this.isLiveRegion(region)) return;
+
+          const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}`;
+
+          // Foundry document updates recursively merge objects by default.
+          // That is wrong for our runtime state because deleting a pending
+          // save/immunity/applied-record from the local object must also delete
+          // it from the persisted Region flag. V14's _replace operator makes
+          // this payload an authoritative snapshot.
+          if (typeof globalThis._replace === "function") {
+            await region.update({ [path]: globalThis._replace(payload) });
+            return;
+          }
+
+          // Defensive fallback for an unexpected V14 build where the documented
+          // global operator is unavailable. Slower, but preserves replacement
+          // semantics rather than silently merging stale runtime keys.
+          await region.unsetFlag(FLAG_SCOPE, FLAG_KEY);
+          if (this.isLiveRegion(region)) {
+            await region.setFlag(FLAG_SCOPE, FLAG_KEY, payload);
+          }
+        },
+
+        queueAfterCommit(payload, callback) {
+          if (!payload || typeof callback !== "function") return;
+          if (!Object.prototype.hasOwnProperty.call(payload, "__pf2eZoneAfterCommit")) {
+            Object.defineProperty(payload, "__pf2eZoneAfterCommit", {
+              value: [],
+              enumerable: false,
+              configurable: true,
+              writable: false
+            });
+          }
+          payload.__pf2eZoneAfterCommit.push(callback);
+        },
+
+        async withState(region, callback) {
+          if (!region?.uuid) return null;
+          const key = region.uuid;
+          const prior = this.locks.get(key) ?? Promise.resolve();
+          const next = prior.catch(() => undefined).then(async () => {
+            if (!this.isLiveRegion(region)) return null;
+            const payload = this.readPayload(region);
+            if (!payload) return null;
+
+            const result = await callback(payload);
+            const afterCommit = [...(payload.__pf2eZoneAfterCommit ?? [])];
+
+            // Commit the Region state first. Anything that exposes user actions
+            // (notably a clickable save request) runs only after this completes,
+            // so a fast click cannot be overwritten by the originating event's
+            // stale payload snapshot.
+            if (this.isLiveRegion(region)) await this.writePayload(region, payload);
+
+            for (const action of afterCommit) {
+              try {
+                await action();
+              } catch (error) {
+                console.error("PF2e Zone: post-commit action failed", error);
+              }
+            }
+
+            return result;
+          });
+          this.locks.set(key, next);
+          try {
+            return await next;
+          } finally {
+            if (this.locks.get(key) === next) this.locks.delete(key);
+          }
+        },
+
+        allZones() {
+          return game.scenes.contents.flatMap((scene) =>
+            [...scene.regions].filter((region) => Boolean(region.getFlag(FLAG_SCOPE, FLAG_KEY)))
+          );
+        },
+
+        tokensInside(region) {
+          const scene = region?.parent;
+          if (!scene?.tokens) return [...(region?.tokens ?? [])];
+
+          const inside = [];
+          for (const token of scene.tokens) {
+            try {
+              // Foundry V14's authoritative Token/Region containment test.
+              // This is preferable to waiting for RegionDocument.tokens to
+              // finish synchronizing immediately after Region creation.
+              if (typeof token.testInsideRegion === "function" && token.testInsideRegion(region)) {
+                inside.push(token);
+              } else if (region.tokens?.has?.(token)) {
+                inside.push(token);
+              }
+            } catch (error) {
+              console.warn("PF2e Zone: Region containment test failed", token?.name, error);
+              if (region.tokens?.has?.(token)) inside.push(token);
+            }
+          }
+          return inside;
+        },
+
+        async resolveSource(payload) {
+          const token = payload?.state?.sourceTokenUuid ? await fromUuid(payload.state.sourceTokenUuid) : null;
+          const actor = token?.actor ?? (payload?.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null);
+          return { token, actor };
+        },
+
+        async resolveTarget(record) {
+          const token = record?.tokenUuid ? await fromUuid(record.tokenUuid) : null;
+          const actor = token?.actor ?? (record?.actorUuid ? await fromUuid(record.actorUuid) : null);
+          return { token, actor };
+        },
+
+        async eligible(payload, token) {
+          const targetActor = token?.actor;
+          if (!targetActor?.isOfType?.("creature")) return false;
+          const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+          if (!sourceActor) return false;
+
+          const isSource = token.uuid === sourceToken?.uuid || targetActor.uuid === sourceActor.uuid;
+          if (isSource) return Boolean(payload.config?.targeting?.includeSelf);
+
+          switch (payload.config?.targeting?.affects) {
+            case "allies":
+              return Boolean(targetActor.isAllyOf?.(sourceActor));
+            case "enemies":
+              return Boolean(targetActor.isEnemyOf?.(sourceActor));
+            case "both":
+              // "Both" is the portable representation for unrestricted "a creature" targeting.
+              return true;
+            default:
+              return false;
+          }
+        },
+
+        durationRounds(config) {
+          switch (config?.duration?.type) {
+            case "1-round": return 1;
+            case "custom-rounds": return Math.max(1, Number(config.duration.rounds) || 1);
+            case "1-minute": return 10;
+            case "10-minutes": return 100;
+            default: return null;
+          }
+        },
+
+        makeExpiry(duration) {
+          const rounds = duration === "1-round" ? 1
+            : duration === "1-minute" ? 10
+            : duration === "10-minutes" ? 100
+            : null;
+          if (!rounds) return null;
+          const combat = game.combat;
+          return {
+            rounds,
+            worldExpires: nowWorld() + rounds * 6,
+            combatId: combat?.id ?? null,
+            startRound: Number(combat?.round ?? 0),
+            startTurn: Number(combat?.turn ?? 0)
+          };
+        },
+
+        expiryActive(expiry) {
+          if (!expiry) return false;
+          const combat = game.combat;
+          if (expiry.combatId && combat?.id === expiry.combatId) {
+            const roundDelta = Number(combat.round ?? 0) - Number(expiry.startRound ?? 0);
+            if (roundDelta < expiry.rounds) return true;
+            if (roundDelta > expiry.rounds) return false;
+            return Number(combat.turn ?? 0) < Number(expiry.startTurn ?? 0);
+          }
+          return nowWorld() < Number(expiry.worldExpires ?? 0);
+        },
+
+        syncImmunityCombatClock(payload) {
+          const combat = game.combat;
+          if (!combat?.id) return;
+
+          for (const record of Object.values(payload.state.immunities ?? {})) {
+            const expiry = record?.expiry;
+            if (!expiry || expiry.combatId) continue;
+
+            // If world time really advanced past the immunity, leave it
+            // expired rather than attaching it to a new encounter.
+            if (nowWorld() >= Number(expiry.worldExpires ?? Infinity)) continue;
+
+            // Immunities created before initiative started otherwise have no
+            // encounter clock, and Foundry does not automatically advance
+            // worldTime as rounds pass. Anchor them when combat becomes active.
+            expiry.combatId = combat.id;
+            expiry.startRound = Number(combat.round ?? 0);
+            expiry.startTurn = Number(combat.turn ?? 0);
+            expiry.anchoredFromWorldTime = true;
+          }
+        },
+
+        findImmunityEntry(payload, tokenUuid, blockId) {
+          for (const [storageId, record] of Object.entries(payload.state.immunities ?? {})) {
+            const recordMatches =
+              record?.tokenUuid === tokenUuid &&
+              record?.blockId === blockId;
+            const legacyMatches = storageId === `${tokenUuid}::${blockId}`;
+            if (recordMatches || legacyMatches) return { storageId, record };
+          }
+          return null;
+        },
+
+        isImmune(payload, tokenUuid, blockId) {
+          const entry = this.findImmunityEntry(payload, tokenUuid, blockId);
+          if (!entry) {
+            console.info("PF2e Zone immunity lookup", {
+              zone: payload.config.name,
+              tokenUuid,
+              blockId,
+              found: false,
+              storedRecords: Object.values(payload.state.immunities ?? {}).map((r) => ({
+                tokenUuid: r?.tokenUuid ?? null,
+                blockId: r?.blockId ?? null,
+                duration: r?.duration ?? null
+              }))
+            });
+            return false;
+          }
+
+          const { storageId, record } = entry;
+          const active = this.expiryActive(record.expiry);
+          const combat = game.combat;
+          console.info("PF2e Zone immunity check", {
+            zone: payload.config.name,
+            tokenUuid,
+            blockId,
+            storageId,
+            active,
+            currentCombat: combat?.id ?? null,
+            currentRound: Number(combat?.round ?? 0),
+            currentTurn: Number(combat?.turn ?? 0),
+            expiryCombat: record.expiry?.combatId ?? null,
+            expiryStartRound: Number(record.expiry?.startRound ?? 0),
+            expiryStartTurn: Number(record.expiry?.startTurn ?? 0),
+            expiryRounds: Number(record.expiry?.rounds ?? 0),
+            expiryWorldTime: Number(record.expiry?.worldExpires ?? 0)
+          });
+
+          if (active) return true;
+          delete payload.state.immunities[storageId];
+          console.info("PF2e Zone temporary immunity expired", {
+            zone: payload.config.name,
+            tokenUuid,
+            blockId,
+            storageId
+          });
+          return false;
+        },
+
+        pruneExpiredImmunities(payload) {
+          let removed = 0;
+          for (const [key, record] of Object.entries(payload.state.immunities ?? {})) {
+            if (this.expiryActive(record?.expiry)) continue;
+            delete payload.state.immunities[key];
+            removed++;
+          }
+          if (removed) {
+            console.info("PF2e Zone expired immunities pruned", {
+              zone: payload.config.name,
+              removed,
+              combatRound: Number(game.combat?.round ?? 0),
+              combatTurn: Number(game.combat?.turn ?? 0)
+            });
+          }
+          return removed;
+        },
+
+        setImmunity(payload, tokenUuid, block) {
+          if (!block?.immunity || block.immunity.duration === "none") return;
+          const expiry = this.makeExpiry(block.immunity.duration);
+          if (!expiry) return;
+
+          for (const [storageId, record] of Object.entries(payload.state.immunities ?? {})) {
+            const sameRecord =
+              (record?.tokenUuid === tokenUuid && record?.blockId === block.id) ||
+              storageId === `${tokenUuid}::${block.id}`;
+            if (sameRecord) delete payload.state.immunities[storageId];
+          }
+
+          const storageId = randomId();
+          payload.state.immunities[storageId] = {
+            tokenUuid,
+            blockId: block.id,
+            expiry,
+            duration: block.immunity.duration,
+            createdWorldTime: nowWorld()
+          };
+          console.info("PF2e Zone temporary immunity started", {
+            zone: payload.config.name,
+            tokenUuid,
+            blockId: block.id,
+            storageId,
+            duration: block.immunity.duration,
+            combatId: expiry.combatId,
+            startRound: expiry.startRound,
+            startTurn: expiry.startTurn,
+            rounds: expiry.rounds,
+            worldExpires: expiry.worldExpires
+          });
+        },
+
+        repeatKey(tokenUuid, blockId) {
+          return stateKey("repeat", tokenUuid, blockId);
+        },
+
+        roundStamp() {
+          const combat = game.combat;
+          return combat?.id
+            ? `${combat.id}:${Number(combat.round ?? 0)}`
+            : `world:${Math.floor(nowWorld() / 6)}`;
+        },
+
+        repeatBlocked(payload, tokenUuid, block) {
+          const policy = block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat;
+          if (policy === "every") return false;
+          const key = this.repeatKey(tokenUuid, block.id);
+          const record = payload.state.repeat[key];
+          if (policy === "once-per-zone") return Boolean(record?.zone);
+          return record?.round === this.roundStamp();
+        },
+
+        markRepeat(payload, tokenUuid, block) {
+          const policy = block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat;
+          if (policy === "every") return;
+          const key = this.repeatKey(tokenUuid, block.id);
+          payload.state.repeat[key] ??= {};
+          if (policy === "once-per-zone") payload.state.repeat[key].zone = true;
+          else if (policy === "once-per-round") payload.state.repeat[key].round = this.roundStamp();
+        },
+
+        outcomeFromDegree(degree) {
+          return ["criticalFailure", "failure", "success", "criticalSuccess"][Number(degree)] ?? null;
+        },
+
+        completedOutcomeForPending(pending) {
+          const messages = [...game.messages.contents].reverse();
+          for (const message of messages) {
+            const context = message.flags?.pf2e?.context;
+            if (context?.identifier !== pending.identifier) continue;
+
+            if (["criticalSuccess", "success", "failure", "criticalFailure"].includes(context?.outcome)) {
+              return context.outcome;
+            }
+
+            for (const roll of message.rolls ?? []) {
+              const identifier = roll?.options?.identifier;
+              if (identifier && identifier !== pending.identifier) continue;
+              const outcome = this.outcomeFromDegree(roll?.degreeOfSuccess);
+              if (outcome) return outcome;
+            }
+          }
+          return null;
+        },
+
+        async hasPending(payload, tokenUuid, blockId) {
+          for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
+            if (pending.tokenUuid !== tokenUuid || pending.blockId !== blockId) continue;
+
+            const tombstone = payload.state.resolvedSaves?.[pendingId];
+            if (tombstone?.identifier === pending.identifier) {
+              delete payload.state.pendingSaves[pendingId];
+              console.info("PF2e Zone cleared resolved pending save", {
+                zone: payload.config.name,
+                pendingId,
+                tokenUuid,
+                blockId,
+                completedOutcome: tombstone.outcome
+              });
+              continue;
+            }
+
+            const completedOutcome = this.completedOutcomeForPending(pending);
+            if (completedOutcome) {
+              delete payload.state.pendingSaves[pendingId];
+              console.info("PF2e Zone cleared stale pending save", {
+                zone: payload.config.name,
+                pendingId,
+                tokenUuid,
+                blockId,
+                completedOutcome
+              });
+              continue;
+            }
+
+            return true;
+          }
+          return false;
+        },
+
+        resolveDC(payload, block, sourceActor) {
+          if (block.save.dc.mode === "custom") return Number(block.save.dc.value) || 0;
+          const statistic = sourceActor?.getStatistic?.(block.save.dc.statistic);
+          const value = statistic?.dc?.value ?? statistic?.dc ?? null;
+          return Number.isFinite(Number(value)) ? Number(value) : null;
+        },
+
+        inflictedSlugs(block) {
+          const slugs = new Set();
+          for (const outcome of Object.values(block.outcomes ?? {})) {
+            for (const condition of outcome?.conditions ?? []) slugs.add(condition.slug);
+          }
+          return [...slugs];
+        },
+
+        async postSaveRequest(region, payload, pending) {
+          const buttons = pending.saveTypes.map((saveType) =>
+            `<button type="button" data-pf2e-zone-save data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" data-save-type="${escHtml(saveType)}"><i class="fa-solid fa-dice-d20"></i> ${escHtml(titleCaseLocal(saveType))}</button>`
+          ).join(" ");
+
+          const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+          const target = await fromUuid(pending.tokenUuid);
+          const choiceText = pending.saveTypes.length > 1
+            ? `<p><b>${escHtml(target?.name ?? "Target")}</b>: choose a save before rolling.</p>`
+            : `<p><b>${escHtml(target?.name ?? "Target")}</b>: roll ${escHtml(titleCaseLocal(pending.saveTypes[0]))}.</p>`;
+
+          await ChatMessage.create({
+            speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
+            content: `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${buttons}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`,
+            flags: { world: { pf2eZoneSaveRequest: { identifier: pending.identifier } } }
+          });
+        },
+
+        async requestSave(region, payload, block, token, trigger, batchId, eventContext = {}) {
+          if (await this.hasPending(payload, token.uuid, block.id)) {
+            console.info("PF2e Zone save suppressed: pending save already exists", {
+              zone: payload.config.name,
+              block: block.name,
+              token: token.name,
+              tokenUuid: token.uuid,
+              trigger
+            });
+            return false;
+          }
+          const { actor: sourceActor } = await this.resolveSource(payload);
+          const dc = this.resolveDC(payload, block, sourceActor);
+          if (!(dc > 0)) {
+            ui.notifications.error(`PF2e Zone: could not resolve the DC for ${block.name}.`);
+            return false;
+          }
+
+          const saveTypes = block.save.type === "choice"
+            ? [...new Set(block.save.choices ?? [])].filter((s) => ["fortitude", "reflex", "will"].includes(s))
+            : [block.save.type];
+          if (!saveTypes.length) return false;
+
+          const id = randomId();
+          const identifier = `${SAVE_PREFIX}:${region.parent.id}:${region.id}:${id}`;
+          const pending = {
+            id,
+            identifier,
+            tokenUuid: token.uuid,
+            actorUuid: token.actor?.uuid ?? null,
+            blockId: block.id,
+            blockName: block.name,
+            trigger,
+            batchId,
+            dc,
+            saveTypes,
+            eventContext: clone(eventContext ?? {}),
+            createdWorldTime: nowWorld()
+          };
+          payload.state.pendingSaves[id] = pending;
+          this.markRepeat(payload, token.uuid, block);
+
+          // Do not expose a clickable save button until the enclosing Region
+          // state transaction has committed the pending record.
+          this.queueAfterCommit(payload, async () => {
+            const liveRegion = region.parent?.regions?.get?.(region.id);
+            if (!liveRegion) return;
+
+            const committed = this.readPayload(liveRegion);
+            const committedPending = committed?.state?.pendingSaves?.[id];
+            if (!committedPending || committedPending.identifier !== identifier) return;
+
+            await this.postSaveRequest(liveRegion, committed, committedPending);
+          });
+          return true;
+        },
+
+        outcomeIsSuccessOrBetter(outcome) {
+          return outcome === "success" || outcome === "criticalSuccess";
+        },
+
+        outcomeIsFailureOrWorse(outcome) {
+          return outcome === "failure" || outcome === "criticalFailure";
+        },
+
+        async addNormalCondition(actor, condition) {
+          try {
+            const desired = condition.value == null ? null : Number(condition.value);
+            const existing = actor.conditions?.bySlug?.(condition.slug, { active: true }) ?? [];
+
+            // PF2e valued conditions do not add together unless an effect
+            // explicitly says to increase the value. "Become frightened 4"
+            // means the effective value is at least 4, not current + 4.
+            if (Number.isFinite(desired)) {
+              const activeValued = existing
+                .filter((c) => Number.isFinite(Number(c.value)))
+                .sort((a, b) => Number(b.value) - Number(a.value));
+              const current = activeValued[0] ?? null;
+
+              if (current && Number(current.value) >= desired) return current;
+
+              if (current) {
+                await game.pf2e.ConditionManager.updateConditionValue(current.id, actor, desired);
+                return actor.items.get(current.id) ?? current;
+              }
+
+              return await actor.increaseCondition(condition.slug, { value: desired });
+            }
+
+            // Unvalued conditions likewise do not need duplicate applications.
+            if (existing.length) return existing[0];
+            return await actor.increaseCondition(condition.slug);
+          } catch (error) {
+            console.error("PF2e Zone: failed to apply condition", condition, actor, error);
+            ui.notifications.error(`PF2e Zone: failed to apply ${condition.slug} to ${actor.name}.`);
+            return null;
+          }
+        },
+
+        zoneItemFlag(item) {
+          return fu.getProperty(item, `flags.${FLAG_SCOPE}.${FLAG_KEY}`) ?? null;
+        },
+
+        itemDeleteKey(item) {
+          return `${item?.parent?.uuid ?? "Actor"}::${item?.id ?? "Item"}`;
+        },
+
+        async deleteOwnedItem(item, context = "zone cleanup") {
+          if (!item?.parent) return;
+          const key = this.itemDeleteKey(item);
+          if (this.deletingItems.has(key)) return;
+
+          this.deletingItems.add(key);
+          try {
+            // Re-resolve from the actor collection so a stale Item document
+            // cannot issue a second embedded delete after another cleanup path
+            // already removed it.
+            const live = item.parent?.items?.get?.(item.id);
+            if (live) await live.delete();
+          } catch (error) {
+            if (!/does not exist|undefined id/i.test(String(error?.message ?? error))) {
+              console.warn(`PF2e Zone: ${context} failed`, item, error);
+            }
+          } finally {
+            // deleteItem hooks run during the document operation. Keep the
+            // suppression key alive through the next task so those hooks do not
+            // immediately recurse into dependency reconciliation.
+            setTimeout(() => this.deletingItems.delete(key), 50);
+          }
+        },
+
+        async addOwnedCondition(region, payload, block, token, condition) {
+          const actor = token.actor;
+          if (!actor) return false;
+
+          const duplicate = actor.items.find((item) => {
+            const flag = this.zoneItemFlag(item);
+            return item.type === "condition" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.slug === condition.slug && flag?.removal === condition.removal;
+          });
+          if (duplicate) {
+            if (condition.value != null && Number(duplicate.system?.value?.value ?? 0) < Number(condition.value)) {
+              await duplicate.update({ "system.value.value": Number(condition.value) });
+            }
+            return true;
+          }
+
+          const template = game.pf2e?.ConditionManager?.getCondition?.(condition.slug);
+          if (!template) {
+            ui.notifications.error(`PF2e Zone: condition '${condition.slug}' was not found.`);
+            return false;
+          }
+          const source = template.toObject();
+          delete source._id;
+          delete source.folder;
+          if (condition.value != null && source.system?.value?.isValued) {
+            source.system.value.value = Number(condition.value);
+          }
+          fu.setProperty(source, `flags.${FLAG_SCOPE}.${FLAG_KEY}`, {
+            kind: "condition",
+            zoneUuid: region.uuid,
+            blockId: block.id,
+            tokenUuid: token.uuid,
+            slug: condition.slug,
+            removal: condition.removal,
+            linkedCondition: condition.removal === "condition-end" ? condition.condition : null
+          });
+
+          let created = null;
+          try {
+            [created] = await actor.createEmbeddedDocuments("Item", [source]);
+          } catch (error) {
+            console.error("PF2e Zone: Effect/condition Item creation failed", {
+              actor: actor.name,
+              actorUuid: actor.uuid,
+              zone: payload.config.name,
+              block: block.name,
+              source
+            }, error);
+            ui.notifications.error(`PF2e Zone: failed to create an owned Item on ${actor.name}. See console.`);
+            return false;
+          }
+          if (!created) return false;
+          const recordId = randomId();
+          payload.state.applied[recordId] = {
+            recordId,
+            kind: "condition",
+            actorUuid: actor.uuid,
+            tokenUuid: token.uuid,
+            itemId: created.id,
+            blockId: block.id,
+            removal: condition.removal,
+            linkedCondition: condition.removal === "condition-end" ? condition.condition : null
+          };
+          return true;
+        },
+
+        async addCondition(region, payload, block, token, condition) {
+          if (condition.removal === "normal") {
+            const applied = await this.addNormalCondition(token.actor, condition);
+            return Boolean(applied);
+          }
+          return this.addOwnedCondition(region, payload, block, token, condition);
+        },
+
+        async addEffectItem(region, payload, block, token, effect) {
+          const actor = token.actor;
+          if (!actor) return false;
+
+          const duplicate = actor.items.find((item) => {
+            const flag = this.zoneItemFlag(item);
+            return flag?.kind === "effect" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.originalUuid === effect.uuid;
+          });
+          if (duplicate) return true;
+
+          const template = await fromUuid(effect.uuid);
+          if (!template || template.documentName !== "Item") {
+            ui.notifications.error(`PF2e Zone: Effect Item not found: ${effect.uuid}`);
+            return false;
+          }
+          const source = template.toObject();
+          delete source._id;
+          delete source.folder;
+
+          // For zone-managed Effect Items, the zone owns the lifetime. Prevent the
+          // source Effect Item's native duration from expiring it before on-exit or
+          // zone-end cleanup can occur. "item-duration" deliberately preserves the
+          // source item's normal PF2e duration/expiry behavior.
+          if (source.type === "effect" && ["on-exit", "zone-end"].includes(effect.removal)) {
+            source.system.duration = {
+              ...(source.system.duration ?? {}),
+              value: -1,
+              unit: "unlimited",
+              expiry: null,
+              sustained: false
+            };
+          }
+
+          fu.setProperty(source, `flags.${FLAG_SCOPE}.${FLAG_KEY}`, {
+            kind: "effect",
+            zoneUuid: region.uuid,
+            blockId: block.id,
+            tokenUuid: token.uuid,
+            originalUuid: effect.uuid,
+            removal: effect.removal
+          });
+
+          let created = null;
+          try {
+            [created] = await actor.createEmbeddedDocuments("Item", [source]);
+          } catch (error) {
+            console.error("PF2e Zone: Effect Item creation failed", {
+              actor: actor.name,
+              actorUuid: actor.uuid,
+              zone: payload.config.name,
+              block: block.name,
+              effectUuid: effect.uuid,
+              source
+            }, error);
+            ui.notifications.error(`PF2e Zone: failed to create Effect Item on ${actor.name}. See console.`);
+            return false;
+          }
+          if (!created) return false;
+          const recordId = randomId();
+          payload.state.applied[recordId] = {
+            recordId,
+            kind: "effect",
+            actorUuid: actor.uuid,
+            tokenUuid: token.uuid,
+            itemId: created.id,
+            blockId: block.id,
+            originalUuid: effect.uuid,
+            removal: effect.removal
+          };
+          return true;
+        },
+
+        damageRollClass() {
+          return CONFIG.Dice?.rolls?.find((cls) => cls?.name === "DamageRoll") ?? null;
+        },
+
+        damageType(payload, block) {
+          if (block.damage.typeMode === "activation-choice") {
+            return payload.state.activation?.damageType ?? block.damage.type ?? "untyped";
+          }
+          return block.damage.type ?? "untyped";
+        },
+
+        async baseDamageRoll(payload, block, batchId) {
+          const DamageRoll = this.damageRollClass();
+          if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
+          const type = this.damageType(payload, block);
+          const cacheKey = stateKey("damage", block.id, batchId);
+          const cached = payload.state.damageRolls[cacheKey];
+          if (cached?.roll) return { DamageRoll, type: cached.type, roll: DamageRoll.fromData(cached.roll) };
+
+          const roll = await new DamageRoll(`{(${block.damage.formula})[${type}]}`).roll();
+          payload.state.damageRolls[cacheKey] = { type, roll: roll.toJSON() };
+          return { DamageRoll, type, roll };
+        },
+
+        async postDamage(region, payload, block, token, outcomeKey, multiplier, batchId) {
+          if (!block.damage.enabled || !(Number(multiplier) > 0)) return false;
+          try {
+            const { roll: baseRoll } = await this.baseDamageRoll(payload, block, batchId);
+            const adjusted = Number(multiplier) === 1 ? baseRoll : baseRoll.alter(Number(multiplier), 0);
+            const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            const outcomeLabel = titleCaseLocal(outcomeKey);
+            const adjustment = Number(multiplier) === 1 ? "" : ` — ×${Number(multiplier)}`;
+            await ChatMessage.create({
+              speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
+              flavor: `<strong>${escHtml(payload.config.name)} — ${escHtml(block.name)}</strong><br>${escHtml(token.name)}: ${escHtml(outcomeLabel)}${escHtml(adjustment)}<br><span style="opacity:.75">Damage is already adjusted for this outcome; use the normal Apply Damage button.</span>`,
+              rolls: [adjusted.toJSON()],
+              flags: {
+                pf2e: {
+                  context: {
+                    type: "damage-roll",
+                    options: ["area-effect", "area-damage", ...(payload.config.traits ?? [])],
+                    outcome: outcomeKey
+                  }
+                },
+                world: { pf2eZoneDamage: { zoneUuid: region.uuid, blockId: block.id, tokenUuid: token.uuid } }
+              }
+            });
+            return true;
+          } catch (error) {
+            console.error("PF2e Zone: damage roll failed", error);
+            ui.notifications.error(`PF2e Zone: damage roll failed for ${block.name}. See console.`);
+            return false;
+          }
+        },
+
+        async baseHealingRoll(payload, block, batchId) {
+          const DamageRoll = this.damageRollClass();
+          if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
+          const cacheKey = stateKey("healing", block.id, batchId);
+          const cached = payload.state.healingRolls[cacheKey];
+          if (cached?.roll) return { DamageRoll, roll: DamageRoll.fromData(cached.roll) };
+
+          const roll = await new DamageRoll(`{(${block.healing.formula})[healing]}`).roll();
+          payload.state.healingRolls[cacheKey] = { roll: roll.toJSON() };
+          return { DamageRoll, roll };
+        },
+
+        async postHealing(region, payload, block, token, outcomeKey, multiplier, batchId) {
+          if (!block.healing?.enabled || !(Number(multiplier) > 0)) return false;
+          try {
+            const { roll: baseRoll } = await this.baseHealingRoll(payload, block, batchId);
+            const adjusted = Number(multiplier) === 1 ? baseRoll : baseRoll.alter(Number(multiplier), 0);
+            const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            const outcomeLabel = titleCaseLocal(outcomeKey);
+            const adjustment = Number(multiplier) === 1 ? "" : ` — ×${Number(multiplier)}`;
+            await ChatMessage.create({
+              speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
+              flavor: `<strong>${escHtml(payload.config.name)} — ${escHtml(block.name)}</strong><br>${escHtml(token.name)}: ${escHtml(outcomeLabel)}${escHtml(adjustment)}<br><span style="opacity:.75">Healing is already adjusted for this outcome; use the normal Apply Healing button.</span>`,
+              rolls: [adjusted.toJSON()],
+              flags: {
+                pf2e: {
+                  context: {
+                    type: "damage-roll",
+                    options: ["area-effect", ...(payload.config.traits ?? [])],
+                    outcome: outcomeKey
+                  }
+                },
+                world: { pf2eZoneHealing: { zoneUuid: region.uuid, blockId: block.id, tokenUuid: token.uuid } }
+              }
+            });
+            return true;
+          } catch (error) {
+            console.error("PF2e Zone: healing roll failed", error);
+            ui.notifications.error(`PF2e Zone: healing roll failed for ${block.name}. See console.`);
+            return false;
+          }
+        },
+
+        async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}) {
+          const outcome = block.outcomes?.[outcomeKey];
+          if (!outcome) return false;
+          let affected = false;
+
+          for (const condition of outcome.conditions ?? []) {
+            affected = (await this.addCondition(region, payload, block, token, condition)) || affected;
+          }
+          for (const effect of outcome.effects ?? []) {
+            affected = (await this.addEffectItem(region, payload, block, token, effect)) || affected;
+          }
+          if (block.damage.enabled && Number(outcome.damageMultiplier) > 0) {
+            affected = (await this.postDamage(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
+          }
+          if (block.healing?.enabled && Number(outcome.damageMultiplier) > 0) {
+            affected = (await this.postHealing(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
+          }
+          // Chat alerts are emitted once per trigger event by processBlock(),
+          // independently of whether this outcome affects one or many targets.
+          return affected;
+        },
+
+        registerRecoveryWatcher(payload, block, token) {
+          if (!block.immunity?.starts?.includes("condition-recovery")) return;
+          const condition = block.immunity.recoveryCondition;
+          if (!condition) return;
+          const key = randomId();
+          payload.state.recoveryWatchers[key] = {
+            tokenUuid: token.uuid,
+            actorUuid: token.actor?.uuid ?? null,
+            blockId: block.id,
+            condition,
+            duration: block.immunity.duration
+          };
+        },
+
+        applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave) {
+          const starts = block.immunity?.starts ?? [];
+          let startNow = false;
+          if (hadSave && starts.includes("after-save")) startNow = true;
+          if (hadSave && starts.includes("success-or-better") && this.outcomeIsSuccessOrBetter(outcomeKey)) startNow = true;
+          if (hadSave && starts.includes("failure-or-worse") && this.outcomeIsFailureOrWorse(outcomeKey)) startNow = true;
+          if (starts.includes("affected") && affected) startNow = true;
+          if (startNow) this.setImmunity(payload, token.uuid, block);
+          if (affected) this.registerRecoveryWatcher(payload, block, token);
+        },
+
+        async processBlock(region, payload, block, token, trigger, batchId, { continuous = false, eventContext = {}, skipEligibility = false } = {}) {
+          const resolvedEventContext = { trigger, ...(eventContext ?? {}) };
+          if (!skipEligibility && !(await this.eligible(payload, token))) {
+            console.info("PF2e Zone trigger blocked: ineligible target", {
+              zone: payload.config.name, block: block.name, trigger, token: token?.name
+            });
+            return;
+          }
+          if (this.isImmune(payload, token.uuid, block.id)) {
+            console.info("PF2e Zone trigger blocked: temporary immunity", {
+              zone: payload.config.name,
+              block: block.name,
+              trigger,
+              token: token.name,
+              immunity: this.findImmunityEntry(payload, token.uuid, block.id)?.record ?? null
+            });
+            return;
+          }
+          if (this.repeatBlocked(payload, token.uuid, block)) {
+            console.info("PF2e Zone trigger blocked: repeat policy", {
+              zone: payload.config.name, block: block.name, trigger, token: token.name, repeat: block.repeat
+            });
+            return;
+          }
+
+          // A chat alert belongs to the trigger event, not to each affected
+          // creature. Multi-target events (most notably Activation) therefore
+          // produce one message with {count} describing the number of targets.
+          if (block.chatAlert?.enabled) {
+            await this.postChatAlertOnce(
+              region,
+              payload,
+              block,
+              token,
+              batchId,
+              resolvedEventContext,
+              block.save?.enabled ? null : "noSave"
+            );
+          }
+
+          // Continuous payloads intentionally use the no-save outcome. This is
+          // the maintenance path for effects such as Courageous Anthem.
+          if (continuous) {
+            this.markRepeat(payload, token.uuid, block);
+            const affected = await this.applyOutcome(region, payload, block, token, "noSave", batchId, resolvedEventContext);
+            this.applyImmunityStarts(payload, block, token, "noSave", affected, false);
+            return;
+          }
+
+          if (block.save.enabled) {
+            await this.requestSave(region, payload, block, token, trigger, batchId, resolvedEventContext);
+            return;
+          }
+
+          this.markRepeat(payload, token.uuid, block);
+          const affected = await this.applyOutcome(region, payload, block, token, "noSave", batchId, resolvedEventContext);
+          this.applyImmunityStarts(payload, block, token, "noSave", affected, false);
+        },
+
+        async processTriggerUnlocked(region, payload, token, trigger, batchId) {
+          for (const block of payload.config.effects ?? []) {
+            if (!block.triggers?.[trigger]) continue;
+            await this.processBlock(
+              region,
+              payload,
+              block,
+              token,
+              trigger,
+              `${batchId}:${block.id}`,
+              { eventContext: { count: 1 } }
+            );
+          }
+        },
+
+        combatTurnKey(combat = game.combat) {
+          const active = combat?.combatant ?? null;
+          return combat?.id && active
+            ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`
+            : null;
+        },
+
+        async processTurnStartUnlocked(region, payload, token, batchPrefix = "turnStart") {
+          if (!(await this.eligible(payload, token))) return;
+
+          // Region reshaping can transiently drop and re-add token membership.
+          // Both Foundry's Region behavior and our combat-hook fallback can
+          // therefore observe the same turn start. Persist one key per token so
+          // the trigger is processed only once for the active combat turn.
+          const turnKey = this.combatTurnKey();
+          const eventKey = stateKey("turnStart", token.uuid);
+          if (turnKey && payload.state.turnStartEvents?.[eventKey] === turnKey) return;
+          if (turnKey) {
+            payload.state.turnStartEvents ??= {};
+            payload.state.turnStartEvents[eventKey] = turnKey;
+          }
+
+          await this.processTriggerUnlocked(
+            region,
+            payload,
+            token,
+            "turnStart",
+            `${batchPrefix}:${token.uuid}:${turnKey ?? this.roundStamp()}:${randomId()}`
+          );
+        },
+
+        async processActiveTurnStart(region) {
+          if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+          const combat = game.combat;
+          const active = combat?.combatant ?? null;
+          const token = active?.token ?? null;
+          if (!combat || !active || !token || token.parent?.id !== region.parent?.id) return;
+
+          // Geometry is authoritative here. This intentionally does not rely on
+          // RegionDocument.tokens because moving/resizing a Region can make that
+          // membership collection transiently stale.
+          if (!this.tokensInside(region).some((candidate) => candidate.uuid === token.uuid)) return;
+
+          await this.withState(region, async (payload) => {
+            if (payload.state?.deactivated) return;
+            if (!(payload.config.effects ?? []).some((block) => block.triggers?.turnStart)) return;
+            await this.processTurnStartUnlocked(region, payload, token, "combatTurnStart");
+          });
+        },
+
+        async processAllActiveTurnStarts() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) await this.processActiveTurnStart(region);
+        },
+
+        async processSourceTurnStartUnlocked(region, payload, sourceToken, batchId) {
+          for (const block of payload.config.effects ?? []) {
+            if (!block.triggers?.sourceTurnStart) continue;
+            await this.processBlock(
+              region,
+              payload,
+              block,
+              sourceToken,
+              "sourceTurnStart",
+              `${batchId}:${block.id}`,
+              { eventContext: { count: 1 }, skipEligibility: true }
+            );
+          }
+        },
+
+        async processContinuousUnlocked(region, payload, token, batchId, eventContext = {}) {
+          for (const block of payload.config.effects ?? []) {
+            if (!block.triggers?.continuous) continue;
+            await this.processBlock(
+              region,
+              payload,
+              block,
+              token,
+              "continuous",
+              `${batchId}:${block.id}`,
+              { continuous: true, eventContext: { count: 1, ...(eventContext ?? {}) } }
+            );
+          }
+        },
+
+        async deleteAppliedRecord(payload, recordId) {
+          const record = payload.state.applied[recordId];
+          if (!record) return;
+          const { actor } = await this.resolveTarget(record);
+          const item = actor?.items?.get(record.itemId);
+          if (item) await this.deleteOwnedItem(item, "failed to delete owned item");
+          delete payload.state.applied[recordId];
+        },
+
+        async cleanupTokenOnExitUnlocked(payload, tokenUuid) {
+          const records = Object.entries(payload.state.applied)
+            .filter(([, record]) => record.tokenUuid === tokenUuid && record.removal === "on-exit");
+          for (const [recordId] of records) await this.deleteAppliedRecord(payload, recordId);
+        },
+
+        async cleanupZoneUnlocked(payload) {
+          const records = Object.entries(payload.state.applied)
+            .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
+          for (const [recordId] of records) await this.deleteAppliedRecord(payload, recordId);
+          payload.state.pendingSaves = {};
+          payload.state.recoveryWatchers = {};
+          payload.state.deactivated = true;
+        },
+
+        async cleanupDeletedRegion(region, payload) {
+          const records = Object.entries(payload?.state?.applied ?? {})
+            .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
+          for (const [, record] of records) {
+            const { actor } = await this.resolveTarget(record);
+            const item = actor?.items?.get(record.itemId);
+            if (item) await this.deleteOwnedItem(item, "cleanup after Region deletion");
+          }
+        },
+
+        async reconcileContinuousUnlocked(region, payload) {
+          const insideTokens = this.tokensInside(region);
+          const inside = new Set(insideTokens.map((t) => t.uuid));
+
+          // Remove on-exit zone-owned data from tokens that are no longer both
+          // inside and eligible. This also catches alliance changes on a later reconcile.
+          for (const [recordId, record] of Object.entries(payload.state.applied)) {
+            if (record.removal !== "on-exit") continue;
+            const token = record.tokenUuid ? await fromUuid(record.tokenUuid) : null;
+            const eligible = token && inside.has(record.tokenUuid) && await this.eligible(payload, token);
+            if (!eligible) await this.deleteAppliedRecord(payload, recordId);
+          }
+
+          const eligibleTokens = [];
+          for (const token of insideTokens) {
+            if (await this.eligible(payload, token)) eligibleTokens.push(token);
+          }
+          const batch = `continuous:${this.roundStamp()}:${randomId()}`;
+          const count = eligibleTokens.length;
+          for (const token of eligibleTokens) {
+            await this.processContinuousUnlocked(region, payload, token, batch, { count });
+          }
+        },
+
+        scheduleRegionReconcile(region, delay = 100) {
+          if (!region?.parent?.id || !region?.id) return;
+          const key = region.uuid;
+          const prior = this.regionReconcileTimers.get(key);
+          if (prior) clearTimeout(prior);
+
+          const sceneId = region.parent.id;
+          const regionId = region.id;
+          const timer = setTimeout(async () => {
+            this.regionReconcileTimers.delete(key);
+            if (!this.isAuthority()) return;
+            const liveRegion = game.scenes.get(sceneId)?.regions.get(regionId);
+            if (!liveRegion) return;
+            try {
+              await this.withState(liveRegion, async (payload) => {
+                if (payload.state?.deactivated) return;
+                await this.reconcileContinuousUnlocked(liveRegion, payload);
+              });
+            } catch (error) {
+              console.error("PF2e Zone: Region movement reconcile failed", error);
+            }
+          }, Math.max(0, Number(delay) || 0));
+
+          this.regionReconcileTimers.set(key, timer);
+        },
+
+        async processActivationTokenUnlocked(region, payload, token, batchSeed = randomId()) {
+          if (payload.state.activationProcessed) return;
+          if (!(await this.eligible(payload, token))) return;
+
+          for (const block of payload.config.effects ?? []) {
+            if (!block.triggers?.activation) continue;
+            const key = stateKey("activation", block.id, token.uuid);
+            if (payload.state.activationTargets[key]) continue;
+
+            // Mark only after the block successfully begins processing. For saves,
+            // requestSave() creates the pending workflow before returning.
+            let count = 0;
+            for (const candidate of this.tokensInside(region)) {
+              if (!(await this.eligible(payload, candidate))) continue;
+              if (this.isImmune(payload, candidate.uuid, block.id)) continue;
+              if (this.repeatBlocked(payload, candidate.uuid, block)) continue;
+              count += 1;
+            }
+
+            await this.processBlock(
+              region,
+              payload,
+              block,
+              token,
+              "activation",
+              `activation:${block.id}:${batchSeed}`,
+              { eventContext: { count: Math.max(1, count) } }
+            );
+            payload.state.activationTargets[key] = true;
+          }
+        },
+
+        async activateRegion(region) {
+          if (!this.isAuthority()) return;
+
+          // Foundry can finish Region membership asynchronously after the Region
+          // document itself exists. Keep an activation grace window open so the
+          // initial tokenEnter events can still count as "inside on activation."
+          let scheduleFinalize = false;
+
+          await this.withState(region, async (payload) => {
+            if (!payload.state.activationProcessed) {
+              payload.state.activationPending = true;
+              const batchSeed = randomId();
+              const activationTokens = this.tokensInside(region);
+              const activationBlocks = (payload.config.effects ?? []).filter((b) => b.triggers?.activation);
+
+              for (const token of activationTokens) {
+                payload.state.initialOccupants[stateKey("initial", token.uuid)] = true;
+              }
+
+              console.info("PF2e Zone activation", {
+                zone: payload.config.name,
+                region: region.uuid,
+                activationBlocks: activationBlocks.map((b) => b.name),
+                inside: activationTokens.map((t) => t.name)
+              });
+
+              // Process tokens using Foundry's authoritative containment test.
+              for (const token of activationTokens) {
+                await this.processActivationTokenUnlocked(region, payload, token, batchSeed);
+              }
+
+              if (!payload.state.activationFinalizeScheduled) {
+                payload.state.activationFinalizeScheduled = true;
+                scheduleFinalize = true;
+              }
+            }
+
+            payload.state.deactivated = false;
+            await this.reconcileContinuousUnlocked(region, payload);
+          });
+
+          if (scheduleFinalize) {
+            setTimeout(async () => {
+              if (!region?.parent || !this.isAuthority()) return;
+              try {
+                await this.withState(region, async (payload) => {
+                  if (payload.state.activationProcessed) return;
+
+                  // Final sweep after Region membership has had time to settle.
+                  const batchSeed = randomId();
+                  for (const token of region.tokens) {
+                    await this.processActivationTokenUnlocked(region, payload, token, batchSeed);
+                  }
+
+                  payload.state.activationProcessed = true;
+                  payload.state.activationPending = false;
+                  payload.state.activationFinalizeScheduled = false;
+                  payload.state.initialOccupants = {};
+                });
+              } catch (error) {
+                console.error("PF2e Zone: activation finalization failed", error);
+              }
+            }, 1000);
+          }
+        },
+
+        async checkSourceAndDuration(region) {
+          if (!this.isAuthority()) return;
+          let shouldEnd = false;
+          await this.withState(region, async (payload) => {
+            this.syncImmunityCombatClock(payload);
+            const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            if (payload.config.mode === "emanation" && (!sourceToken || !sourceActor)) {
+              shouldEnd = true;
+              return;
+            }
+
+            const rounds = this.durationRounds(payload.config);
+            if (!rounds) return;
+            const d = payload.state.duration;
+            d.rounds ??= rounds;
+            d.worldExpires ??= Number(payload.state.createdWorldTime ?? nowWorld()) + rounds * 6;
+
+            const combat = game.combat;
+            if (combat) {
+              const sourceCombatant = sourceActor?.combatant ?? null;
+              if (sourceCombatant) {
+                d.combatId = combat.id;
+                d.sourceCombatantId = sourceCombatant.id;
+              }
+            }
+
+            if (combat?.id && d.combatId === combat.id && d.sourceCombatantId) {
+              const active = combat.combatant;
+              if (active?.id === d.sourceCombatantId) {
+                const turnKey = `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`;
+                if (turnKey !== d.lastSourceTurnKey) {
+                  d.lastSourceTurnKey = turnKey;
+                  d.sourceTurnsElapsed = Number(d.sourceTurnsElapsed ?? 0) + 1;
+                }
+                if (Number(d.sourceTurnsElapsed ?? 0) >= rounds) shouldEnd = true;
+              }
+            } else if (nowWorld() >= Number(d.worldExpires ?? Infinity)) {
+              shouldEnd = true;
+            }
+          });
+          if (shouldEnd) await this.endZone(region, "duration/source");
+        },
+
+        async checkAllDurations() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) await this.checkSourceAndDuration(region);
+        },
+
+        async processSourceTurnStart(region) {
+          if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+
+          await this.withState(region, async (payload) => {
+            if (payload.state?.deactivated) return;
+            if (!(payload.config.effects ?? []).some((block) => block.triggers?.sourceTurnStart)) return;
+
+            const combat = game.combat;
+            const active = combat?.combatant ?? null;
+            if (!combat || !active) return;
+
+            const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            if (!sourceToken || !sourceActor) return;
+
+            const sourceCombatant = combat.combatants?.find?.((combatant) =>
+              combatant?.token?.uuid === sourceToken.uuid || combatant?.actor?.uuid === sourceActor.uuid
+            ) ?? sourceActor.combatant ?? null;
+            if (!sourceCombatant || active.id !== sourceCombatant.id) return;
+
+            const turnKey = `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`;
+            if (payload.state.lastSourceTriggerTurnKey === turnKey) return;
+            payload.state.lastSourceTriggerTurnKey = turnKey;
+
+            await this.processSourceTurnStartUnlocked(
+              region,
+              payload,
+              sourceToken,
+              `sourceTurnStart:${sourceToken.uuid}:${turnKey}`
+            );
+          });
+        },
+
+        async processAllSourceTurnStarts() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) await this.processSourceTurnStart(region);
+        },
+
+        async endZone(region, reason = "ended") {
+          const scene = region?.parent;
+          const regionId = region?.id;
+          if (!scene || !regionId) return;
+
+          // Always resolve the currently embedded Region document. A stale
+          // Region object may retain its parent after another hook has already
+          // deleted it from the Scene collection.
+          const liveRegion = scene.regions?.get?.(regionId);
+          if (!liveRegion) return;
+
+          const key = liveRegion.uuid;
+          if (this.endingZones.has(key)) return;
+          this.endingZones.add(key);
+
+          try {
+            await this.withState(liveRegion, async (payload) => this.cleanupZoneUnlocked(payload));
+
+            // Re-resolve after cleanup in case another concurrent lifecycle
+            // event removed the Region while cleanup awaited embedded updates.
+            const stillLive = scene.regions?.get?.(regionId);
+            if (stillLive) await stillLive.delete();
+          } catch (error) {
+            // Deletion is intentionally idempotent. If Foundry reports that a
+            // concurrent caller already removed it, there is nothing left to do.
+            if (/does not exist/i.test(String(error?.message ?? error))) return;
+            console.error(`PF2e Zone: failed to end zone (${reason})`, liveRegion, error);
+            ui.notifications.error(`PF2e Zone: failed to end '${liveRegion.name}'. See console.`);
+          } finally {
+            this.endingZones.delete(key);
+          }
+        },
+
+        async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null) {
+          if (!this.isAuthority()) return false;
+          if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
+
+          let resolved = false;
+          await this.withState(region, async (payload) => {
+            if (payload.state.resolvedSaves?.[pendingId]?.identifier === identifier) {
+              delete payload.state.pendingSaves[pendingId];
+              return;
+            }
+
+            const pending = payload.state.pendingSaves[pendingId];
+            if (!pending || pending.identifier !== identifier) return;
+
+            const block = payload.config.effects?.find((b) => b.id === pending.blockId);
+            const token = await fromUuid(pending.tokenUuid);
+            if (!block || !token?.actor) {
+              delete payload.state.pendingSaves[pendingId];
+              return;
+            }
+
+            if (rollerActorUuid && rollerActorUuid !== token.actor.uuid) return;
+
+            // Delete before applying the result. Keep a small persistent
+            // tombstone as well, so a duplicated resolver cannot apply the same
+            // save twice even if an older pending snapshot resurfaces.
+            delete payload.state.pendingSaves[pendingId];
+            payload.state.resolvedSaves[pendingId] = {
+              identifier,
+              outcome,
+              resolvedWorldTime: nowWorld()
+            };
+
+            const affected = await this.applyOutcome(
+              region,
+              payload,
+              block,
+              token,
+              outcome,
+              pending.batchId,
+              pending.eventContext ?? { trigger: pending.trigger }
+            );
+            this.applyImmunityStarts(payload, block, token, outcome, affected, true);
+            resolved = true;
+
+            console.info("PF2e Zone save resolved", {
+              zone: payload.config.name,
+              regionUuid: region.uuid,
+              block: block.name,
+              token: token.name,
+              pendingId,
+              outcome
+            });
+          });
+
+          if (resolved && this.isLiveRegion(region)) {
+            const persisted = this.readPayload(region);
+            const persistedPending = persisted?.state?.pendingSaves?.[pendingId] ?? null;
+            const resolvedRecord = persisted?.state?.resolvedSaves?.[pendingId] ?? null;
+            const immunityRecords = Object.entries(persisted?.state?.immunities ?? {}).map(
+              ([storageId, record]) => ({
+                storageId,
+                tokenUuid: record?.tokenUuid ?? null,
+                blockId: record?.blockId ?? null,
+                duration: record?.duration ?? null,
+                startRound: record?.expiry?.startRound ?? null,
+                startTurn: record?.expiry?.startTurn ?? null,
+                rounds: record?.expiry?.rounds ?? null
+              })
+            );
+
+            console.info("PF2e Zone save state committed", {
+              zone: persisted?.config?.name ?? region.name,
+              regionUuid: region.uuid,
+              pendingId,
+              pendingStillPresent: Boolean(persistedPending),
+              resolvedRecordPresent: Boolean(resolvedRecord),
+              immunityRecords
+            });
+          }
+
+          return resolved;
+        },
+
+        async handleSaveResult(message) {
+          if (!this.isAuthority()) return;
+          const context = message.flags?.pf2e?.context;
+          const identifier = context?.identifier;
+          if (typeof identifier !== "string" || !identifier.startsWith(`${SAVE_PREFIX}:`)) return;
+
+          const parts = identifier.split(":");
+          if (parts.length !== 4) return;
+          const [, sceneId, regionId, pendingId] = parts;
+          const region = game.scenes.get(sceneId)?.regions.get(regionId);
+          if (!region) return;
+
+          let outcome = context?.outcome;
+          if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) {
+            const checkRoll = (message.rolls ?? []).find((roll) =>
+              roll?.options?.identifier === identifier || roll?.options?.identifier == null
+            );
+            outcome = this.outcomeFromDegree(checkRoll?.degreeOfSuccess);
+          }
+          if (!outcome) return;
+
+          await this.resolvePendingSave(
+            region,
+            pendingId,
+            identifier,
+            outcome,
+            message.actor?.uuid ?? null
+          );
+        },
+
+        async reconcileActorDependencies(actor) {
+          if (!this.isAuthority() || !actor) return;
+
+          // Linked-condition cleanup is stored on the owned condition itself so
+          // it still works if the originating Region has already ended, as long
+          // as the runtime is active in the world/client session.
+          const toDelete = actor.items.filter((item) => {
+            const flag = this.zoneItemFlag(item);
+            if (item.type !== "condition" || flag?.removal !== "condition-end" || !flag.linkedCondition) return false;
+            const linked = actor.conditions?.bySlug?.(flag.linkedCondition, { active: true }) ?? [];
+            return linked.length === 0;
+          });
+          for (const item of toDelete) {
+            await this.deleteOwnedItem(item, "linked-condition cleanup");
+          }
+
+          for (const region of this.allZones()) {
+            await this.withState(region, async (payload) => {
+              for (const [key, watcher] of Object.entries(payload.state.recoveryWatchers)) {
+                if (watcher.actorUuid !== actor.uuid) continue;
+                const remaining = actor.conditions?.bySlug?.(watcher.condition, { active: true }) ?? [];
+                if (remaining.length) continue;
+                const block = payload.config.effects?.find((b) => b.id === watcher.blockId);
+                if (block) this.setImmunity(payload, watcher.tokenUuid, block);
+                delete payload.state.recoveryWatchers[key];
+              }
+            });
+          }
+        },
+
+
+        async traitUseInfoFromMessage(message) {
+          if (!message) return null;
+          const pf2e = message.flags?.pf2e ?? {};
+          const origin = pf2e.origin;
+          if (!origin || typeof origin !== "object") return null;
+
+          const rollOptions = [
+            ...(Array.isArray(origin.rollOptions) ? origin.rollOptions : []),
+            ...(Array.isArray(pf2e.context?.options) ? pf2e.context.options : [])
+          ].map((option) => String(option));
+
+          // PF2e distinguishes actually casting a spell from merely posting its
+          // card to chat by adding action:cast-a-spell to the origin roll options.
+          if (origin.type === "spell" && !rollOptions.includes("action:cast-a-spell")) return null;
+
+          let actor = null;
+          try {
+            actor = origin.actor ? await fromUuid(origin.actor) : null;
+          } catch (_error) { /* unresolved origin actor */ }
+
+          const speaker = message.speaker ?? {};
+          let token = speaker.scene && speaker.token
+            ? (game.scenes.get(speaker.scene)?.tokens.get(speaker.token) ?? null)
+            : null;
+
+          if (!token && message.token) {
+            token = message.token.document ?? message.token;
+          }
+
+          // A chat message must be attributable to a specific Token to decide
+          // whether the user was actually inside a Region. Only use a fallback
+          // when exactly one active token matches the Actor.
+          if (!token && actor) {
+            const candidates = [];
+            for (const scene of game.scenes) {
+              for (const candidate of scene.tokens) {
+                const candidateActor = candidate.actor;
+                if (!candidateActor) continue;
+                if (candidateActor.uuid === actor.uuid || candidateActor.id === actor.id) {
+                  candidates.push(candidate);
+                }
+              }
+            }
+            if (candidates.length === 1) token = candidates[0];
+          }
+
+          actor ??= token?.actor ?? null;
+          if (!actor || !token) return null;
+
+          let item = null;
+          try {
+            item = origin.uuid ? await fromUuid(origin.uuid) : null;
+          } catch (_error) { /* unresolved origin item */ }
+
+          const traits = new Set();
+          for (const option of rollOptions) {
+            const marker = ":trait:";
+            const index = option.lastIndexOf(marker);
+            if (index >= 0) {
+              const trait = option.slice(index + marker.length).trim().toLowerCase();
+              if (trait) traits.add(trait);
+            }
+          }
+
+          for (const trait of item?.system?.traits?.value ?? []) {
+            const slug = String(trait ?? "").trim().toLowerCase();
+            if (slug) traits.add(slug);
+          }
+
+          const embeddedSpell = pf2e.casting?.embeddedSpell;
+          for (const trait of embeddedSpell?.system?.traits?.value ?? []) {
+            const slug = String(trait ?? "").trim().toLowerCase();
+            if (slug) traits.add(slug);
+          }
+
+          return {
+            actor,
+            token,
+            itemName: String(item?.name ?? embeddedSpell?.name ?? "an ability"),
+            itemUuid: origin.uuid ?? null,
+            traits
+          };
+        },
+
+        formatChatAlert(template, values) {
+          const replacements = {
+            zone: values.zone,
+            block: values.block,
+            creature: values.creature,
+            item: values.item,
+            source: values.source,
+            trait: values.trait,
+            trigger: values.trigger,
+            outcome: values.outcome,
+            count: values.count
+          };
+          return String(template ?? "").replace(/\{(zone|block|creature|item|source|trait|trigger|outcome|count)\}/gi, (_match, key) => {
+            return String(replacements[String(key).toLowerCase()] ?? "");
+          });
+        },
+
+        chatAlertBatchKey(region, block, batchId, eventContext = {}) {
+          const trigger = String(eventContext?.trigger ?? "").trim();
+          // Activation is a single zone-creation event even though Foundry can
+          // discover initial occupants in more than one pass during the grace
+          // window. Use a stable activation key so the final sweep cannot
+          // duplicate the reminder.
+          const stableBatch = trigger === "activation"
+            ? "activation"
+            : String(batchId ?? trigger ?? "event");
+          return `${region.uuid}::${block.id}::${stableBatch}`;
+        },
+
+        async postChatAlertOnce(region, payload, block, token, batchId, eventContext = {}, outcomeKey = null) {
+          if (!block.chatAlert?.enabled) return;
+          const key = this.chatAlertBatchKey(region, block, batchId, eventContext);
+          if (this.chatAlertBatches.has(key)) return;
+
+          this.chatAlertBatches.add(key);
+          // Keep the key long enough to cover activation's delayed membership
+          // finalization, then discard it so this transient runtime set cannot
+          // grow for the life of the world.
+          setTimeout(() => this.chatAlertBatches.delete(key), 5000);
+
+          await this.postChatAlert(region, payload, block, token, outcomeKey, eventContext);
+        },
+
+        async postChatAlert(region, payload, block, token, outcomeKey, eventContext = {}) {
+          if (!block.chatAlert?.enabled) return;
+          const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+          const sourceName = sourceToken?.name ?? sourceActor?.name ?? region.name ?? "Zone source";
+          const watchedTrait = String(block.traitUse?.trait ?? "").trim().toLowerCase();
+          const trait = String(eventContext?.trait ?? (block.triggers?.traitUse ? watchedTrait : "")).trim();
+          const trigger = String(eventContext?.trigger ?? "").trim();
+          const count = Math.max(1, Number(eventContext?.count ?? 1) || 1);
+          const creature = count === 1
+            ? (token?.actor?.name ?? token?.name ?? "Creature")
+            : "affected creatures";
+          const template = block.chatAlert?.text
+            || "{zone}: {creature} triggered {block}.";
+          const text = this.formatChatAlert(template, {
+            zone: payload.config.name,
+            block: block.name,
+            creature,
+            item: eventContext?.itemName ?? "",
+            source: sourceName,
+            trait,
+            trigger: trigger ? titleCaseLocal(trigger) : "",
+            outcome: outcomeKey ? titleCaseLocal(outcomeKey) : "",
+            count
+          });
+
+          await ChatMessage.create({
+            speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
+            content: `<div class="pf2e-zone-chat-alert"><h4>${escHtml(payload.config.name)} — ${escHtml(block.name)}</h4><p>${escHtml(text)}</p><p style="opacity:.7;font-size:.9em">PF2e Zone Automation chat alert</p></div>`,
+            flags: {
+              [FLAG_SCOPE]: {
+                pf2eZoneChatAlert: {
+                  regionUuid: region.uuid,
+                  blockId: block.id,
+                  tokenUuid: token?.uuid ?? null,
+                  trigger: eventContext?.trigger ?? null,
+                  outcome: outcomeKey ?? null,
+                  sourceMessageId: eventContext?.sourceMessageId ?? null
+                }
+              }
+            }
+          });
+        },
+
+        async handleTraitUseMessage(message) {
+          if (!this.isAuthority()) return;
+
+          const candidateZones = this.allZones().filter((region) => {
+            const payload = this.readPayload(region);
+            return payload && !payload.state?.deactivated
+              && (payload.config.effects ?? []).some((block) => block.triggers?.traitUse);
+          });
+          if (!candidateZones.length) return;
+
+          const info = await this.traitUseInfoFromMessage(message);
+          if (!info?.token || !info.traits?.size) return;
+
+          for (const region of candidateZones) {
+            if (region.parent?.id !== info.token.parent?.id) continue;
+            const inside = this.tokensInside(region).some((token) => token.uuid === info.token.uuid);
+            if (!inside) continue;
+
+            await this.withState(region, async (payload) => {
+              if (payload.state?.deactivated) return;
+
+              for (const block of payload.config.effects ?? []) {
+                if (!block.triggers?.traitUse) continue;
+                const trait = String(block.traitUse?.trait ?? "").trim().toLowerCase();
+                if (!trait || !info.traits.has(trait)) continue;
+
+                await this.processBlock(
+                  region,
+                  payload,
+                  block,
+                  info.token,
+                  "traitUse",
+                  `traitUse:${message.id ?? randomId()}:${block.id}`,
+                  {
+                    eventContext: {
+                      trigger: "traitUse",
+                      trait,
+                      itemName: info.itemName,
+                      itemUuid: info.itemUuid,
+                      sourceMessageId: message.id ?? null,
+                      count: 1
+                    }
+                  }
+                );
+              }
+            });
+          }
+        },
+
+        async reconcileAllLinkedConditions() {
+          if (!this.isAuthority()) return;
+          const actors = new Set(game.actors.contents);
+          for (const scene of game.scenes) {
+            for (const token of scene.tokens) if (token.actor) actors.add(token.actor);
+          }
+          for (const actor of actors) {
+            if (actor.items.some((i) => this.zoneItemFlag(i)?.removal === "condition-end")) {
+              await this.reconcileActorDependencies(actor);
+            }
+          }
+        },
+
+        teardownHooks() {
+          const registry = globalThis.PF2EZoneRuntimeHookRegistry;
+          if (registry?.runtime !== this) {
+            this.hooksInstalled = false;
+            return;
+          }
+
+          for (const [hookName, hookId] of registry.hookIds ?? []) {
+            try { Hooks.off(hookName, hookId); }
+            catch (error) { console.warn("PF2e Zone: failed to unregister hook", hookName, hookId, error); }
+          }
+
+          for (const timer of this.regionReconcileTimers.values()) clearTimeout(timer);
+          this.regionReconcileTimers.clear();
+
+          if (registry.clickHandler) {
+            document.removeEventListener("click", registry.clickHandler);
+          }
+
+          delete globalThis.PF2EZoneRuntimeHookRegistry;
+          this.hooksInstalled = false;
+        },
+
+        installHooks() {
+          if (this.hooksInstalled) return;
+
+          // v0.3.4+ owns a single global hook registry. Future runtime upgrades
+          // can therefore replace hooks cleanly instead of accumulating one
+          // updateCombat listener per test version.
+          const priorRegistry = globalThis.PF2EZoneRuntimeHookRegistry;
+          if (priorRegistry?.runtime && priorRegistry.runtime !== this) {
+            try { priorRegistry.runtime.teardownHooks?.(); }
+            catch (error) { console.warn("PF2e Zone: prior runtime hook teardown failed", error); }
+          }
+
+          const runtime = this;
+          const hookIds = [];
+          const on = (hookName, fn) => {
+            const hookId = Hooks.on(hookName, fn);
+            hookIds.push([hookName, hookId]);
+            return hookId;
+          };
+
+          on("createChatMessage", (message) => {
+            const identifier = message.flags?.pf2e?.context?.identifier;
+            if (typeof identifier === "string" && identifier.startsWith(`${SAVE_PREFIX}:`)) {
+              runtime.handleSaveResult(message).catch((e) => console.error("PF2e Zone save-result hook", e));
+            }
+            runtime.handleTraitUseMessage(message).catch((e) => console.error("PF2e Zone trait-use hook", e));
+          });
+
+          const itemChanged = (item) => {
+            // Dependency reconciliation is only relevant when a Condition
+            // changes. Effect Items and other owned Items should not wake this
+            // hook during ordinary zone cleanup.
+            if (item?.type !== "condition") return;
+
+            const actor = item?.actor ?? item?.parent;
+            if (!actor) return;
+
+            const deleteKey = runtime.itemDeleteKey(item);
+            if (runtime.deletingItems.has(deleteKey)) return;
+
+            // Allow Foundry's embedded document transaction to finish before
+            // inspecting or modifying the actor's Condition collection.
+            setTimeout(() => {
+              if (runtime.deletingItems.has(deleteKey)) return;
+              runtime.reconcileActorDependencies(actor)
+                .catch((e) => console.error("PF2e Zone condition hook", e));
+            }, 100);
+          };
+          on("updateItem", itemChanged);
+          on("deleteItem", itemChanged);
+
+          on("updateCombat", async () => {
+            try {
+              await runtime.checkAllDurations();
+              await runtime.processAllSourceTurnStarts();
+              await runtime.processAllActiveTurnStarts();
+            } catch (e) {
+              console.error("PF2e Zone combat hook", e);
+            }
+          });
+          on("updateWorldTime", () =>
+            runtime.checkAllDurations().catch((e) => console.error("PF2e Zone world-time hook", e))
+          );
+
+          on("deleteToken", (token) => {
+            if (!runtime.isAuthority()) return;
+            for (const region of runtime.allZones()) {
+              const payload = runtime.readPayload(region);
+              if (payload?.config?.mode === "emanation" && payload.state.sourceTokenUuid === token.uuid) {
+                runtime.endZone(region, "source token deleted").catch((e) => console.error("PF2e Zone source cleanup", e));
+              }
+            }
+          });
+
+          on("updateRegion", (region, changes) => {
+            if (!runtime.isAuthority()) return;
+            if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
+            if (!runtime.readPayload(region)) return;
+
+            // Dragging/resizing a fixed Area can emit transient tokenExit events
+            // before Foundry's Region membership has settled. Re-evaluate using
+            // current geometry after the document update completes.
+            runtime.scheduleRegionReconcile(region, 100);
+          });
+
+          on("deleteRegion", (region) => {
+            if (!runtime.isAuthority() || runtime.endingZones.has(region.uuid)) return;
+            const payload = runtime.readPayload(region);
+            if (payload) {
+              runtime.cleanupDeletedRegion(region, payload)
+                .catch((e) => console.error("PF2e Zone deleted-region cleanup", e));
+            }
+          });
+
+          const clickHandler = async (event) => {
+            const button = event.target?.closest?.("button[data-pf2e-zone-save]");
+            if (!button) return;
+            event.preventDefault();
+
+            const sceneId = button.dataset.sceneId;
+            const regionId = button.dataset.regionId;
+            const pendingId = button.dataset.pendingId;
+            const saveType = button.dataset.saveType;
+            const region = game.scenes.get(sceneId)?.regions.get(regionId);
+            const payload = region ? runtime.readPayload(region) : null;
+            const pending = payload?.state?.pendingSaves?.[pendingId];
+            if (!region || !payload || !pending) {
+              ui.notifications.warn("This PF2e Zone save request is no longer active.");
+              return;
+            }
+            if (!pending.saveTypes.includes(saveType)) return;
+
+            const token = await fromUuid(pending.tokenUuid);
+            const actor = token?.actor ?? (pending.actorUuid ? await fromUuid(pending.actorUuid) : null);
+            if (!actor) {
+              ui.notifications.error("PF2e Zone: the target actor for this save no longer exists.");
+              return;
+            }
+            if (!game.user.isGM && !actor.isOwner) {
+              ui.notifications.warn(`You do not own ${actor.name}; its owner or a GM must roll this save.`);
+              return;
+            }
+
+            const statistic = actor.getStatistic?.(saveType);
+            if (!statistic) {
+              ui.notifications.error(`${actor.name} does not have a ${titleCaseLocal(saveType)} statistic.`);
+              return;
+            }
+            const { actor: sourceActor } = await runtime.resolveSource(payload);
+            const block = payload.config.effects?.find((b) => b.id === pending.blockId);
+            const inflicts = block ? runtime.inflictedSlugs(block).map((s) => `inflicts:${s}`) : [];
+            const options = [...new Set(["area-effect", ...(payload.config.traits ?? []), ...inflicts])];
+
+            button.disabled = true;
+            try {
+              const roll = await statistic.roll({
+                identifier: pending.identifier,
+                token,
+                origin: sourceActor,
+                dc: { value: pending.dc },
+                traits: payload.config.traits ?? [],
+                extraRollOptions: options,
+                title: `${payload.config.name}: ${pending.blockName}`
+              });
+
+              // PF2e's createChatMessage hook is the primary resolver because
+              // it runs on the authoritative GM even when a player rolls.
+              // The returned CheckRoll is retained only as a short fallback for
+              // a GM-side roll in case a chat hook is missed.
+              const outcome = runtime.outcomeFromDegree(roll?.degreeOfSuccess);
+              if (outcome && runtime.isAuthority()) {
+                setTimeout(async () => {
+                  try {
+                    const liveRegion = region.parent?.regions?.get?.(region.id);
+                    const fresh = liveRegion ? runtime.readPayload(liveRegion) : null;
+                    const stillPending = fresh?.state?.pendingSaves?.[pending.id];
+                    if (!stillPending || stillPending.identifier !== pending.identifier) return;
+
+                    await runtime.resolvePendingSave(
+                      liveRegion,
+                      pending.id,
+                      pending.identifier,
+                      outcome,
+                      actor.uuid
+                    );
+                  } catch (error) {
+                    console.error("PF2e Zone: direct save-resolution fallback failed", error);
+                  }
+                }, 250);
+              }
+            } catch (error) {
+              console.error("PF2e Zone: save roll failed", error);
+              ui.notifications.error("PF2e Zone: save roll failed. See console.");
+            } finally {
+              button.disabled = false;
+            }
+          };
+
+          document.addEventListener("click", clickHandler);
+
+          globalThis.PF2EZoneRuntimeHookRegistry = {
+            version: VERSION,
+            runtime: this,
+            hookIds,
+            clickHandler
+          };
+          this.hooksInstalled = true;
+
+          // Catch any linked-condition records left from a zone that ended earlier.
+          setTimeout(() =>
+            this.reconcileAllLinkedConditions()
+              .catch((e) => console.error("PF2e Zone initial condition reconcile", e)), 0
+          );
+        },
+
+        async handleRegionEvent({ event, region }) {
+          this.installHooks();
+          if (!this.isAuthority() || !region) return;
+          const name = event?.name;
+          const token = event?.data?.token ?? null;
+
+          if (name === "tokenEnter" || name === "tokenExit") {
+            console.info("PF2e Zone Region event", {
+              event: name,
+              zone: region.name,
+              regionUuid: region.uuid,
+              token: token?.name ?? null,
+              tokenUuid: token?.uuid ?? null,
+              combatRound: Number(game.combat?.round ?? 0),
+              combatTurn: Number(game.combat?.turn ?? 0)
+            });
+          }
+
+          switch (name) {
+            case "behaviorActivated":
+              await this.activateRegion(region);
+              break;
+            case "behaviorViewed":
+              await this.activateRegion(region);
+              await this.checkSourceAndDuration(region);
+              break;
+            case "behaviorDeactivated":
+              // Region deletion deactivates the embedded behavior as part of
+              // removing it. Do not write flags back into a Region whose
+              // embedded behavior collection is already being torn down.
+              if (this.endingZones.has(region.uuid)) break;
+              {
+                const payload = this.readPayload(region);
+                if (payload) await this.cleanupZoneUnlocked(payload);
+              }
+              break;
+            case "tokenEnter":
+              if (!token) break;
+              await this.withState(region, async (payload) => {
+                if (!(await this.eligible(payload, token))) return;
+                const batch = `enter:${token.uuid}:${randomId()}`;
+                const initialKey = stateKey("initial", token.uuid);
+                const isInitialOccupant =
+                  payload.state.activationPending &&
+                  !payload.state.activationProcessed &&
+                  Boolean(payload.state.initialOccupants?.[initialKey]);
+
+                if (isInitialOccupant) {
+                  // Region creation can emit tokenEnter for tokens that were
+                  // already standing in the area. That is NOT an Entry trigger.
+                  // Existing occupants are handled only by Activation and/or
+                  // Continuous While Inside.
+                  await this.processActivationTokenUnlocked(region, payload, token, batch);
+                  await this.processContinuousUnlocked(region, payload, token, batch);
+                  console.info("PF2e Zone initial occupant ignored for Entry", {
+                    zone: payload.config.name,
+                    token: token.name,
+                    tokenUuid: token.uuid
+                  });
+                  return;
+                }
+
+                // This is a genuine outside -> inside transition after creation.
+                await this.processContinuousUnlocked(region, payload, token, batch);
+                await this.processTriggerUnlocked(region, payload, token, "enter", batch);
+              });
+              break;
+            case "tokenExit":
+              if (!token) break;
+              // Do not delete on-exit state immediately. Region moves/resizes
+              // can report a transient exit for a token that is still inside the
+              // new geometry. The deferred reconcile removes true exits and
+              // preserves/reapplies effects for tokens that remain inside.
+              this.scheduleRegionReconcile(region, 100);
+              break;
+            case "tokenTurnStart":
+              if (!token) break;
+              await this.withState(region, async (payload) => {
+                await this.processTurnStartUnlocked(region, payload, token, "regionTurnStart");
+              });
+              break;
+            case "tokenTurnEnd":
+              if (!token) break;
+              await this.withState(region, async (payload) => {
+                if (!(await this.eligible(payload, token))) return;
+                await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp()}:${randomId()}`);
+              });
+              break;
+          }
+        }
+      };
+      return rt;
+    }
+
+    let runtime = globalThis.PF2EZoneRuntime;
+    const versionOrder = runtime ? compareVersions(runtime.version, VERSION) : -1;
+
+    if (!runtime || versionOrder < 0) {
+      if (runtime?.hooksInstalled && typeof runtime.teardownHooks !== "function") {
+        // Pre-v0.3.4 runtimes did not retain their hook IDs, so they cannot be
+        // safely unregistered in-place. A single browser refresh clears them.
+        globalThis.PF2EZoneRuntimeLegacyHooksDetected = true;
+      }
+      try { runtime?.teardownHooks?.(); }
+      catch (error) { console.warn("PF2e Zone: runtime teardown failed", error); }
+
+      runtime = createRuntime();
+      globalThis.PF2EZoneRuntime = runtime;
+    }
+
+    // If this embedded script is older than the already-loaded runtime, use the
+    // newer singleton rather than downgrading it.
+    runtime.installHooks();
+
+    const context = explicitContext ?? (
+      typeof behavior !== "undefined" && typeof event !== "undefined" && typeof region !== "undefined"
+        ? { behavior, event, region, scene: typeof scene !== "undefined" ? scene : region?.parent }
+        : null
+    );
+    if (context) await runtime.handleRegionEvent(context);
+    return runtime;
+  }
+
+  const COMMON_TRAITS = [
+    "aura",
+    "auditory",
+    "death",
+    "emotion",
+    "fear",
+    "holy",
+    "incapacitation",
+    "mental",
+    "olfactory",
+    "poison",
+    "unholy",
+    "vitality",
+    "visual",
+    "void"
+  ];
+
+  const FALLBACK_CONDITIONS = [
+    "blinded", "clumsy", "concealed", "confused", "controlled", "dazzled",
+    "deafened", "doomed", "drained", "dying", "encumbered", "enfeebled",
+    "fascinated", "fatigued", "fleeing", "frightened", "grabbed", "hidden",
+    "immobilized", "invisible", "off-guard", "paralyzed", "petrified", "prone",
+    "quickened", "restrained", "sickened", "slowed", "stunned", "stupefied",
+    "unconscious", "undetected", "wounded"
+  ];
+
+  // PF2e conditions whose system data carries a numeric value.
+  // Unvalued conditions such as Concealed or Prone serialize with value: null.
+  const VALUED_CONDITIONS = new Set([
+    "clumsy", "doomed", "drained", "dying", "enfeebled", "frightened",
+    "sickened", "slowed", "stunned", "stupefied", "wounded"
+  ]);
+
+  const OUTCOMES = [
+    ["criticalSuccess", "Critical Success"],
+    ["success", "Success"],
+    ["failure", "Failure"],
+    ["criticalFailure", "Critical Failure"],
+    ["noSave", "No Save"]
+  ];
+
+  const BASIC_MULTIPLIERS = {
+    criticalSuccess: 0,
+    success: 0.5,
+    failure: 1,
+    criticalFailure: 2,
+    noSave: 1
+  };
+
+  function getConditionChoices() {
+    const config = CONFIG.PF2E?.conditionTypes ?? {};
+    const keys = new Set([...FALLBACK_CONDITIONS, ...Object.keys(config)]);
+    return [...keys]
+      .filter((k) => !["persistent-damage"].includes(k))
+      .map((slug) => {
+        const raw = config[slug];
+        let label = titleCase(slug);
+        if (typeof raw === "string") label = localize(raw, label);
+        else if (raw && typeof raw === "object") {
+          const candidate = raw.label ?? raw.name;
+          if (typeof candidate === "string") label = localize(candidate, titleCase(slug));
+        }
+        return { slug, label };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  function isValuedCondition(slug) {
+    return VALUED_CONDITIONS.has(String(slug ?? ""));
+  }
+
+  function getDamageChoices() {
+    const config = CONFIG.PF2E?.damageTypes ?? {};
+    const values = Object.entries(config).map(([slug, labelKey]) => ({
+      slug,
+      label: typeof labelKey === "string" ? localize(labelKey, titleCase(slug)) : titleCase(slug)
+    }));
+    if (!values.some((x) => x.slug === "untyped")) values.push({ slug: "untyped", label: "Untyped" });
+    return values.sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  function statDc(stat) {
+    const value = stat?.dc?.value ?? stat?.dc ?? null;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+  }
+
+  function statLabel(stat, fallback) {
+    const label = stat?.label;
+    if (typeof label === "string") return localize(label, label) || fallback;
+    return fallback;
+  }
+
+  /**
+   * Return portable DC selectors. We deliberately avoid spellcasting-entry IDs:
+   * those IDs are actor-specific and would make exported JSON non-portable.
+   */
+  function getDcChoices(actor) {
+    const found = [];
+    const seen = new Set();
+
+    const add = (statistic, label, dc) => {
+      if (!statistic || seen.has(statistic) || !Number.isFinite(Number(dc))) return;
+      seen.add(statistic);
+      found.push({ statistic, label, dc: Number(dc) });
+    };
+
+    try {
+      if (actor.classDC) {
+        add("class-dc", `${statLabel(actor.classDC, "Primary Class DC")} (Primary Class DC)`, statDc(actor.classDC));
+      }
+    } catch (_err) { /* actor type may not expose classDC */ }
+
+    try {
+      for (const [slug, stat] of Object.entries(actor.classDCs ?? {})) {
+        add(slug, `${statLabel(stat, titleCase(slug))} (Class DC)`, statDc(stat));
+      }
+    } catch (_err) { /* ignore */ }
+
+    for (const [slug, label] of [
+      ["spell-dc", "Highest Spell DC"],
+      ["class-spell", "Highest Class or Spell DC"]
+    ]) {
+      try {
+        const stat = actor.getStatistic?.(slug);
+        add(slug, label, statDc(stat));
+      } catch (_err) { /* not supported by this actor type */ }
+    }
+
+    // Avoid duplicate primary class choices that resolve to exactly the same slug/DC.
+    return found.sort((a, b) => b.dc - a.dc || a.label.localeCompare(b.label));
+  }
+
+  function emptyOutcome(key) {
+    return {
+      damageMultiplier: BASIC_MULTIPLIERS[key] ?? 1,
+      conditions: [],
+      effects: []
+    };
+  }
+
+  function newBlock(index = 1) {
+    return {
+      id: newId(),
+      name: `Effect Block ${index}`,
+      triggers: {
+        activation: false,
+        enter: true,
+        turnStart: false,
+        sourceTurnStart: false,
+        turnEnd: false,
+        continuous: false,
+        traitUse: false
+      },
+      traitUse: {
+        trait: "vitality"
+      },
+      chatAlert: {
+        enabled: false,
+        text: "{zone}: {creature} triggered {block}."
+      },
+      repeat: "every",
+      save: {
+        enabled: false,
+        type: "will",
+        choices: ["reflex", "will"],
+        dc: { mode: "custom", value: 10 },
+        basic: false
+      },
+      damage: {
+        enabled: false,
+        formula: "",
+        typeMode: "fixed",
+        type: "untyped"
+      },
+      healing: {
+        enabled: false,
+        formula: ""
+      },
+      outcomes: Object.fromEntries(OUTCOMES.map(([key]) => [key, emptyOutcome(key)])),
+      immunity: {
+        duration: "none",
+        starts: [],
+        recoveryCondition: "sickened"
+      }
+    };
+  }
+
+  function defaultConfig() {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      name: "New Zone",
+      mode: "emanation",
+      radius: 15,
+      visibility: "all",
+      targeting: {
+        affects: "enemies",
+        includeSelf: false
+      },
+      traits: ["aura"],
+      duration: {
+        type: "until-dismissed",
+        rounds: 1,
+        dismissible: true
+      },
+      activationChoices: {
+        damageType: {
+          enabled: false,
+          options: ["bludgeoning", "piercing", "slashing"]
+        }
+      },
+      effects: [newBlock(1)]
+    };
+  }
+
+  function ensureOutcome(outcome, key) {
+    const base = emptyOutcome(key);
+    return {
+      damageMultiplier: Number.isFinite(Number(outcome?.damageMultiplier))
+        ? Number(outcome.damageMultiplier)
+        : base.damageMultiplier,
+      conditions: Array.isArray(outcome?.conditions)
+        ? outcome.conditions.map((c) => {
+            const slug = String(c?.slug ?? "frightened");
+            const removal = ["normal", "on-exit", "zone-end", "condition-end"].includes(c?.removal)
+              ? c.removal
+              : "normal";
+            return {
+              slug,
+              value: isValuedCondition(slug)
+                ? Math.max(1, Math.floor(Number(c?.value) || 1))
+                : null,
+              removal,
+              condition: removal === "condition-end"
+                ? String(c?.condition ?? "sickened")
+                : null
+            };
+          })
+        : [],
+      effects: Array.isArray(outcome?.effects)
+        ? outcome.effects.map((e) => ({
+            uuid: String(e?.uuid ?? "").trim(),
+            removal: ["item-duration", "on-exit", "zone-end"].includes(e?.removal) ? e.removal : "item-duration"
+          }))
+        : []
+    };
+  }
+
+  function normalizeConfig(input) {
+    const base = defaultConfig();
+    const cfg = input && typeof input === "object" ? input : {};
+
+    const traits = Array.isArray(cfg.traits)
+      ? [...new Set(cfg.traits.map((x) => String(x).trim()).filter(Boolean))]
+      : base.traits;
+
+    const result = {
+      schemaVersion: SCHEMA_VERSION,
+      name: String(cfg.name ?? base.name).trim() || base.name,
+      mode: ["area", "emanation"].includes(cfg.mode) ? cfg.mode : base.mode,
+      radius: Math.max(1, Number(cfg.radius) || base.radius),
+      visibility: ["all", "gm"].includes(cfg.visibility) ? cfg.visibility : base.visibility,
+      targeting: {
+        affects: ["enemies", "allies", "both"].includes(cfg.targeting?.affects)
+          ? cfg.targeting.affects
+          : base.targeting.affects,
+        includeSelf: Boolean(cfg.targeting?.includeSelf)
+      },
+      traits,
+      duration: {
+        type: cfg.duration?.type === "1-round"
+          ? "custom-rounds"
+          : ["custom-rounds", "1-minute", "10-minutes", "until-dismissed", "unlimited"].includes(cfg.duration?.type)
+            ? cfg.duration.type
+            : base.duration.type,
+        rounds: cfg.duration?.type === "1-round"
+          ? 1
+          : Math.max(1, Math.floor(Number(cfg.duration?.rounds) || 1)),
+        dismissible: cfg.duration?.dismissible !== false
+      },
+      activationChoices: {
+        damageType: {
+          enabled: Boolean(cfg.activationChoices?.damageType?.enabled),
+          options: Array.isArray(cfg.activationChoices?.damageType?.options)
+            ? [...new Set(cfg.activationChoices.damageType.options.map((x) => String(x).trim()).filter(Boolean))]
+            : [...base.activationChoices.damageType.options]
+        }
+      },
+      effects: []
+    };
+
+    const effects = Array.isArray(cfg.effects) && cfg.effects.length ? cfg.effects : base.effects;
+    result.effects = effects.map((block, index) => {
+      const saveMode = block?.save?.dc?.mode === "actorStatistic" ? "actorStatistic" : "custom";
+      const dc = saveMode === "actorStatistic"
+        ? { mode: "actorStatistic", statistic: String(block?.save?.dc?.statistic ?? "class-dc") }
+        : { mode: "custom", value: Math.max(0, Number(block?.save?.dc?.value) || 0) };
+
+      const outcomes = {};
+      for (const [key] of OUTCOMES) outcomes[key] = ensureOutcome(block?.outcomes?.[key], key);
+
+      return {
+        id: String(block?.id ?? newId()),
+        name: String(block?.name ?? `Effect Block ${index + 1}`).trim() || `Effect Block ${index + 1}`,
+        triggers: {
+          activation: Boolean(block?.triggers?.activation),
+          enter: Boolean(block?.triggers?.enter),
+          turnStart: Boolean(block?.triggers?.turnStart),
+          sourceTurnStart: Boolean(block?.triggers?.sourceTurnStart),
+          turnEnd: Boolean(block?.triggers?.turnEnd),
+          continuous: Boolean(block?.triggers?.continuous),
+          traitUse: Boolean(block?.triggers?.traitUse)
+        },
+        traitUse: {
+          trait: String(block?.traitUse?.trait ?? "vitality").trim().toLowerCase()
+        },
+        chatAlert: {
+          enabled: block?.chatAlert?.enabled != null
+            ? Boolean(block.chatAlert.enabled)
+            : Boolean(block?.triggers?.traitUse && block?.traitUse?.alertText),
+          text: String(
+            block?.chatAlert?.text
+            ?? block?.traitUse?.alertText
+            ?? "{zone}: {creature} triggered {block}."
+          ).trim()
+        },
+        repeat: ["every", "once-per-round", "once-per-zone", "once-per-activation"].includes(block?.repeat)
+          ? (block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat)
+          : "every",
+        save: {
+          enabled: Boolean(block?.save?.enabled),
+          type: ["fortitude", "reflex", "will", "choice"].includes(block?.save?.type) ? block.save.type : "will",
+          choices: Array.isArray(block?.save?.choices)
+            ? [...new Set(block.save.choices.filter((x) => ["fortitude", "reflex", "will"].includes(x)))]
+            : ["reflex", "will"],
+          dc,
+          basic: Boolean(block?.save?.basic)
+        },
+        damage: {
+          enabled: Boolean(block?.damage?.enabled),
+          formula: String(block?.damage?.formula ?? "").trim(),
+          typeMode: block?.damage?.typeMode === "activation-choice" ? "activation-choice" : "fixed",
+          type: String(block?.damage?.type ?? "untyped")
+        },
+        healing: {
+          enabled: Boolean(block?.healing?.enabled),
+          formula: String(block?.healing?.formula ?? "").trim()
+        },
+        outcomes,
+        immunity: {
+          duration: ["none", "1-round", "1-minute", "10-minutes"].includes(block?.immunity?.duration)
+            ? block.immunity.duration
+            : "none",
+          starts: Array.isArray(block?.immunity?.starts)
+            ? [...new Set(block.immunity.starts.filter((x) => [
+                "after-save", "success-or-better", "failure-or-worse", "affected", "condition-recovery"
+              ].includes(x)))]
+            : [],
+          recoveryCondition: String(block?.immunity?.recoveryCondition ?? "sickened")
+        }
+      };
+    });
+
+    // A Basic save always uses the standard PF2e degree multipliers.
+    for (const block of result.effects) {
+      if (block.save.enabled && block.save.basic) {
+        for (const key of ["criticalSuccess", "success", "failure", "criticalFailure"]) {
+          block.outcomes[key].damageMultiplier = BASIC_MULTIPLIERS[key];
+        }
+      }
+      if (!block.save.enabled) block.outcomes.noSave.damageMultiplier = 1;
+    }
+
+    // Intentionally no origin/source actor or token data in the serializable config.
+    return result;
+  }
+
+  let state = defaultConfig();
+  let loadedPreset = null; // { id, createdBy, modifiedBy, revision, ... } for the currently loaded/saved library entry
+
+  function canOverwritePreset(record = loadedPreset) {
+    if (!record) return true;
+    return game.user.isGM || record.createdBy?.userId === game.user.id;
+  }
+
+  function presetLabel(record) {
+    return `${record?.name ?? "Unnamed Zone"} (${record?.createdBy?.name ?? "Unknown"})`;
+  }
+
+  function selectionStillMatchesSource() {
+    const current = selectedSourceToken({ notify: false });
+    return Boolean(current && current.document.uuid === sourceToken.document.uuid);
+  }
+
+  function dcOptionsHtml(selectedDc) {
+    const choices = getDcChoices(sourceActor);
+    const selectedMode = selectedDc?.mode ?? "custom";
+    const selectedStat = selectedDc?.statistic ?? "";
+
+    let html = `<option value="custom" ${selectedMode === "custom" ? "selected" : ""}>Custom DC</option>`;
+    for (const option of choices) {
+      const value = `stat:${option.statistic}`;
+      const selected = selectedMode === "actorStatistic" && selectedStat === option.statistic;
+      html += `<option value="${esc(value)}" ${selected ? "selected" : ""}>${esc(option.label)} — DC ${option.dc}</option>`;
+    }
+
+    if (selectedMode === "actorStatistic" && !choices.some((x) => x.statistic === selectedStat)) {
+      html += `<option value="stat:${esc(selectedStat)}" selected>Unavailable on ${esc(sourceActor.name)}: ${esc(selectedStat)}</option>`;
+    }
+    return html;
+  }
+
+  function conditionOptions(selected) {
+    return getConditionChoices().map(({ slug, label }) =>
+      `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
+    ).join("");
+  }
+
+  function damageOptions(selected) {
+    return getDamageChoices().map(({ slug, label }) =>
+      `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
+    ).join("");
+  }
+
+  function renderConditionRow(condition, blockId, outcomeKey, index) {
+    const valued = isValuedCondition(condition.slug);
+    const value = valued ? (condition.value ?? 1) : "";
+    const linkedCondition = String(condition.condition ?? "sickened");
+    return `
+      <div class="zb-subrow zb-condition-row" data-condition-index="${index}">
+        <select data-field="condition-slug">${conditionOptions(condition.slug)}</select>
+        <label class="zb-inline">Value
+          <input data-field="condition-value" type="number" min="1" step="1" value="${value}" placeholder="${valued ? "1" : "—"}" ${valued ? "" : "disabled"}>
+        </label>
+        <select data-field="condition-removal" title="When should the condition be removed?">
+          <option value="normal" ${condition.removal === "normal" ? "selected" : ""}>Normal PF2e handling</option>
+          <option value="on-exit" ${condition.removal === "on-exit" ? "selected" : ""}>Remove on exit</option>
+          <option value="zone-end" ${condition.removal === "zone-end" ? "selected" : ""}>Remove when zone ends</option>
+          <option value="condition-end" ${condition.removal === "condition-end" ? "selected" : ""}>Remove when another condition ends</option>
+        </select>
+        <label class="zb-inline zb-condition-link">When
+          <select data-field="condition-link">${conditionOptions(linkedCondition)}</select>
+          ends
+        </label>
+        <button type="button" class="icon zb-remove-condition" data-block="${blockId}" data-outcome="${outcomeKey}" data-index="${index}" title="Remove condition"><i class="fa-solid fa-trash"></i></button>
+      </div>`;
+  }
+
+  function refreshConditionRow(row) {
+    if (!row) return;
+    const removal = row.querySelector('[data-field="condition-removal"]')?.value ?? "normal";
+    const link = row.querySelector(".zb-condition-link");
+    if (link) link.style.display = removal === "condition-end" ? "flex" : "none";
+  }
+
+  function renderEffectRow(effect, blockId, outcomeKey, index) {
+    return `
+      <div class="zb-subrow zb-effect-row" data-effect-index="${index}">
+        <input data-field="effect-uuid" type="text" value="${esc(effect.uuid)}" placeholder="Item UUID, e.g. Compendium.pf2e...Item...">
+        <select data-field="effect-removal" title="When should the Effect Item be removed?">
+          <option value="item-duration" ${effect.removal === "item-duration" ? "selected" : ""}>Use Effect Item duration</option>
+          <option value="on-exit" ${effect.removal === "on-exit" ? "selected" : ""}>Remove on exit</option>
+          <option value="zone-end" ${effect.removal === "zone-end" ? "selected" : ""}>Remove when zone ends</option>
+        </select>
+        <button type="button" class="icon zb-remove-effect" data-block="${blockId}" data-outcome="${outcomeKey}" data-index="${index}" title="Remove effect"><i class="fa-solid fa-trash"></i></button>
+      </div>`;
+  }
+
+  function renderOutcome(block, key, label) {
+    const outcome = block.outcomes[key] ?? emptyOutcome(key);
+    const isNoSave = key === "noSave";
+    const basicLocked = block.save.enabled && block.save.basic && !isNoSave;
+    return `
+      <section class="zb-outcome" data-outcome="${key}">
+        <div class="zb-outcome-head">
+          <strong>${esc(label)}</strong>
+          <label class="zb-inline zb-damage-multiplier">Damage / Healing ×
+            <select data-field="damage-multiplier" ${basicLocked ? "disabled" : ""}>
+              ${[
+                [0, "0 (none)"], [0.5, "½"], [1, "1×"], [2, "2×"]
+              ].map(([value, text]) => `<option value="${value}" ${Number(outcome.damageMultiplier) === value ? "selected" : ""}>${text}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+
+        <div class="zb-outcome-group">
+          <div class="zb-subhead">Conditions</div>
+          <div class="zb-condition-list">
+            ${outcome.conditions.map((c, i) => renderConditionRow(c, block.id, key, i)).join("") || `<div class="zb-empty">No conditions</div>`}
+          </div>
+          <button type="button" class="zb-small zb-add-condition" data-block="${block.id}" data-outcome="${key}"><i class="fa-solid fa-plus"></i> Condition</button>
+        </div>
+
+        <div class="zb-outcome-group">
+          <div class="zb-subhead">PF2e Effect Items</div>
+          <div class="zb-effect-list">
+            ${outcome.effects.map((e, i) => renderEffectRow(e, block.id, key, i)).join("") || `<div class="zb-empty">No Effect Items</div>`}
+          </div>
+          <button type="button" class="zb-small zb-add-effect" data-block="${block.id}" data-outcome="${key}"><i class="fa-solid fa-plus"></i> Effect Item</button>
+        </div>
+      </section>`;
+  }
+
+  function renderBlock(block, index) {
+    const trigger = (key, label) => `
+      <label class="zb-check"><input type="checkbox" data-trigger="${key}" ${block.triggers[key] ? "checked" : ""}> ${esc(label)}</label>`;
+
+    return `
+      <details class="zb-block" data-block-id="${esc(block.id)}" ${index === 0 ? "open" : ""}>
+        <summary><span>${esc(block.name || `Effect Block ${index + 1}`)}</span><span class="zb-summary-note">click to expand/collapse</span></summary>
+        <div class="zb-block-body">
+          <div class="zb-grid two">
+            <label>Block name
+              <input data-field="block-name" type="text" value="${esc(block.name)}">
+            </label>
+            <label>Trigger frequency
+              <select data-field="repeat">
+                <option value="every" ${block.repeat === "every" ? "selected" : ""}>Every valid trigger</option>
+                <option value="once-per-round" ${block.repeat === "once-per-round" ? "selected" : ""}>Once per round per creature</option>
+                <option value="once-per-zone" ${block.repeat === "once-per-zone" ? "selected" : ""}>Once per zone lifetime per creature</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset>
+            <legend>Triggers</legend>
+            <div class="zb-check-grid">
+              ${trigger("activation", "On Activation")}
+              ${trigger("enter", "On Entry")}
+              ${trigger("turnStart", "Start of Turn")}
+              ${trigger("sourceTurnStart", "Source Turn Start")}
+              ${trigger("turnEnd", "End of Turn")}
+              ${trigger("continuous", "Continuous While Inside")}
+              ${trigger("traitUse", "On Trait Use")}
+            </div>
+            <p class="notes"><b>Source Turn Start</b> fires when the tracked source's combat turn starts, even if the source is outside a fixed Area Region. It does not fire on the source turn during which the zone is first created.</p>
+          </fieldset>
+
+          <fieldset class="zb-trait-use-options">
+            <legend>Trait Use Trigger</legend>
+            <label>Watched trait
+              <input data-field="trait-use-trait" type="text" value="${esc(block.traitUse?.trait ?? "vitality")}" placeholder="vitality">
+            </label>
+            <p class="notes">The block runs when a creature inside the zone uses an item, spell, or ability with this trait. For spells, PF2e must mark the spell as actually cast; generic abilities are detected from their PF2e chat card.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Chat Alert</legend>
+            <label class="zb-check"><input type="checkbox" data-field="chat-alert-enabled" ${block.chatAlert?.enabled ? "checked" : ""}> Post a chat alert when this Effect Block triggers</label>
+            <div class="zb-chat-alert-options">
+              <label>Chat alert text
+                <input data-field="chat-alert-text" type="text" value="${esc(block.chatAlert?.text ?? "")}">
+              </label>
+              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, <b>{trigger}</b>, and <b>{outcome}</b>. Trait-use triggers also provide <b>{item}</b> and <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets. For a saving-throw block, the alert is posted before the save requests, so <b>{outcome}</b> is blank.</p>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Saving Throw</legend>
+            <label class="zb-check"><input type="checkbox" data-field="save-enabled" ${block.save.enabled ? "checked" : ""}> Require a saving throw</label>
+            <div class="zb-save-options">
+              <div class="zb-grid three">
+                <label>Save
+                  <select data-field="save-type">
+                    <option value="fortitude" ${block.save.type === "fortitude" ? "selected" : ""}>Fortitude</option>
+                    <option value="reflex" ${block.save.type === "reflex" ? "selected" : ""}>Reflex</option>
+                    <option value="will" ${block.save.type === "will" ? "selected" : ""}>Will</option>
+                    <option value="choice" ${block.save.type === "choice" ? "selected" : ""}>Target chooses...</option>
+                  </select>
+                </label>
+                <label>DC source
+                  <select data-field="dc-source">${dcOptionsHtml(block.save.dc)}</select>
+                </label>
+                <label class="zb-custom-dc">Custom DC
+                  <input data-field="custom-dc" type="number" min="0" step="1" value="${block.save.dc.mode === "custom" ? block.save.dc.value : 10}">
+                </label>
+              </div>
+              <div class="zb-save-choice-options">
+                <div class="zb-subhead">Allowed saves</div>
+                <div class="zb-check-grid">
+                  ${[
+                    ["fortitude", "Fortitude"],
+                    ["reflex", "Reflex"],
+                    ["will", "Will"]
+                  ].map(([slug, label]) => `<label class="zb-check"><input type="checkbox" data-save-choice="${slug}" ${(block.save.choices ?? []).includes(slug) ? "checked" : ""}> ${label}</label>`).join("")}
+                </div>
+                <div class="notes">The affected creature chooses one of these saves when the request is posted.</div>
+              </div>
+              <label class="zb-check"><input type="checkbox" data-field="basic-save" ${block.save.basic ? "checked" : ""}> Basic save (standard 0 / half / full / double amount)</label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Damage</legend>
+            <label class="zb-check"><input type="checkbox" data-field="damage-enabled" ${block.damage.enabled ? "checked" : ""}> This block deals damage</label>
+            <div class="zb-damage-options">
+              <div class="zb-grid three">
+                <label>Damage formula
+                  <input data-field="damage-formula" type="text" value="${esc(block.damage.formula)}" placeholder="e.g. 6d8">
+                </label>
+                <label>Damage type source
+                  <select data-field="damage-type-mode">
+                    <option value="fixed" ${block.damage.typeMode !== "activation-choice" ? "selected" : ""}>Fixed damage type</option>
+                    <option value="activation-choice" ${block.damage.typeMode === "activation-choice" ? "selected" : ""}>Shared activation choice</option>
+                  </select>
+                </label>
+                <label class="zb-fixed-damage-type">Damage type
+                  <select data-field="damage-type">${damageOptions(block.damage.type)}</select>
+                </label>
+              </div>
+              <div class="zb-shared-damage-note notes">Uses the zone's shared damage type chosen when the zone activates.</div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Healing</legend>
+            <label class="zb-check"><input type="checkbox" data-field="healing-enabled" ${block.healing?.enabled ? "checked" : ""}> This block rolls healing</label>
+            <div class="zb-healing-options">
+              <label>Healing formula
+                <input data-field="healing-formula" type="text" value="${esc(block.healing?.formula ?? "")}" placeholder="e.g. 1d8">
+              </label>
+              <p class="notes">Creates a normal PF2e healing roll with the standard Apply Healing button. If damage and healing are both enabled, both cards are posted and the GM can apply the appropriate one.</p>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Degree-of-success payloads</legend>
+            <p class="notes">Conditions and Effect Items can be added to each result. Damage and Healing use the formulas above and the multiplier shown for that result.</p>
+            <div class="zb-save-outcomes">
+              ${OUTCOMES.filter(([key]) => key !== "noSave").map(([key, label]) => renderOutcome(block, key, label)).join("")}
+            </div>
+            <div class="zb-nosave-outcomes">
+              ${renderOutcome(block, "noSave", "No Save")}
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Temporary Immunity</legend>
+            <div class="zb-grid two">
+              <label>Immunity duration
+                <select data-field="immunity-duration">
+                  <option value="none" ${block.immunity.duration === "none" ? "selected" : ""}>None</option>
+                  <option value="1-round" ${block.immunity.duration === "1-round" ? "selected" : ""}>1 round</option>
+                  <option value="1-minute" ${block.immunity.duration === "1-minute" ? "selected" : ""}>1 minute</option>
+                  <option value="10-minutes" ${block.immunity.duration === "10-minutes" ? "selected" : ""}>10 minutes</option>
+                </select>
+              </label>
+              <label class="zb-recovery-condition">Recovery condition
+                <select data-field="recovery-condition">${conditionOptions(block.immunity.recoveryCondition)}</select>
+              </label>
+            </div>
+            <div class="zb-immunity-starts">
+              <div class="zb-subhead">Immunity begins when</div>
+              <div class="zb-immunity-options">
+                ${[
+                  ["after-save", "After any save"],
+                  ["success-or-better", "On success or better"],
+                  ["failure-or-worse", "On failure or worse"],
+                  ["affected", "When actually affected"],
+                  ["condition-recovery", "After recovering from condition"]
+                ].map(([value, label]) => `<label class="zb-check"><input type="checkbox" data-immunity-start="${value}" ${block.immunity.starts.includes(value) ? "checked" : ""}> ${label}</label>`).join("")}
+              </div>
+              <div class="notes">Choose at least one start condition when immunity duration is not None.</div>
+            </div>
+          </fieldset>
+
+          <div class="zb-block-actions">
+              <button type="button" class="zb-duplicate-block" data-block="${esc(block.id)}"><i class="fa-solid fa-copy"></i> Duplicate Block</button>
+              <button type="button" class="zb-add-block"><i class="fa-solid fa-plus"></i> Add Effect Block</button>
+            <button type="button" class="zb-remove-block danger" data-block="${esc(block.id)}" ${state.effects.length <= 1 ? "disabled" : ""}><i class="fa-solid fa-trash"></i> Remove Block</button>
+          </div>
+        </div>
+      </details>`;
+  }
+
+  function renderRoot() {
+    const commonSet = new Set(COMMON_TRAITS);
+    const customTraits = state.traits.filter((t) => !commonSet.has(t)).join(", ");
+    const selectionWarning = selectionStillMatchesSource()
+      ? ""
+      : `<div class="zb-warning"><i class="fa-solid fa-triangle-exclamation"></i> The controlled token has changed since this builder was opened. Click <b>Use Current Selection</b> before previewing or creating a zone.</div>`;
+
+    return `
+      <style>
+        .pf2e-zone-builder { font-size:14px; position:relative; max-height:calc(100vh - 180px); min-height:320px; overflow-y:auto; overflow-x:hidden; padding-right:6px; overscroll-behavior:contain; scrollbar-gutter:stable; }
+        .pf2e-zone-builder * { box-sizing: border-box; }
+        .pf2e-zone-builder .zb-scroll { overflow:visible; padding-right:0; }
+        .pf2e-zone-builder .zb-source { position:sticky; top:0; z-index:5; display:flex; gap:12px; align-items:center; padding:10px; border:1px solid var(--color-border-light-2, #888); border-radius:6px; margin-bottom:8px; background:#f2efe6; color:#191813; box-shadow:0 2px 5px rgba(0,0,0,.18); }
+        .pf2e-zone-builder .zb-source img { width:64px; height:64px; object-fit:cover; border:0; border-radius:4px; }
+        .pf2e-zone-builder .zb-source-main { flex:1; min-width:0; }
+        .pf2e-zone-builder .zb-source-name { font-size:1.25em; font-weight:700; }
+        .pf2e-zone-builder .zb-muted, .pf2e-zone-builder .notes, .pf2e-zone-builder .zb-summary-note { opacity:.72; font-size:.88em; }
+        .pf2e-zone-builder .zb-warning { padding:8px 10px; margin:8px 0; border-left:4px solid #c69200; background:rgba(198,146,0,.12); }
+        .pf2e-zone-builder .zb-toolbar { flex:0 0 auto; display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 12px; }
+        .pf2e-zone-builder .zb-toolbar button { flex:0 0 auto; }
+        .pf2e-zone-builder .zb-section { border:1px solid var(--color-border-light-2, #888); border-radius:6px; padding:10px; margin:10px 0; }
+        .pf2e-zone-builder .zb-section > h3 { margin:0 0 8px; }
+        .pf2e-zone-builder .zb-grid { display:grid; gap:8px 12px; }
+        .pf2e-zone-builder .zb-grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .pf2e-zone-builder .zb-grid.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+        .pf2e-zone-builder label { display:flex; flex-direction:column; gap:3px; }
+        .pf2e-zone-builder input[type=text], .pf2e-zone-builder input[type=number], .pf2e-zone-builder select, .pf2e-zone-builder textarea { width:100%; }
+        .pf2e-zone-builder .zb-check { flex-direction:row; align-items:center; gap:5px; }
+        .pf2e-zone-builder .zb-check input { flex:0 0 auto; }
+        .pf2e-zone-builder .zb-check-grid { display:flex; flex-wrap:wrap; gap:7px 16px; }
+        .pf2e-zone-builder .zb-immunity-starts { margin-top:8px; }
+        .pf2e-zone-builder .zb-immunity-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 16px; margin-top:5px; }
+        .pf2e-zone-builder .zb-immunity-starts.is-disabled { opacity:.55; }
+        .pf2e-zone-builder .zb-inline { flex-direction:row; align-items:center; gap:5px; white-space:nowrap; }
+        .pf2e-zone-builder .zb-inline input, .pf2e-zone-builder .zb-inline select { width:auto; min-width:60px; }
+        .pf2e-zone-builder .zb-traits { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:6px 14px; margin-bottom:8px; }
+        .pf2e-zone-builder .zb-activation-damage-choice { padding:8px; border:1px solid rgba(127,127,127,.3); border-radius:5px; }
+        .pf2e-zone-builder .zb-condition-link {
+          grid-column:1 / 4;
+          grid-row:2;
+          align-items:center;
+          justify-self:start;
+          gap:4px;
+          white-space:nowrap;
+          margin-top:2px;
+        }
+        .pf2e-zone-builder .zb-condition-link select { min-width:160px; }
+        .pf2e-zone-builder .zb-condition-row > button.icon {
+          grid-column:4;
+          grid-row:1;
+        }
+        .pf2e-zone-builder details.zb-block { border:1px solid var(--color-border-light-2, #888); border-radius:6px; margin:8px 0; overflow:hidden; }
+        .pf2e-zone-builder details.zb-block > summary { cursor:pointer; padding:9px 10px; font-weight:700; background:rgba(127,127,127,.10); display:flex; justify-content:space-between; gap:12px; }
+        .pf2e-zone-builder .zb-block-body { padding:10px; }
+        .pf2e-zone-builder fieldset { border:1px solid var(--color-border-light-2, #999); border-radius:5px; margin:10px 0; padding:8px; }
+        .pf2e-zone-builder legend { font-weight:700; padding:0 5px; }
+        .pf2e-zone-builder .zb-outcome { border-top:1px solid rgba(127,127,127,.35); padding:8px 0; }
+        .pf2e-zone-builder .zb-outcome:first-child { border-top:0; }
+        .pf2e-zone-builder .zb-outcome-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; }
+        .pf2e-zone-builder .zb-outcome-group { margin:6px 0 8px 10px; }
+        .pf2e-zone-builder .zb-subhead { font-weight:600; margin-bottom:4px; }
+        .pf2e-zone-builder .zb-subrow { display:grid; grid-template-columns:minmax(150px,1.6fr) minmax(100px,.7fr) minmax(160px,1fr) 32px; gap:6px; align-items:end; margin:4px 0; }
+        .pf2e-zone-builder .zb-effect-row { grid-template-columns:minmax(260px,2fr) minmax(180px,1fr) 32px; }
+        .pf2e-zone-builder .zb-subrow button.icon { min-width:30px; height:30px; padding:0; }
+        .pf2e-zone-builder .zb-empty { opacity:.6; font-style:italic; margin:3px 0; }
+        .pf2e-zone-builder .zb-small { width:auto; padding:3px 8px; margin-top:3px; }
+        .pf2e-zone-builder .zb-block-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:10px; }
+        .pf2e-zone-builder button.danger { border-color:#a22; }
+        .pf2e-zone-builder .zb-bottom { position:sticky; bottom:0; z-index:5; display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:10px; padding:10px 8px; border-top:1px solid rgba(127,127,127,.35); background:#f2efe6; color:#191813; box-shadow:0 -2px 5px rgba(0,0,0,.15); }
+        .pf2e-zone-builder .zb-bottom .right { display:flex; gap:6px; }
+        @media (max-width: 850px) {
+          .pf2e-zone-builder .zb-grid.two, .pf2e-zone-builder .zb-grid.three { grid-template-columns:1fr; }
+          .pf2e-zone-builder .zb-subrow, .pf2e-zone-builder .zb-effect-row { grid-template-columns:1fr; }
+          .pf2e-zone-builder .zb-condition-link,
+          .pf2e-zone-builder .zb-condition-row > button.icon {
+            grid-column:1;
+            grid-row:auto;
+          }
+          .pf2e-zone-builder .zb-immunity-options { grid-template-columns:1fr; }
+        }
+      </style>
+
+      <div class="pf2e-zone-builder">
+        <div class="zb-source">
+          <img src="${esc(sourceToken.document.texture?.src ?? sourceActor.img)}" alt="">
+          <div class="zb-source-main">
+            <div class="zb-source-name"><b>Source:</b> ${esc(sourceToken.name === sourceActor.name ? sourceActor.name : `${sourceToken.name} (${sourceActor.name})`)}</div>
+          </div>
+          <button type="button" class="zb-use-selection"><i class="fa-solid fa-crosshairs"></i> Use Current Selection</button>
+        </div>
+        ${selectionWarning}
+
+        <div class="zb-toolbar">
+          <button type="button" class="zb-load-saved"><i class="fa-solid fa-folder-open"></i> Load Saved Zone</button>
+          <button type="button" class="zb-save"${loadedPreset && !canOverwritePreset() ? " disabled" : ""}><i class="fa-solid fa-floppy-disk"></i> Save</button>
+          <button type="button" class="zb-save-as"><i class="fa-solid fa-copy"></i> Save As</button>
+          <button type="button" class="zb-import"><i class="fa-solid fa-file-import"></i> Import JSON</button>
+          <button type="button" class="zb-export"><i class="fa-solid fa-file-export"></i> Export JSON</button>
+          <button type="button" class="zb-manage"><i class="fa-solid fa-map-location-dot"></i> Manage Existing Zones</button>
+        </div>
+        ${loadedPreset ? `<div class="zb-summary-note">Loaded saved zone: <b>${esc(presetLabel(loadedPreset))}</b>${canOverwritePreset() ? "" : " · read-only; use Save As to create your own copy"}</div>` : ""}
+
+        <div class="zb-scroll">
+          <section class="zb-section">
+            <h3>Zone</h3>
+            <div class="zb-grid two">
+              <label>Name
+                <input data-zone="name" type="text" value="${esc(state.name)}">
+              </label>
+              <label>Zone type
+                <select data-zone="mode">
+                  <option value="emanation" ${state.mode === "emanation" ? "selected" : ""}>Emanation — follows source token</option>
+                  <option value="area" ${state.mode === "area" ? "selected" : ""}>Area — fixed circular burst</option>
+                </select>
+              </label>
+              <label>Radius (feet)
+                <input data-zone="radius" type="number" min="1" step="5" value="${state.radius}">
+              </label>
+              <label>Visibility
+                <select data-zone="visibility">
+                  <option value="all" ${state.visibility === "all" ? "selected" : ""}>Visible to everyone</option>
+                  <option value="gm" ${state.visibility === "gm" ? "selected" : ""}>GM only</option>
+                </select>
+              </label>
+              <label>Affects
+                <select data-zone="affects">
+                  <option value="enemies" ${state.targeting.affects === "enemies" ? "selected" : ""}>Enemies</option>
+                  <option value="allies" ${state.targeting.affects === "allies" ? "selected" : ""}>Allies</option>
+                  <option value="both" ${state.targeting.affects === "both" ? "selected" : ""}>Both</option>
+                </select>
+              </label>
+            </div>
+            <label class="zb-check" style="margin-top:8px"><input data-zone="include-self" type="checkbox" ${state.targeting.includeSelf ? "checked" : ""}> Include source actor</label>
+          </section>
+
+          <section class="zb-section">
+            <h3>Traits</h3>
+            <div class="zb-traits">
+              ${COMMON_TRAITS.map((trait) => `<label class="zb-check"><input type="checkbox" data-trait="${trait}" ${state.traits.includes(trait) ? "checked" : ""}> ${titleCase(trait)}</label>`).join("")}
+            </div>
+            <label>Other trait slugs (comma-separated)
+              <input data-zone="custom-traits" type="text" value="${esc(customTraits)}" placeholder="e.g. disease, magical">
+            </label>
+          </section>
+
+          <section class="zb-section">
+            <h3>Duration</h3>
+            <div class="zb-grid two">
+              <label>Duration
+                <select data-zone="duration-type">
+                  <option value="custom-rounds" ${state.duration.type === "custom-rounds" ? "selected" : ""}>X rounds</option>
+                  <option value="1-minute" ${state.duration.type === "1-minute" ? "selected" : ""}>1 minute</option>
+                  <option value="10-minutes" ${state.duration.type === "10-minutes" ? "selected" : ""}>10 minutes</option>
+                  <option value="until-dismissed" ${state.duration.type === "until-dismissed" ? "selected" : ""}>Until dismissed</option>
+                  <option value="unlimited" ${state.duration.type === "unlimited" ? "selected" : ""}>Unlimited</option>
+                </select>
+              </label>
+              <label class="zb-duration-rounds">Rounds
+                <input data-zone="duration-rounds" type="number" min="1" step="1" value="${state.duration.rounds}">
+              </label>
+            </div>
+            <label class="zb-check" style="margin-top:8px"><input data-zone="dismissible" type="checkbox" ${state.duration.dismissible ? "checked" : ""}> Source can dismiss this zone</label>
+          </section>
+
+          <section class="zb-section">
+            <h3>Activation Choices</h3>
+            <label class="zb-check"><input data-zone="damage-choice-enabled" type="checkbox" ${state.activationChoices?.damageType?.enabled ? "checked" : ""}> Choose one shared damage type (ex. Shadow Raid) when the zone activates</label>
+            <div class="zb-activation-damage-choice" style="margin-top:8px">
+              <p class="notes">Any damage block set to <b>Shared activation choice</b> will use the same selected type.</p>
+              <div class="zb-check-grid">
+                ${getDamageChoices().map(({ slug, label }) => `<label class="zb-check"><input type="checkbox" data-damage-choice-type="${esc(slug)}" ${(state.activationChoices?.damageType?.options ?? []).includes(slug) ? "checked" : ""}> ${esc(label)}</label>`).join("")}
+              </div>
+            </div>
+          </section>
+
+          <section class="zb-section">
+            <h3>Effect Blocks</h3>
+            <p class="notes">A zone can have more than one block. Activation affects eligible creatures already inside when the zone is created. Entry only fires when a creature later crosses from outside to inside. Blocks can also use creature turn-start, source turn-start, turn-end, continuous occupancy, or trait-use triggers. Source Turn Start follows the tracked source combatant even when the source is outside a fixed Area. Chat Alert is an optional output for any block.</p>
+            <div class="zb-block-list">
+              ${state.effects.map((block, i) => renderBlock(block, i)).join("")}
+            </div>
+          </section>
+
+        </div>
+
+        <div class="zb-bottom">
+          <span class="zb-muted">Builder ${BUILDER_VERSION} · Runtime ${RUNTIME_VERSION} · Schema ${SCHEMA_VERSION} · Player GM bridge: ${GM_WORKER_NAME}</span>
+          <div class="right">
+            <button type="button" class="zb-close"><i class="fa-solid fa-xmark"></i> Close</button>
+            <button type="button" class="zb-validate"><i class="fa-solid fa-list-check"></i> Validate</button>
+            <button type="button" class="zb-preview"><i class="fa-solid fa-message"></i> Validate & Preview</button>
+            <button type="button" class="zb-create"><i class="fa-solid fa-circle-plus"></i> Create Zone</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function field(root, selector) {
+    return root.querySelector(selector);
+  }
+
+  function readOutcome(outcomeEl, key) {
+    const conditions = [...outcomeEl.querySelectorAll(".zb-condition-row")].map((row) => {
+      const slug = row.querySelector('[data-field="condition-slug"]').value;
+      const rawValue = row.querySelector('[data-field="condition-value"]').value.trim();
+      const removal = row.querySelector('[data-field="condition-removal"]').value;
+      return {
+        slug,
+        value: isValuedCondition(slug)
+          ? Math.max(1, Math.floor(Number(rawValue) || 1))
+          : null,
+        removal,
+        condition: removal === "condition-end"
+          ? row.querySelector('[data-field="condition-link"]').value
+          : null
+      };
+    });
+
+    const effects = [...outcomeEl.querySelectorAll(".zb-effect-row")].map((row) => ({
+      uuid: row.querySelector('[data-field="effect-uuid"]').value.trim(),
+      removal: row.querySelector('[data-field="effect-removal"]').value
+    }));
+
+    return {
+      damageMultiplier: Number(outcomeEl.querySelector('[data-field="damage-multiplier"]').value),
+      conditions,
+      effects
+    };
+  }
+
+  function readConfig(root) {
+    const commonTraits = [...root.querySelectorAll("[data-trait]:checked")].map((x) => x.dataset.trait);
+    const customTraits = field(root, '[data-zone="custom-traits"]').value
+      .split(",")
+      .map((x) => x.trim().toLowerCase().replace(/\s+/g, "-"))
+      .filter(Boolean);
+
+    const cfg = {
+      schemaVersion: SCHEMA_VERSION,
+      name: field(root, '[data-zone="name"]').value.trim(),
+      mode: field(root, '[data-zone="mode"]').value,
+      radius: Number(field(root, '[data-zone="radius"]').value),
+      visibility: field(root, '[data-zone="visibility"]').value,
+      targeting: {
+        affects: field(root, '[data-zone="affects"]').value,
+        includeSelf: field(root, '[data-zone="include-self"]').checked
+      },
+      traits: [...new Set([...commonTraits, ...customTraits])],
+      duration: {
+        type: field(root, '[data-zone="duration-type"]').value,
+        rounds: Number(field(root, '[data-zone="duration-rounds"]').value),
+        dismissible: field(root, '[data-zone="dismissible"]').checked
+      },
+      activationChoices: {
+        damageType: {
+          enabled: field(root, '[data-zone="damage-choice-enabled"]').checked,
+          options: [...root.querySelectorAll("[data-damage-choice-type]:checked")].map((x) => x.dataset.damageChoiceType)
+        }
+      },
+      effects: []
+    };
+
+    for (const [index, blockEl] of [...root.querySelectorAll("[data-block-id]")].entries()) {
+      const dcSource = blockEl.querySelector('[data-field="dc-source"]').value;
+      const dc = dcSource === "custom"
+        ? { mode: "custom", value: Number(blockEl.querySelector('[data-field="custom-dc"]').value) }
+        : { mode: "actorStatistic", statistic: dcSource.replace(/^stat:/, "") };
+
+      const outcomes = {};
+      for (const [key] of OUTCOMES) {
+        const outcomeEl = blockEl.querySelector(`[data-outcome="${key}"]`);
+        outcomes[key] = readOutcome(outcomeEl, key);
+      }
+
+      cfg.effects.push({
+        id: blockEl.dataset.blockId || newId(),
+        name: blockEl.querySelector('[data-field="block-name"]').value.trim() || `Effect Block ${index + 1}`,
+        triggers: {
+          activation: blockEl.querySelector('[data-trigger="activation"]').checked,
+          enter: blockEl.querySelector('[data-trigger="enter"]').checked,
+          turnStart: blockEl.querySelector('[data-trigger="turnStart"]').checked,
+          sourceTurnStart: blockEl.querySelector('[data-trigger="sourceTurnStart"]').checked,
+          turnEnd: blockEl.querySelector('[data-trigger="turnEnd"]').checked,
+          continuous: blockEl.querySelector('[data-trigger="continuous"]').checked,
+          traitUse: blockEl.querySelector('[data-trigger="traitUse"]').checked
+        },
+        traitUse: {
+          trait: blockEl.querySelector('[data-field="trait-use-trait"]').value.trim().toLowerCase()
+        },
+        chatAlert: {
+          enabled: blockEl.querySelector('[data-field="chat-alert-enabled"]').checked,
+          text: blockEl.querySelector('[data-field="chat-alert-text"]').value.trim()
+        },
+        repeat: blockEl.querySelector('[data-field="repeat"]').value,
+        save: {
+          enabled: blockEl.querySelector('[data-field="save-enabled"]').checked,
+          type: blockEl.querySelector('[data-field="save-type"]').value,
+          choices: [...blockEl.querySelectorAll("[data-save-choice]:checked")].map((x) => x.dataset.saveChoice),
+          dc,
+          basic: blockEl.querySelector('[data-field="basic-save"]').checked
+        },
+        damage: {
+          enabled: blockEl.querySelector('[data-field="damage-enabled"]').checked,
+          formula: blockEl.querySelector('[data-field="damage-formula"]').value.trim(),
+          typeMode: blockEl.querySelector('[data-field="damage-type-mode"]').value,
+          type: blockEl.querySelector('[data-field="damage-type"]').value
+        },
+        healing: {
+          enabled: blockEl.querySelector('[data-field="healing-enabled"]').checked,
+          formula: blockEl.querySelector('[data-field="healing-formula"]').value.trim()
+        },
+        outcomes,
+        immunity: {
+          duration: blockEl.querySelector('[data-field="immunity-duration"]').value,
+          starts: [...blockEl.querySelectorAll("[data-immunity-start]:checked")].map((x) => x.dataset.immunityStart),
+          recoveryCondition: blockEl.querySelector('[data-field="recovery-condition"]').value
+        }
+      });
+    }
+
+    return normalizeConfig(cfg);
+  }
+
+  function getPayloadCount(block) {
+    const keys = block.save.enabled
+      ? ["criticalSuccess", "success", "failure", "criticalFailure"]
+      : ["noSave"];
+    return keys.reduce((count, key) => {
+      const outcome = block.outcomes[key];
+      return count + outcome.conditions.length + outcome.effects.length;
+    }, 0);
+  }
+
+  function validateConfig(cfg, { requireCurrentSource = false } = {}) {
+    const errors = [];
+    const warnings = [];
+    const dcChoices = getDcChoices(sourceActor);
+
+    if (requireCurrentSource && !selectionStillMatchesSource()) {
+      errors.push("The controlled token has changed. Click 'Use Current Selection' before continuing.");
+    }
+    if (!cfg.name) errors.push("Zone name is required.");
+    if (!(cfg.radius > 0)) errors.push("Radius must be greater than 0.");
+    if (!cfg.effects.length) errors.push("At least one effect block is required.");
+
+    const sharedDamageChoice = cfg.activationChoices?.damageType;
+    if (sharedDamageChoice?.enabled) {
+      if (!sharedDamageChoice.options.length) {
+        errors.push("Shared activation damage type is enabled but no allowed damage types are selected.");
+      } else if (sharedDamageChoice.options.length === 1) {
+        warnings.push("Shared activation damage type has only one allowed type; a fixed damage type may be simpler.");
+      }
+    }
+
+    cfg.effects.forEach((block, index) => {
+      const prefix = `${block.name || `Effect Block ${index + 1}`}:`;
+      if (!Object.values(block.triggers).some(Boolean)) errors.push(`${prefix} select at least one trigger.`);
+      if (block.triggers.traitUse && !block.traitUse?.trait) {
+        errors.push(`${prefix} On Trait Use requires a watched trait.`);
+      }
+      if (block.chatAlert?.enabled && !block.chatAlert?.text) {
+        errors.push(`${prefix} Chat Alert is enabled but no alert text was entered.`);
+      }
+
+      if (block.save.enabled) {
+        if (block.save.type === "choice" && block.save.choices.length < 2) {
+          errors.push(`${prefix} target-choice save requires at least two allowed saves.`);
+        }
+        if (block.save.dc.mode === "custom") {
+          if (!(Number(block.save.dc.value) > 0)) errors.push(`${prefix} custom save DC must be greater than 0.`);
+        } else if (!dcChoices.some((x) => x.statistic === block.save.dc.statistic)) {
+          errors.push(`${prefix} DC statistic '${block.save.dc.statistic}' is not available on ${sourceActor.name}.`);
+        }
+      }
+
+      if (block.damage.enabled && !block.damage.formula) errors.push(`${prefix} damage is enabled but no formula was entered.`);
+      if (block.healing?.enabled && !block.healing.formula) errors.push(`${prefix} healing is enabled but no formula was entered.`);
+      if (block.damage.enabled && block.damage.typeMode === "activation-choice" && !sharedDamageChoice?.enabled) {
+        errors.push(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`);
+      }
+
+      for (const [outcomeKey, outcome] of Object.entries(block.outcomes)) {
+        for (const condition of outcome.conditions ?? []) {
+          if (condition.removal === "condition-end") {
+            if (!condition.condition) {
+              errors.push(`${prefix} ${titleCase(outcomeKey)} condition '${condition.slug}' must name the condition that ends it.`);
+            } else if (condition.condition === condition.slug) {
+              warnings.push(`${prefix} ${titleCase(outcomeKey)} condition '${condition.slug}' is set to end when itself ends.`);
+            }
+          }
+        }
+      }
+
+      const relevantOutcomes = block.save.enabled
+        ? ["criticalSuccess", "success", "failure", "criticalFailure"]
+        : ["noSave"];
+
+      for (const key of relevantOutcomes) {
+        const outcome = block.outcomes[key];
+        outcome.effects.forEach((effect, i) => {
+          if (!effect.uuid) errors.push(`${prefix} ${titleCase(key)} Effect Item ${i + 1} has no UUID.`);
+        });
+      }
+
+      if (!block.damage.enabled && !block.healing?.enabled && getPayloadCount(block) === 0 && !block.chatAlert?.enabled) {
+        warnings.push(`${prefix} has no damage, healing, conditions, Effect Items, or Chat Alert in its active outcomes.`);
+      }
+
+      if (block.immunity.duration !== "none" && block.immunity.starts.length === 0) {
+        errors.push(`${prefix} immunity has a duration but no start condition.`);
+      }
+      if (block.immunity.starts.includes("after-save") && !block.save.enabled) {
+        warnings.push(`${prefix} 'After any save' immunity is selected but this block has no save.`);
+      }
+      if (block.immunity.starts.includes("condition-recovery") && !block.immunity.recoveryCondition) {
+        errors.push(`${prefix} choose a recovery condition for condition-based immunity.`);
+      }
+      if (block.triggers.continuous && (block.damage.enabled || block.healing?.enabled)) {
+        warnings.push(`${prefix} continuous damage/healing will need special runtime semantics; verify this is intentional.`);
+      }
+    });
+
+    return { errors, warnings };
+  }
+
+  function refreshVisibility(root) {
+    const durationType = field(root, '[data-zone="duration-type"]').value;
+    field(root, ".zb-duration-rounds").style.display = durationType === "custom-rounds" ? "flex" : "none";
+
+    const activationDamageEnabled = field(root, '[data-zone="damage-choice-enabled"]').checked;
+    field(root, ".zb-activation-damage-choice").style.display = activationDamageEnabled ? "block" : "none";
+
+    for (const blockEl of root.querySelectorAll("[data-block-id]")) {
+      const saveEnabled = blockEl.querySelector('[data-field="save-enabled"]').checked;
+      const saveType = blockEl.querySelector('[data-field="save-type"]').value;
+      const basic = blockEl.querySelector('[data-field="basic-save"]').checked;
+      const dcSource = blockEl.querySelector('[data-field="dc-source"]').value;
+      const damageEnabled = blockEl.querySelector('[data-field="damage-enabled"]').checked;
+      const healingEnabled = blockEl.querySelector('[data-field="healing-enabled"]').checked;
+      const damageTypeMode = blockEl.querySelector('[data-field="damage-type-mode"]').value;
+      const immunityDuration = blockEl.querySelector('[data-field="immunity-duration"]').value;
+      const recoveryChecked = Boolean(blockEl.querySelector('[data-immunity-start="condition-recovery"]:checked'));
+      const traitUseEnabled = blockEl.querySelector('[data-trigger="traitUse"]').checked;
+      const chatAlertEnabled = blockEl.querySelector('[data-field="chat-alert-enabled"]').checked;
+
+      blockEl.querySelector(".zb-trait-use-options").style.display = traitUseEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-chat-alert-options").style.display = chatAlertEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-save-options").style.display = saveEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-save-choice-options").style.display = saveEnabled && saveType === "choice" ? "block" : "none";
+      blockEl.querySelector(".zb-custom-dc").style.display = dcSource === "custom" ? "flex" : "none";
+      blockEl.querySelector(".zb-damage-options").style.display = damageEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-healing-options").style.display = healingEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-fixed-damage-type").style.display = damageTypeMode === "fixed" ? "flex" : "none";
+      blockEl.querySelector(".zb-shared-damage-note").style.display = damageTypeMode === "activation-choice" ? "block" : "none";
+      blockEl.querySelector(".zb-save-outcomes").style.display = saveEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-nosave-outcomes").style.display = saveEnabled ? "none" : "block";
+
+      const immunityStarts = blockEl.querySelector(".zb-immunity-starts");
+      immunityStarts.classList.toggle("is-disabled", immunityDuration === "none");
+      for (const input of immunityStarts.querySelectorAll("[data-immunity-start]")) {
+        input.disabled = immunityDuration === "none";
+      }
+      blockEl.querySelector(".zb-recovery-condition").style.display = immunityDuration !== "none" && recoveryChecked ? "flex" : "none";
+
+      for (const el of blockEl.querySelectorAll(".zb-damage-multiplier")) {
+        el.style.display = (damageEnabled || healingEnabled) ? "flex" : "none";
+      }
+
+      for (const row of blockEl.querySelectorAll(".zb-condition-row")) {
+        refreshConditionRow(row);
+      }
+
+      if (saveEnabled && basic) {
+        for (const key of ["criticalSuccess", "success", "failure", "criticalFailure"]) {
+          const select = blockEl.querySelector(`[data-outcome="${key}"] [data-field="damage-multiplier"]`);
+          select.value = String(BASIC_MULTIPLIERS[key]);
+          select.disabled = true;
+        }
+      } else {
+        for (const key of ["criticalSuccess", "success", "failure", "criticalFailure"]) {
+          blockEl.querySelector(`[data-outcome="${key}"] [data-field="damage-multiplier"]`).disabled = false;
+        }
+      }
+    }
+  }
+
+  async function showJson(title, json) {
+    const content = document.createElement("div");
+    content.innerHTML = `
+      <p class="notes"><b>To copy:</b> click inside the JSON box, press <b>Ctrl+A</b> to select all, then press <b>Ctrl+C</b>. This JSON contains only the portable zone configuration and intentionally contains no source Actor or Token UUID.</p>
+      <textarea class="zb-json" style="width:100%;height:360px;max-height:45vh;font-family:monospace;white-space:pre" readonly>${esc(json)}</textarea>`;
+
+    const dlg = new DialogV2({
+      window: { title },
+      position: { width: Math.max(620, Math.min(760, globalThis.innerWidth - 100)) },
+      content,
+      buttons: [
+        { action: "close", label: "Close", icon: "fa-solid fa-xmark" }
+      ]
+    });
+    await dlg.render({ force: true });
+  }
+
+  async function importJson() {
+    const content = document.createElement("div");
+    content.innerHTML = `
+      <p>Paste a PF2e Zone Builder configuration below. The current selected source actor is <b>${esc(sourceActor.name)}</b>; source information is never read from the JSON.</p>
+      <textarea name="json" style="width:100%;height:320px;max-height:42vh;font-family:monospace" placeholder="Paste JSON here"></textarea>`;
+
+    const fd = await DialogV2.input({
+      window: { title: "Import PF2e Zone JSON" },
+      position: { width: Math.max(600, Math.min(720, globalThis.innerWidth - 100)) },
+      content,
+      ok: { label: "Import", icon: "fa-solid fa-file-import" },
+      rejectClose: false
+    });
+    if (!fd) return null;
+
+    try {
+      const parsed = JSON.parse(String(fd.json ?? ""));
+      if (parsed?.schemaVersion && Number(parsed.schemaVersion) > SCHEMA_VERSION) {
+        ui.notifications.error(`This preset uses schema version ${parsed.schemaVersion}; this builder supports version ${SCHEMA_VERSION}.`);
+        return null;
+      }
+      return normalizeConfig(parsed);
+    } catch (err) {
+      console.error("PF2e Zone Builder import error", err);
+      ui.notifications.error(`Could not parse zone JSON: ${err.message}`);
+      return null;
+    }
+  }
+
+  function validationMessage({ errors, warnings }) {
+    if (!errors.length && !warnings.length) return "Configuration is valid.";
+    const parts = [];
+    if (errors.length) parts.push(`Errors:\n• ${errors.join("\n• ")}`);
+    if (warnings.length) parts.push(`Warnings:\n• ${warnings.join("\n• ")}`);
+    return parts.join("\n\n");
+  }
+
+  async function showValidation(result) {
+    const content = document.createElement("div");
+    const errors = result.errors.map((x) => `<li>${esc(x)}</li>`).join("");
+    const warnings = result.warnings.map((x) => `<li>${esc(x)}</li>`).join("");
+    content.innerHTML = `
+      ${result.errors.length ? `<h3>Errors</h3><ul>${errors}</ul>` : `<p><i class="fa-solid fa-circle-check"></i> No validation errors.</p>`}
+      ${result.warnings.length ? `<h3>Warnings</h3><ul>${warnings}</ul>` : `<p><i class="fa-solid fa-circle-check"></i> No warnings.</p>`}`;
+    await DialogV2.prompt({
+      window: { title: result.errors.length ? "Zone Configuration Problems" : "Zone Configuration Validation" },
+      content,
+      ok: { label: "Close" },
+      rejectClose: false
+    });
+  }
+
+
+  function executeScriptBehaviorType() {
+    const match = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
+      .find(([, cls]) => cls?.name === "ExecuteScriptRegionBehaviorType");
+    return match?.[0] ?? "executeScript";
+  }
+
+  function runtimeScriptSource() {
+    return `await (${zoneRuntimeEntrypoint.toString()})();`;
+  }
+
+  async function upgradeExistingZoneRuntimeScripts() {
+    if (!game.user.isGM) return;
+    const source = runtimeScriptSource();
+
+    for (const scene of game.scenes.contents) {
+      for (const region of scene.regions) {
+        if (!region.getFlag("world", "pf2eZone")) continue;
+        for (const behavior of region.behaviors) {
+          if (behavior.name !== "PF2e Zone Runtime") continue;
+          if (behavior.system?.source === source) continue;
+          try {
+            await behavior.update({ "system.source": source });
+          } catch (error) {
+            console.warn("PF2e Zone: could not upgrade an existing Region runtime script", region.name, error);
+          }
+        }
+      }
+    }
+  }
+
+  function finiteDurationRounds(cfg) {
+    switch (cfg.duration.type) {
+      case "1-round": return 1;
+      case "custom-rounds": return Math.max(1, Number(cfg.duration.rounds) || 1);
+      case "1-minute": return 10;
+      case "10-minutes": return 100;
+      default: return null;
+    }
+  }
+
+  function initialRuntimeState(cfg, chosenDamageType) {
+    const combat = game.combat;
+    const sourceCombatant = sourceActor.combatant ?? null;
+    const rounds = finiteDurationRounds(cfg);
+    const currentIsSource = Boolean(combat && sourceCombatant && combat.combatant?.id === sourceCombatant.id);
+    const currentTurnKey = currentIsSource
+      ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${sourceCombatant.id}`
+      : null;
+
+    return {
+      createdWorldTime: Number(game.time?.worldTime ?? 0),
+      createdBy: { userId: game.user.id, name: game.user.name },
+      sourceActorUuid: sourceActor.uuid,
+      sourceTokenUuid: sourceToken.document.uuid,
+      activation: { damageType: chosenDamageType ?? null },
+      activationProcessed: false,
+      activationPending: true,
+      activationFinalizeScheduled: false,
+      activationTargets: {},
+      initialOccupants: {},
+      deactivated: false,
+      pendingSaves: {},
+      repeat: {},
+      immunities: {},
+      applied: {},
+      damageRolls: {},
+      healingRolls: {},
+      recoveryWatchers: {},
+      turnStartEvents: {},
+      lastSourceTriggerTurnKey: currentTurnKey,
+      duration: rounds ? {
+        rounds,
+        worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
+        combatId: combat?.id ?? null,
+        sourceCombatantId: sourceCombatant?.id ?? null,
+        sourceTurnsElapsed: 0,
+        lastSourceTurnKey: currentTurnKey
+      } : {}
+    };
+  }
+
+  async function chooseActivationDamageType(cfg) {
+    const choice = cfg.activationChoices?.damageType;
+    if (!choice?.enabled) return null;
+    if (choice.options.length === 1) return choice.options[0];
+    const options = choice.options.map((slug) =>
+      `<option value="${esc(slug)}">${esc(titleCase(slug))}</option>`
+    ).join("");
+    const fd = await DialogV2.input({
+      window: { title: `${cfg.name} — Choose Damage Type` },
+      content: `<p>Choose the shared damage type for this zone activation.</p><label>Damage type<select name="damageType">${options}</select></label>`,
+      ok: { label: "Use Damage Type", icon: "fa-solid fa-check" },
+      rejectClose: false
+    });
+    return fd ? String(fd.damageType ?? "") : undefined;
+  }
+
+  function regionBehaviorData() {
+    return {
+      name: "PF2e Zone Runtime",
+      type: executeScriptBehaviorType(),
+      system: {
+        events: [
+          "behaviorActivated",
+          "behaviorDeactivated",
+          "behaviorViewed",
+          "tokenEnter",
+          "tokenExit",
+          "tokenTurnStart",
+          "tokenTurnEnd"
+        ],
+        source: runtimeScriptSource()
+      },
+      disabled: false,
+      flags: {}
+    };
+  }
+
+  async function createZoneRegion(cfg, chosenDamageType) {
+    if (!game.user.isGM) {
+      let areaCenter = null;
+      if (cfg.mode === "area") {
+        areaCenter = await pickAreaCenter(cfg.name, cfg.radius);
+        if (!areaCenter) return null;
+      }
+
+      const response = await callGMWorker("create", {
+        sceneId: canvas.scene.id,
+        sourceTokenUuid: sourceToken.document.uuid,
+        config: clone(cfg),
+        chosenDamageType: chosenDamageType ?? null,
+        color: game.user.color,
+        areaCenter
+      });
+
+      return await waitForRegion(response.sceneId, response.regionId);
+    }
+
+    const payload = {
+      runtimeVersion: RUNTIME_VERSION,
+      config: clone(cfg),
+      state: initialRuntimeState(cfg, chosenDamageType)
+    };
+    const regionData = {
+      name: cfg.name,
+      color: lightenZoneColor(game.user.color),
+      visibility: cfg.visibility === "gm"
+        ? (CONST.REGION_VISIBILITY?.GAMEMASTER ?? 1)
+        : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),
+      behaviors: [regionBehaviorData()],
+      flags: { world: { pf2eZone: payload } }
+    };
+
+    let region = null;
+    if (cfg.mode === "emanation") {
+      const RegionDocument = CONFIG.Region.documentClass;
+      if (typeof RegionDocument?.createTokenEmanation !== "function") {
+        throw new Error("Foundry V14 RegionDocument.createTokenEmanation is unavailable.");
+      }
+      region = await RegionDocument.createTokenEmanation(sourceToken.document, cfg.radius, regionData);
+    } else {
+      ui.notifications.info(`Place the ${cfg.radius}-foot ${cfg.name} area on the Scene.`);
+      region = await canvas.regions.placeRegion({
+        ...regionData,
+        shapes: [{
+          type: "circle",
+          x: 0,
+          y: 0,
+          radius: cfg.radius * canvas.dimensions.distancePixels,
+          gridBased: true
+        }]
+      });
+    }
+
+    if (!region) return null;
+    const runtime = await zoneRuntimeEntrypoint();
+    await runtime.activateRegion(region);
+    return region;
+  }
+
+
+  async function fetchSavedZoneRecords() {
+    const response = await callGMWorker("library-list");
+    return Array.isArray(response.records) ? response.records : [];
+  }
+
+  async function saveCurrentPreset(root, { asNew = false } = {}) {
+    const cfg = syncState(root);
+    const validation = validateConfig(cfg);
+    if (validation.errors.length) {
+      await showValidation(validation);
+      return false;
+    }
+
+    if (!asNew && loadedPreset && !canOverwritePreset(loadedPreset)) {
+      ui.notifications.warn(`You can load ${presetLabel(loadedPreset)}, but only its creator or a GM can overwrite it. Use Save As instead.`);
+      return false;
+    }
+
+    const response = await callGMWorker("library-save", {
+      recordId: asNew ? null : (loadedPreset?.id ?? null),
+      config: clone(cfg)
+    });
+    loadedPreset = clone(response.record);
+    state = normalizeConfig(response.record.config);
+    ui.notifications.info(`${asNew ? "Saved copy" : "Saved"} '${presetLabel(loadedPreset)}' to ${LIBRARY_JOURNAL_NAME}.`);
+    rerenderInsideDialog();
+    return true;
+  }
+
+  async function showSavedZones() {
+    const records = await fetchSavedZoneRecords();
+    records.sort((a, b) => {
+      const byName = String(a.name ?? "").localeCompare(String(b.name ?? ""), undefined, { sensitivity: "base" });
+      if (byName) return byName;
+      return String(a.createdBy?.name ?? "").localeCompare(String(b.createdBy?.name ?? ""), undefined, { sensitivity: "base" });
+    });
+
+    if (!records.length) {
+      ui.notifications.info(`There are no saved zones in ${LIBRARY_JOURNAL_NAME}.`);
+      return;
+    }
+
+    const rows = records.map((record) => {
+      const canDelete = game.user.isGM || record.createdBy?.userId === game.user.id;
+      return `<div class="pza-saved-row" data-record-id="${esc(record.id)}">
+        <div>
+          <b>${esc(presetLabel(record))}</b>
+        </div>
+        <button type="button" data-action="load"><i class="fa-solid fa-folder-open"></i> Load</button>
+        ${canDelete ? `<button type="button" data-action="delete" class="danger"><i class="fa-solid fa-trash"></i> Delete</button>` : `<span></span>`}
+      </div>`;
+    }).join("");
+
+    const content = document.createElement("div");
+    content.innerHTML = `
+      <style>
+        .pza-saved-list { max-height:55vh; overflow:auto; }
+        .pza-saved-row { display:grid; grid-template-columns:minmax(240px,1fr) auto auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid rgba(127,127,127,.3); }
+        .pza-saved-row:last-child { border-bottom:0; }
+        .pza-saved-row button.danger { border-color:#a22; }
+      </style>
+      <div class="pza-saved-list">${rows}</div>`;
+
+    const dlg = new DialogV2({
+      window: { title: "Saved PF2e Zones" },
+      position: { width: Math.max(520, Math.min(720, globalThis.innerWidth - 100)) },
+      content,
+      buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-xmark" }]
+    });
+
+    dlg.addEventListener("render", () => {
+      const list = dlg.window.content.querySelector(".pza-saved-list");
+      list?.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action]");
+        const row = button?.closest("[data-record-id]");
+        if (!button || !row) return;
+        const record = records.find((r) => r.id === row.dataset.recordId);
+        if (!record) return;
+
+        if (button.dataset.action === "load") {
+          state = normalizeConfig(record.config);
+          loadedPreset = clone(record);
+          await dlg.close();
+          rerenderInsideDialog();
+          ui.notifications.info(`Loaded '${presetLabel(record)}'.`);
+          return;
+        }
+
+        if (button.dataset.action === "delete") {
+          const allowed = game.user.isGM || record.createdBy?.userId === game.user.id;
+          if (!allowed) {
+            ui.notifications.warn("Only the zone's creator or a GM can delete that saved zone.");
+            return;
+          }
+          if (!window.confirm(`Delete saved zone '${presetLabel(record)}'?`)) return;
+
+          button.disabled = true;
+          try {
+            await callGMWorker("library-delete", { recordId: record.id });
+            row.remove();
+            const index = records.findIndex((r) => r.id === record.id);
+            if (index >= 0) records.splice(index, 1);
+            if (loadedPreset?.id === record.id) {
+              loadedPreset = null;
+              rerenderInsideDialog();
+            }
+            ui.notifications.info(`Deleted '${presetLabel(record)}'.`);
+            if (!list.querySelector("[data-record-id]")) await dlg.close();
+          } catch (error) {
+            console.error("PF2e Zone saved-zone deletion failed", error);
+            ui.notifications.error(`Could not delete saved zone: ${error.message ?? error}`);
+            button.disabled = false;
+          }
+        }
+      });
+    }, { once: true });
+
+    await dlg.render({ force: true });
+  }
+
+  async function manageExistingZones() {
+    const runtime = await zoneRuntimeEntrypoint();
+    const zones = [...canvas.scene.regions].filter((r) => r.getFlag("world", "pf2eZone"));
+    if (!zones.length) {
+      ui.notifications.info("There are no PF2e Zone Automation Regions on this Scene.");
+      return;
+    }
+
+    const zoneRows = [];
+    for (const region of zones) {
+      const payload = region.getFlag("world", "pf2eZone");
+      const cfg = payload?.config ?? {};
+      const canEnd = await canCurrentUserDismiss(payload);
+      zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
+        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(titleCase(cfg.mode))} · ${esc(cfg.radius)} ft · ${esc(titleCase(cfg.duration?.type))}</div></div>
+        <button type="button" data-action="export"><i class="fa-solid fa-file-export"></i> Export</button>
+        ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> Dismiss</button>` : `<span></span>`}
+      </div>`);
+    }
+
+    const content = document.createElement("div");
+    content.innerHTML = `
+      <style>
+        .pza-manage { max-height:55vh; overflow:auto; }
+        .pza-zone-row { display:grid; grid-template-columns:minmax(180px,1fr) auto auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid rgba(127,127,127,.3); }
+        .pza-zone-row:last-child { border-bottom:0; }
+        .pza-zone-meta { opacity:.72; font-size:.9em; }
+      </style>
+      <div class="pza-manage">${zoneRows.join("")}</div>`;
+
+    const dlg = new DialogV2({
+      window: { title: "Manage PF2e Zones" },
+      position: { width: Math.max(560, Math.min(760, globalThis.innerWidth - 100)) },
+      content,
+      buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-xmark" }]
+    });
+    dlg.addEventListener("render", () => {
+      const root = dlg.window.content.querySelector(".pza-manage");
+      root?.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action]");
+        const row = button?.closest("[data-region-id]");
+        const region = row ? canvas.scene.regions.get(row.dataset.regionId) : null;
+        if (!button || !region) return;
+        const payload = region.getFlag("world", "pf2eZone");
+        if (button.dataset.action === "export") {
+          await showJson(`Export Zone JSON — ${payload.config.name}`, JSON.stringify(payload.config, null, 2));
+        } else if (button.dataset.action === "end") {
+          button.disabled = true;
+          try {
+            if (game.user.isGM) {
+              await runtime.endZone(region, "manager");
+            } else {
+              await callGMWorker("end", { sceneId: canvas.scene.id, regionId: region.id });
+            }
+            row.remove();
+            if (!root.querySelector("[data-region-id]")) await dlg.close();
+          } catch (error) {
+            console.error("PF2e Zone dismissal failed", error);
+            ui.notifications.error(`PF2e Zone dismissal failed: ${error.message ?? error}`);
+            button.disabled = false;
+          }
+        }
+      });
+    }, { once: true });
+    await dlg.render({ force: true });
+  }
+
+  function triggerLabels(block) {
+    const triggers = block?.triggers ?? {};
+    const labels = [];
+    if (triggers.activation) labels.push("Activation");
+    if (triggers.enter) labels.push("Entry");
+    if (triggers.turnStart) labels.push("Turn Start");
+    if (triggers.sourceTurnStart) labels.push("Source Turn Start");
+    if (triggers.turnEnd) labels.push("Turn End");
+    if (triggers.continuous) labels.push("Continuous");
+    if (triggers.traitUse) labels.push(`Trait Use (${titleCase(block?.traitUse?.trait || "trait")})`);
+    return labels;
+  }
+
+  function previewHtml(cfg, validation) {
+    const blocks = cfg.effects.map((block) => {
+      const saveKind = block.save.type === "choice"
+        ? `Target chooses ${block.save.choices.map(titleCase).join(" or ")}`
+        : titleCase(block.save.type);
+      const saveText = block.save.enabled
+        ? `${saveKind} — ${block.save.dc.mode === "custom" ? `DC ${block.save.dc.value}` : esc(block.save.dc.statistic)}${block.save.basic ? " (basic)" : ""}`
+        : "None";
+      const damageTypeText = block.damage.typeMode === "activation-choice"
+        ? "shared activation type"
+        : titleCase(block.damage.type);
+      const damageText = block.damage.enabled ? `${esc(block.damage.formula)} ${esc(damageTypeText)}` : "None";
+      const healingText = block.healing?.enabled ? esc(block.healing.formula) : "None";
+      const alertText = block.chatAlert?.enabled ? "Yes" : "No";
+      return `<li><b>${esc(block.name)}</b>: ${esc(triggerLabels(block).join(", "))}<br><span style="opacity:.8">Save: ${saveText}; Damage: ${damageText}; Healing: ${healingText}; Chat Alert: ${alertText}; Immunity: ${esc(titleCase(block.immunity.duration))}</span></li>`;
+    }).join("");
+
+    return `
+      <div class="pf2e-zone-preview">
+        <h3>${esc(cfg.name)}</h3>
+        <p><b>Source:</b> ${esc(sourceActor.name)} (${esc(sourceToken.name)})<br>
+        <b>Zone:</b> ${esc(titleCase(cfg.mode))}, ${cfg.radius}-foot radius<br>
+        <b>Targets:</b> ${esc(titleCase(cfg.targeting.affects))}${cfg.targeting.includeSelf ? ", including source" : ""}<br>
+        <b>Traits:</b> ${cfg.traits.length ? cfg.traits.map(esc).join(", ") : "None"}<br>
+        <b>Visibility:</b> ${cfg.visibility === "gm" ? "GM only" : "Everyone"}<br>
+        <b>Duration:</b> ${esc(titleCase(cfg.duration.type))}${cfg.duration.type === "custom-rounds" ? ` (${cfg.duration.rounds} rounds)` : ""}<br>
+        <b>Shared activation damage type:</b> ${cfg.activationChoices?.damageType?.enabled ? cfg.activationChoices.damageType.options.map(titleCase).join(", ") : "None"}</p>
+        <h4>Effect Blocks</h4>
+        <ol>${blocks}</ol>
+        ${validation.warnings.length ? `<p><b>Builder warnings:</b> ${validation.warnings.map(esc).join("; ")}</p>` : ""}
+        <p style="opacity:.7"><i>Preview only. Use Create Zone to create the Region and activate runtime automation.</i></p>
+      </div>`;
+  }
+
+  function syncState(root) {
+    state = readConfig(root);
+    return state;
+  }
+
+  let dialog;
+
+  function rerenderInsideDialog() {
+    const content = dialog.window.content;
+    content.innerHTML = renderRoot();
+    wire(content.querySelector(".pf2e-zone-builder"));
+  }
+
+  function findBlock(blockId) {
+    return state.effects.find((b) => b.id === blockId);
+  }
+
+  function wire(root) {
+    if (!root) return;
+    refreshVisibility(root);
+
+    root.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+
+      if (target.matches('[data-field="condition-slug"]')) {
+        const row = target.closest(".zb-condition-row");
+        const valueInput = row?.querySelector('[data-field="condition-value"]');
+        if (valueInput) {
+          const valued = isValuedCondition(target.value);
+          valueInput.disabled = !valued;
+          valueInput.placeholder = valued ? "1" : "—";
+          if (valued && !valueInput.value) valueInput.value = "1";
+          if (!valued) valueInput.value = "";
+        }
+        return;
+      }
+
+      if (target.matches('[data-field="condition-removal"]')) {
+        refreshConditionRow(target.closest(".zb-condition-row"));
+        return;
+      }
+
+      if (target.matches('[data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+        refreshVisibility(root);
+      }
+    });
+
+    root.querySelector(".zb-use-selection").addEventListener("click", () => {
+      syncState(root);
+      const current = selectedSourceToken();
+      if (!current) return;
+      sourceToken = current;
+      sourceActor = current.actor;
+      rerenderInsideDialog();
+      ui.notifications.info(`PF2e Zone Builder source set to ${sourceActor.name}.`);
+    });
+
+    for (const button of root.querySelectorAll(".zb-add-block")) {
+      button.addEventListener("click", () => {
+        syncState(root);
+        state.effects.push(newBlock(state.effects.length + 1));
+        rerenderInsideDialog();
+      });
+    }
+
+    for (const button of root.querySelectorAll(".zb-remove-block")) {
+      button.addEventListener("click", () => {
+        syncState(root);
+        if (state.effects.length <= 1) return;
+        state.effects = state.effects.filter((b) => b.id !== button.dataset.block);
+        rerenderInsideDialog();
+      });
+    }
+
+    for (const button of root.querySelectorAll(".zb-duplicate-block")) {
+      button.addEventListener("click", () => {
+        syncState(root);
+        const block = findBlock(button.dataset.block);
+        if (!block) return;
+        const copy = clone(block);
+        copy.id = newId();
+        copy.name = `${copy.name} Copy`;
+        const idx = state.effects.findIndex((b) => b.id === block.id);
+        state.effects.splice(idx + 1, 0, copy);
+        rerenderInsideDialog();
+      });
+    }
+
+    // Degree-of-success payload rows are edited in place so adding/removing a
+    // Condition or Effect Item does not rerender the builder and reset scroll.
+    root.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || !root.contains(button)) return;
+
+      if (button.matches(".zb-add-condition")) {
+        const outcomeEl = button.closest(".zb-outcome");
+        const list = outcomeEl?.querySelector(".zb-condition-list");
+        if (!outcomeEl || !list) return;
+
+        list.querySelector(".zb-empty")?.remove();
+
+        const holder = document.createElement("div");
+        const index = list.querySelectorAll(".zb-condition-row").length;
+        holder.innerHTML = renderConditionRow(
+          { slug: "frightened", value: 1, removal: "normal", condition: null },
+          button.dataset.block,
+          button.dataset.outcome,
+          index
+        );
+        const row = holder.firstElementChild;
+        if (row) {
+          list.append(row);
+          refreshConditionRow(row);
+        }
+        return;
+      }
+
+      if (button.matches(".zb-remove-condition")) {
+        const row = button.closest(".zb-condition-row");
+        const list = row?.closest(".zb-condition-list");
+        if (!row || !list) return;
+
+        row.remove();
+        if (!list.querySelector(".zb-condition-row")) {
+          list.innerHTML = `<div class="zb-empty">No conditions</div>`;
+        }
+        return;
+      }
+
+      if (button.matches(".zb-add-effect")) {
+        const outcomeEl = button.closest(".zb-outcome");
+        const list = outcomeEl?.querySelector(".zb-effect-list");
+        if (!outcomeEl || !list) return;
+
+        list.querySelector(".zb-empty")?.remove();
+
+        const holder = document.createElement("div");
+        const index = list.querySelectorAll(".zb-effect-row").length;
+        holder.innerHTML = renderEffectRow(
+          { uuid: "", removal: "item-duration" },
+          button.dataset.block,
+          button.dataset.outcome,
+          index
+        );
+        const row = holder.firstElementChild;
+        if (row) list.append(row);
+        return;
+      }
+
+      if (button.matches(".zb-remove-effect")) {
+        const row = button.closest(".zb-effect-row");
+        const list = row?.closest(".zb-effect-list");
+        if (!row || !list) return;
+
+        row.remove();
+        if (!list.querySelector(".zb-effect-row")) {
+          list.innerHTML = `<div class="zb-empty">No Effect Items</div>`;
+        }
+      }
+    });
+
+    root.querySelector(".zb-load-saved").addEventListener("click", async () => {
+      syncState(root);
+      try {
+        await showSavedZones();
+      } catch (error) {
+        console.error("PF2e Zone saved-zone load failed", error);
+        ui.notifications.error(`Could not open saved zones: ${error.message ?? error}`);
+      }
+    });
+
+    root.querySelector(".zb-save").addEventListener("click", async () => {
+      try {
+        await saveCurrentPreset(root, { asNew: false });
+      } catch (error) {
+        console.error("PF2e Zone save failed", error);
+        ui.notifications.error(`Could not save zone: ${error.message ?? error}`);
+      }
+    });
+
+    root.querySelector(".zb-save-as").addEventListener("click", async () => {
+      try {
+        await saveCurrentPreset(root, { asNew: true });
+      } catch (error) {
+        console.error("PF2e Zone Save As failed", error);
+        ui.notifications.error(`Could not save zone copy: ${error.message ?? error}`);
+      }
+    });
+
+    root.querySelector(".zb-manage").addEventListener("click", async () => {
+      syncState(root);
+      await manageExistingZones();
+    });
+
+    root.querySelector(".zb-import").addEventListener("click", async () => {
+      syncState(root);
+      const imported = await importJson();
+      if (!imported) return;
+      state = imported;
+      loadedPreset = null;
+      rerenderInsideDialog();
+      ui.notifications.info("Zone configuration imported. Source actor was not changed.");
+    });
+
+    root.querySelector(".zb-close").addEventListener("click", async () => {
+      await dialog.close();
+    });
+
+    root.querySelector(".zb-export").addEventListener("click", async () => {
+      const cfg = syncState(root);
+      const validation = validateConfig(cfg);
+      if (validation.errors.length) {
+        await showValidation(validation);
+        return;
+      }
+      const json = JSON.stringify(cfg, null, 2);
+      console.log("PF2e Zone Builder exported configuration", cfg);
+      await showJson(`Export Zone JSON — ${cfg.name}`, json);
+    });
+
+    root.querySelector(".zb-validate").addEventListener("click", async () => {
+      const cfg = syncState(root);
+      const validation = validateConfig(cfg);
+      console.log("PF2e Zone Builder validation", { cfg, validation });
+      await showValidation(validation);
+    });
+
+    root.querySelector(".zb-preview").addEventListener("click", async () => {
+      const cfg = syncState(root);
+      const validation = validateConfig(cfg, { requireCurrentSource: true });
+      if (validation.errors.length) {
+        await showValidation(validation);
+        return;
+      }
+
+      // Useful during phase-one testing. This is intentionally not persistent game data.
+      globalThis.PF2EZoneBuilderLastConfig = clone(cfg);
+      console.log("PF2e Zone Builder normalized configuration", cfg);
+
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken.document }),
+        content: previewHtml(cfg, validation)
+      });
+      ui.notifications.info("Zone configuration is valid. Preview posted to chat and config written to console.");
+    });
+
+    root.querySelector(".zb-create").addEventListener("click", async () => {
+      const cfg = syncState(root);
+      const validation = validateConfig(cfg, { requireCurrentSource: true });
+      if (validation.errors.length) {
+        await showValidation(validation);
+        return;
+      }
+      const chosenDamageType = await chooseActivationDamageType(cfg);
+      if (cfg.activationChoices?.damageType?.enabled && chosenDamageType === undefined) return;
+
+      const button = root.querySelector(".zb-create");
+      button.disabled = true;
+      const restoreBuilder = cfg.mode === "area" ? hideBuilderForAreaPlacement() : () => {};
+      try {
+        globalThis.PF2EZoneBuilderLastConfig = clone(cfg);
+        const region = await createZoneRegion(cfg, chosenDamageType);
+        if (!region) {
+          restoreBuilder();
+          ui.notifications.info("Zone creation was cancelled.");
+          return;
+        }
+        console.log("PF2e Zone created", { region, config: cfg });
+        ui.notifications.info(`PF2e Zone '${cfg.name}' created.`);
+        await dialog.close();
+      } catch (error) {
+        restoreBuilder();
+        console.error("PF2e Zone creation failed", error);
+        ui.notifications.error(`PF2e Zone creation failed: ${error.message ?? error}`);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
+  await zoneRuntimeEntrypoint();
+  await upgradeExistingZoneRuntimeScripts();
+
+  if (!game.user.isGM) {
+    const workerProblem = workerSetupProblem();
+    if (workerProblem) console.warn("PF2e Zone player setup:", workerProblem);
+  }
+
+  if (globalThis.PF2EZoneRuntimeLegacyHooksDetected) {
+    ui.notifications.warn(
+      "PF2e Zone: hooks from an older test build are still active in this browser session. Refresh Foundry once before further duration testing."
+    );
+  }
+
+  const content = document.createElement("div");
+  content.innerHTML = renderRoot();
+
+  const builderWidth = Math.max(720, Math.min(980, globalThis.innerWidth - 120));
+
+  dialog = new DialogV2({
+    window: { title: "PF2e Zone Automation" },
+    position: { width: builderWidth },
+    content,
+    // DialogV2 requires at least one native button. The builder has its own
+    // sticky Close/Validate bar, so this native footer is hidden after render.
+    buttons: [
+      { action: "close", label: "Close", icon: "fa-solid fa-xmark", default: true }
+    ]
+  });
+
+  dialog.addEventListener("render", () => {
+    // Do not override DialogV2's internal form/layout. The builder itself is the
+    // scroll container, which also behaves cleanly when the window is detached.
+    const root = dialog.window.content.querySelector(".pf2e-zone-builder");
+
+    // DialogV2 insists on a native button entry. Hide that native footer so the
+    // visible controls are only the builder's sticky Close/Validate bar.
+    // If Foundry changes this selector later, the harmless fallback is simply
+    // that an additional native Close button remains visible.
+    const dialogElement = dialog.element ?? dialog.window?.element ?? null;
+    const nativeFooter =
+      dialogElement?.querySelector?.("footer.form-footer, .form-footer") ??
+      dialog.form?.querySelector?.("footer.form-footer, .form-footer") ??
+      null;
+    if (nativeFooter) nativeFooter.style.display = "none";
+
+    wire(root);
+  }, { once: true });
+
+  await dialog.render({ force: true });
+})();

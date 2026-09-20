@@ -1,0 +1,12 @@
+{
+  "devDependencies": {
+    "@foundryvtt/foundryvtt-cli": "3.0.4"
+  },
+  "name": "pf2e-zone-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:packs": "node tools/build-packs.mjs",
+    "test": "node --test tests/module-smoke.mjs tests/effects-pack.mjs tests/transport.mjs"
+  }
+}
