@@ -10,6 +10,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Resolve saves and outcome-specific damage, healing, conditions, and PF2e Effect Items.
 - Set durations, dismissal, immunity, chat alerts, and damage-type choices.
 - Save, share, load, update, and delete zone presets through the PF2e Zone Library.
+- Launch the builder from the supplied hotbar-ready Script Macro.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 
 ## Requirements
@@ -40,6 +41,10 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 Use **Manage Existing Zones** in the builder to inspect, export, or dismiss zones on the active Scene. Saved presets are shared through the **PF2e Zone Library** Journal in the **PF2e Zone Automation** Journal Entries folder.
 
+## PF2e Zone Macros
+
+The **PF2e Zone Macros** compendium contains **Open PF2e Zone Builder**. Drag it from the compendium to a Macro Hotbar slot, then select a source token and run it to open the builder.
+
 ## Example Configurations
 
 Seven ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, and Soul Cutter - Soothe Souls.
@@ -54,7 +59,7 @@ An active GM must remain connected for player-initiated zone creation, dismissal
 
 ## PF2e Zone Effects
 
-The three supplied Effects are in the **PF2e Zone Automation** folder of the separate **PF2e Zone Effects** Item compendium. Open **Compendium Packs** and select that pack to browse them. They do not appear in the world’s main Items directory unless a GM imports them.
+The three supplied Effects are in the separate **PF2e Zone Effects** Item compendium. Open **Compendium Packs** and select that pack to browse them. They do not appear in the world’s main Items directory unless a GM imports them.
 
 Use these UUIDs in an Effect Item field in the builder:
 
@@ -79,4 +84,3 @@ git push origin v0.1.1
 ```
 
 The release must be public so The Forge can retrieve the manifest and ZIP.
-

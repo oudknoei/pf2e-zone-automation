@@ -1,0 +1,16 @@
+{
+  "name": "Open PF2e Zone Builder",
+  "type": "script",
+  "scope": "global",
+  "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.openBuilder) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  await zoneModule.api.openBuilder();\n}\n",
+  "author": null,
+  "img": "modules/pf2e-zone-automation/assets/macros/pf2e-zone-builder.webp",
+  "folder": null,
+  "sort": 0,
+  "ownership": {
+    "default": 0
+  },
+  "flags": {},
+  "_id": "pzaOpenBuilder01",
+  "_key": "!macros!pzaOpenBuilder01"
+}
