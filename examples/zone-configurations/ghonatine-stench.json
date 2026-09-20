@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 4,
+  "name": "Stench (Ghonhatine)",
+  "mode": "emanation",
+  "radius": 30,
+  "targeting": {
+    "affects": "both",
+    "includeSelf": false
+  },
+  "traits": [
+    "aura",
+    "olfactory"
+  ],
+  "duration": {
+    "type": "unlimited",
+    "rounds": 1,
+    "dismissible": false
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "hNgByaui",
+      "name": "Sickened",
+      "triggers": {
+        "activation": false,
+        "enter": true,
+        "turnStart": true,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "once-per-round",
+      "save": {
+        "enabled": true,
+        "type": "fortitude",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 26
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [
+            {
+              "slug": "sickened",
+              "value": 1,
+              "removal": "normal",
+              "condition": null
+            }
+          ],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e.bestiary-effects.Item.wX9L6fbqVMLP05hn",
+              "removal": "on-exit"
+            }
+          ]
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [
+            {
+              "slug": "sickened",
+              "value": 1,
+              "removal": "normal",
+              "condition": null
+            },
+            {
+              "slug": "slowed",
+              "value": 1,
+              "removal": "condition-end",
+              "condition": "sickened"
+            }
+          ],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e.bestiary-effects.Item.wX9L6fbqVMLP05hn",
+              "removal": "on-exit"
+            }
+          ]
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "1-minute",
+        "starts": [
+          "success-or-better"
+        ],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

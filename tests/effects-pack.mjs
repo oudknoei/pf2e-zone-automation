@@ -23,14 +23,23 @@ test("compiled Effect pack contains three Items with bundled PNG images", async 
     const packCopy = join(scratch, "pack");
     const destination = join(scratch, "extracted");
     cpSync(join(root, pack.path), packCopy, { recursive: true });
-    await extractPack(packCopy, destination);
-    const records = readdirSync(destination).map((name) =>
-      JSON.parse(readFileSync(join(destination, name), "utf8"))
-    );
+    await extractPack(packCopy, destination, { folders: true });
+    const folders = readdirSync(destination, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory());
+    assert.equal(folders.length, 1);
+    const folderPath = join(destination, folders[0].name);
+    const folder = JSON.parse(readFileSync(join(folderPath, "_Folder.json"), "utf8"));
+    assert.equal(folder.name, "PF2e Zone Automation");
+    assert.equal(folder.type, "Item");
+    assert.equal(folder._id, "pzaZoneEffects01");
+    const records = readdirSync(folderPath)
+      .filter((name) => name.endsWith(".json") && name !== "_Folder.json")
+      .map((name) => JSON.parse(readFileSync(join(folderPath, name), "utf8")));
     assert.equal(records.length, expected.size);
+    const sourcePath = join(root, "packs", "src", "zone-effects", "pf2e-zone-automation");
     const sourceItems = new Map(
-      readdirSync(join(root, "packs", "src", "zone-effects")).map((name) => {
-        const item = JSON.parse(readFileSync(join(root, "packs", "src", "zone-effects", name), "utf8"));
+      readdirSync(sourcePath).filter((name) => name.endsWith(".json") && name !== "_Folder.json").map((name) => {
+        const item = JSON.parse(readFileSync(join(sourcePath, name), "utf8"));
         return [item._id, item];
       })
     );
@@ -39,6 +48,7 @@ test("compiled Effect pack contains three Items with bundled PNG images", async 
       const image = expected.get(item._id);
       assert.ok(image, `Unexpected Item ${item._id}`);
       assert.equal(item.type, "effect");
+      assert.equal(item.folder, folder._id);
       assert.equal(item.name, sourceItems.get(item._id)?.name);
       assert.deepEqual(item.system.rules, sourceItems.get(item._id)?.system.rules);
       assert.equal(item.img, `modules/pf2e-zone-automation/assets/effects/${image}`);

@@ -11,4 +11,4 @@ if (resolve(destination) !== resolve(join(moduleRoot, "packs", "zone-effects")))
   throw new Error("Refusing to remove an unexpected pack path");
 }
 rmSync(destination, { recursive: true, force: true });
-await compilePack(source, destination, { log: true });
+await compilePack(source, destination, { log: true, recursive: true });

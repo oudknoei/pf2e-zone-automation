@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 4,
+  "name": "Courageous Anthem",
+  "mode": "emanation",
+  "radius": 60,
+  "targeting": {
+    "affects": "allies",
+    "includeSelf": true
+  },
+  "traits": [
+    "emotion",
+    "mental"
+  ],
+  "duration": {
+    "type": "custom-rounds",
+    "rounds": 1,
+    "dismissible": false
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "eR9o43IK",
+      "name": "Effect Block 1",
+      "triggers": {
+        "activation": true,
+        "enter": false,
+        "turnStart": false,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e.spell-effects.Item.beReeFroAx24hj83",
+              "removal": "item-duration"
+            }
+          ]
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

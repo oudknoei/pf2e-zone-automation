@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 7,
+  "name": "Shadow Raid (7th rank)",
+  "mode": "area",
+  "radius": 30,
+  "visibility": "all",
+  "targeting": {
+    "affects": "enemies",
+    "includeSelf": false
+  },
+  "traits": [
+    "illusion",
+    "shadow"
+  ],
+  "duration": {
+    "type": "1-minute",
+    "rounds": 1,
+    "dismissible": false
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": true,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "Au2Z39dQ",
+      "name": "Initial damage",
+      "triggers": {
+        "activation": true,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": true,
+        "text": "{zone}: {count} enemies are affected. All creatures are concealed (DC 5) to enemies within the area. A creature can Seek/interact to attempt to disbelieve the illusion."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": true,
+        "type": "choice",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "actorStatistic",
+          "statistic": "spell-dc"
+        },
+        "basic": true
+      },
+      "damage": {
+        "enabled": true,
+        "formula": "6d8",
+        "typeMode": "activation-choice",
+        "type": "bludgeoning"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": ""
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    },
+    {
+      "id": "ho0mtaTd",
+      "name": "Ongoing damage",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": true,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "actorStatistic",
+          "statistic": "spell-dc"
+        },
+        "basic": true
+      },
+      "damage": {
+        "enabled": true,
+        "formula": "3d8",
+        "typeMode": "activation-choice",
+        "type": "bludgeoning"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": ""
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    },
+    {
+      "id": "H6Jkj9f2",
+      "name": "Obscured Vision",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": true,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": ""
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e-zone-automation.zone-effects.Item.WGhBnNhQNH3uVgP1",
+              "removal": "on-exit"
+            }
+          ]
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

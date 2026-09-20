@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 3,
+  "name": "Frightful Presence",
+  "mode": "emanation",
+  "radius": 90,
+  "targeting": {
+    "affects": "both",
+    "includeSelf": false
+  },
+  "traits": [
+    "aura",
+    "emotion",
+    "fear",
+    "mental"
+  ],
+  "duration": {
+    "type": "unlimited",
+    "rounds": 1,
+    "dismissible": false
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "6jyXz2PU",
+      "name": "Scared?",
+      "triggers": {
+        "activation": true,
+        "enter": true,
+        "turnStart": false,
+        "turnEnd": false,
+        "continuous": false
+      },
+      "repeat": "once-per-round",
+      "save": {
+        "enabled": true,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 31
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [
+            {
+              "slug": "frightened",
+              "value": 1,
+              "removal": "normal",
+              "condition": null
+            }
+          ],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [
+            {
+              "slug": "frightened",
+              "value": 2,
+              "removal": "normal",
+              "condition": null
+            }
+          ],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [
+            {
+              "slug": "frightened",
+              "value": 4,
+              "removal": "normal",
+              "condition": null
+            }
+          ],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "1-minute",
+        "starts": [
+          "after-save"
+        ],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

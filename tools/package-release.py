@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "dist"
 FILES = ("module.json", "README.md", "LICENSE")
-DIRECTORIES = ("scripts", "styles", "assets", "packs/zone-effects")
+DIRECTORIES = ("scripts", "styles", "assets", "packs/zone-effects", "examples/zone-configurations")
 EXCLUDED_PACK_FILES = {"LOCK", "LOG", "LOG.old"}
 
 

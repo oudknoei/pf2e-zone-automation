@@ -12,6 +12,8 @@ export async function handleWorkerRequest(request) {
   const FLAG_KEY = "pf2eZone";
   const LIBRARY_FLAG_KEY = "pf2eZoneLibrary";
   const LIBRARY_INDEX_FLAG_KEY = "pf2eZoneLibraryIndex";
+  const LIBRARY_FOLDER_FLAG_KEY = "pf2eZoneLibraryFolder";
+  const LIBRARY_FOLDER_NAME = "PF2e Zone Automation";
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const LIBRARY_PAGE_NAME = "Shared Zone Presets";
   const LIBRARY_SCHEMA_VERSION = 1;
@@ -107,7 +109,36 @@ export async function handleWorkerRequest(request) {
     return game.journal.find((journal) => Boolean(journal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY))) ?? null;
   }
 
+  function findLibraryFolder() {
+    return game.folders.find((folder) => (
+      folder.type === "JournalEntry"
+      && (folder.getFlag(FLAG_SCOPE, LIBRARY_FOLDER_FLAG_KEY) || folder.name === LIBRARY_FOLDER_NAME)
+    )) ?? null;
+  }
+
+  async function ensureLibraryFolder() {
+    let folder = findLibraryFolder();
+    if (folder) return folder;
+
+    const FolderClass = CONFIG.Folder?.documentClass;
+    if (!FolderClass?.create) throw new Error("Foundry Folder creation API is unavailable.");
+    folder = await FolderClass.create({
+      name: LIBRARY_FOLDER_NAME,
+      type: "JournalEntry",
+      sorting: "a",
+      color: null,
+      flags: {
+        [FLAG_SCOPE]: {
+          [LIBRARY_FOLDER_FLAG_KEY]: true
+        }
+      }
+    });
+    if (!folder) throw new Error("Foundry did not create the PF2e Zone Automation Journal folder.");
+    return folder;
+  }
+
   async function ensureLibraryJournal() {
+    const libraryFolder = await ensureLibraryFolder();
     let journal = findLibraryJournal();
     if (!journal) {
       const collision = game.journal.find((entry) => entry.name === LIBRARY_JOURNAL_NAME);
@@ -120,6 +151,7 @@ export async function handleWorkerRequest(request) {
       const observer = CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2;
       journal = await JournalClass.create({
         name: LIBRARY_JOURNAL_NAME,
+        folder: libraryFolder.id,
         ownership: { default: observer },
         flags: {
           [FLAG_SCOPE]: {
@@ -132,6 +164,9 @@ export async function handleWorkerRequest(request) {
       });
       if (!journal) throw new Error("Foundry did not create the PF2e Zone Library Journal.");
     }
+
+    const journalFolderId = journal.folder?.id ?? journal.folder ?? null;
+    if (journalFolderId !== libraryFolder.id) await journal.update({ folder: libraryFolder.id });
 
     const data = normalizeLibrary(journal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY));
     let page = journal.pages.find((p) => p.getFlag(FLAG_SCOPE, LIBRARY_INDEX_FLAG_KEY))

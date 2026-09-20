@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 3,
+  "name": "Focusing Hum",
+  "mode": "emanation",
+  "radius": 15,
+  "targeting": {
+    "affects": "both",
+    "includeSelf": true
+  },
+  "traits": [],
+  "duration": {
+    "type": "1-minute",
+    "rounds": 1,
+    "dismissible": true
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "VNA3siz3",
+      "name": "Semi-Confused",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "turnEnd": false,
+        "continuous": true
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e-zone-automation.zone-effects.Item.j42JjZYGnRM1wf6R",
+              "removal": "on-exit"
+            }
+          ]
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

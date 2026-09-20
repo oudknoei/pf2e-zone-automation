@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 7,
+  "name": "Soul Cutter - Soothe Souls",
+  "mode": "emanation",
+  "radius": 20,
+  "visibility": "all",
+  "targeting": {
+    "affects": "both",
+    "includeSelf": true
+  },
+  "traits": [
+    "healing",
+    "vitality",
+    "primal"
+  ],
+  "duration": {
+    "type": "1-minute",
+    "rounds": 1,
+    "dismissible": true
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "GO8WSDf9",
+      "name": "Soothe Souls",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": true,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": true,
+        "text": "{zone}: If {creature} is living, it regains @Damage[1d8[healing]]{1d8 Hit Points}. If it has the fiend or undead trait, it takes @Damage[1d8[spirit]]{1d8 spirit damage}. Apply both if both statements are true."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "1d8",
+        "typeMode": "fixed",
+        "type": "spirit"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": "1d8"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    },
+    {
+      "id": "ee3aAAhm",
+      "name": "Sustain Reminder",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": true,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": true,
+        "text": "{zone}: Sustain this ability to keep it going..."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "1d8",
+        "typeMode": "fixed",
+        "type": "spirit"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": "1d8"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

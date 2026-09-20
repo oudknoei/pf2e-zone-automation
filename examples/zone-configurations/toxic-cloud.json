@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 5,
+  "name": "Toxic Cloud (rank 5)",
+  "mode": "area",
+  "radius": 20,
+  "targeting": {
+    "affects": "both",
+    "includeSelf": true
+  },
+  "traits": [
+    "poison",
+    "death"
+  ],
+  "duration": {
+    "type": "1-minute",
+    "rounds": 1,
+    "dismissible": true
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "K5J4jxxV",
+      "name": "Start of Turn Damage",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": true,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": true,
+        "type": "fortitude",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "actorStatistic",
+          "statistic": "spell-dc"
+        },
+        "basic": true
+      },
+      "damage": {
+        "enabled": true,
+        "formula": "6d8",
+        "typeMode": "fixed",
+        "type": "poison"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    },
+    {
+      "id": "jxV802qC",
+      "name": "Concealment",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": true,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [
+            {
+              "slug": "concealed",
+              "value": null,
+              "removal": "on-exit",
+              "condition": null
+            }
+          ],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e-zone-automation.zone-effects.Item.Qz16EDTu2GVTtUPV",
+              "removal": "on-exit"
+            }
+          ]
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    },
+    {
+      "id": "k6ZrMidJ",
+      "name": "Move away",
+      "triggers": {
+        "activation": false,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": true,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": true,
+        "text": "{zone}: Move the zone 10 feet away from the caster at start of {source} turn"
+      },
+      "repeat": "every",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}

@@ -1,56 +1,85 @@
 # PF2e Zone Automation
 
-An early Foundry VTT v14 module that provide generic area of effect automation (circular bursts and emanations); this targets PF2e 8.5.1+.
+PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition spells, hazards, and abilities with a circular area of effect. Build an emanation that follows its source token or a fixed circular area, then let the module manage the configured effects while creatures enter, leave, or remain in the zone.
+
+## Features
+
+- Create token-following emanations and fixed circular areas.
+- Configure one or more Effect Blocks in each zone.
+- Trigger Effect Blocks on activation, entry, creature turn start or end, source turn start, continuous occupancy, and trait use.
+- Resolve saves and outcome-specific damage, healing, conditions, and PF2e Effect Items.
+- Set durations, dismissal, immunity, chat alerts, and damage-type choices.
+- Save, share, load, update, and delete zone presets through the PF2e Zone Library.
+- Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
+
+## Requirements
+
+- Foundry VTT v14
+- Pathfinder 2e v8.5.1 or later
+- Advanced Macros v2.4.0 or later
+- PF2e Utility Buttons v0.21.0 or later (`pf2e-flatcheck-helper`)
+
+Advanced Macros and PF2e Utility Buttons are required module dependencies. Install and enable them in the same world as PF2e Zone Automation.
 
 ## Install on The Forge
 
-Use a Forge-hosted Foundry VTT v14 game with PF2e 8.5.1. Install **Advanced Macros 2.4.0+** and **PF2e Utility Buttons 0.21.0+** (package ID `pf2e-flatcheck-helper`). Both are declared as required dependencies in `module.json`.
+In The Forge Bazaar, select **Install from Custom Manifest** and paste:
 
-After the first GitHub release is published, open The Forge Bazaar and use **Install from Custom Manifest**:
+```text
+https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module.json
+```
 
-1. Paste this manifest URL: `https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module.json`
-2. Install the module. If the Foundry server is running, restart it from **Games Configuration**.
-3. Open the PF2e world and enable **PF2e Zone Automation** under **Settings → Manage Modules**. Enable the two required modules there as well.
+After installation, restart the Foundry server from **Games Configuration** if it is running. Open the PF2e world, then enable **PF2e Zone Automation** and its required dependencies under **Settings → Manage Modules**.
 
-The manifest URL tracks the latest published release. It will return an error until the first release has been published.
+## Create a Zone
 
-Players use the module's **PF2e Zone Builder** control directly; no world macros need to be created. An active GM must be logged in for player-initiated creation, dismissal, and shared preset changes.
+1. Select exactly one token with an Actor.
+2. Click **PF2e Zone Builder** in the Token Controls.
+3. Choose the zone type, radius, duration, visibility, traits, and Effect Blocks.
+4. Select **Create Zone**. For a fixed area, click the Scene to place its center.
 
-Select one source token and click **PF2e Zone Builder** in the token controls.
+Use **Manage Existing Zones** in the builder to inspect, export, or dismiss zones on the active Scene. Saved presets are shared through the **PF2e Zone Library** Journal in the **PF2e Zone Automation** Journal Entries folder.
 
-The module initializes the zone runtime when the world opens. New Regions use a short Execute Script behavior that calls the module API. Their configuration and state still use the original `world.pf2eZone` flags, so existing zone data remains readable. Existing Regions retain their embedded scripts and continue to work. New Regions require this module to remain enabled.
+## Example Configurations
 
-## Current conversion scope
+Seven ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, and Soul Cutter - Soothe Souls.
 
-- GMs can build, save, load, create, manage, and dismiss zones without running either original macro.
-- Player initiated create, dismiss, and preset operations are sent to the active GM through the module's socket. The GM Worker code runs inside the module and checks the player's permissions. No GM Worker world macro or Advanced Macros configuration is needed. This has not yet been verified with separate live GM and player clients.
-- The original macro files are kept under `original macro/` as conversion references. `tools/convert-macros.py` can regenerate the extracted source files from those originals, but it overwrites edits in `scripts/builder.js`, `scripts/worker.js`, `scripts/runtime.js`, and `styles/pf2e-zone.css`.
-- The three supplied custom Effects and their PNG images ship in the **PF2e Zone Effects** Item compendium.
+To use one, open its JSON file, copy its contents, select a source token, open **PF2e Zone Builder**, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Save** to add a configured zone to the shared **PF2e Zone Library** Journal.
 
-## Bundled Effects
+## Player Use
 
-The Effect Item field in the builder accepts these compendium UUIDs:
+Players open **PF2e Zone Builder** in the same way as a GM. They can create a zone only from an Actor they own and dismiss only a zone they are allowed to dismiss. The module sends these requests to the active GM client and verifies the player’s authority before it changes the Scene or shared preset library.
 
-| Effect | Item UUID |
+An active GM must remain connected for player-initiated zone creation, dismissal, and shared preset changes.
+
+## PF2e Zone Effects
+
+The three supplied Effects are in the **PF2e Zone Automation** folder of the separate **PF2e Zone Effects** Item compendium. Open **Compendium Packs** and select that pack to browse them. They do not appear in the world’s main Items directory unless a GM imports them.
+
+Use these UUIDs in an Effect Item field in the builder:
+
+| Effect | UUID |
 | --- | --- |
 | Shadow Raid - Obscured Vision | `Compendium.pf2e-zone-automation.zone-effects.Item.WGhBnNhQNH3uVgP1` |
 | Focusing Hum Protection | `Compendium.pf2e-zone-automation.zone-effects.Item.j42JjZYGnRM1wf6R` |
 | Toxic Cloud – Obscured Vision | `Compendium.pf2e-zone-automation.zone-effects.Item.Qz16EDTu2GVTtUPV` |
 
-The images referenced by the supplied exports are stored in `assets/effects/` and the compendium Items point to those local files. The supplied Focusing Hum Protection Item contains a description but no rule elements, so this module preserves it as a descriptive Effect.
+Each Effect uses its supplied PNG image from `assets/effects/`. Focusing Hum Protection is preserved as supplied: it has a description but no PF2e rule elements.
 
-The checked-in LevelDB pack is ready for Foundry. To rebuild it from the JSON sources in `packs/src/zone-effects/`, install development dependencies with `pnpm install` and run `pnpm run build:packs`.
+## Releasing a New Version
 
-## Publishing a release
+The GitHub release workflow runs checks, packages the module, and uploads `module.json` and `module.zip`. Set `version` in `module.json` and update its `download` URL to the matching tag, then commit, push, tag, and push the tag. For version `0.1.1`:
 
-The source manifest points to a version-specific `module.zip` download. `tools/package-release.py` builds that ZIP with `module.json` at its root, the module scripts and styles, the three Effect images, and the compiled Effect pack. It also copies `module.json` as a separate release asset.
+```powershell
+git add -A
+git commit -m "Release PF2e Zone Automation 0.1.1"
+git push origin main
+git tag v0.1.1
+git push origin v0.1.1
+```
 
-1. Commit and push the module files and `.github/workflows/release.yml` to the repository's default branch.
-2. Set `version` in `module.json` and update its `download` URL to the matching tag. For example, version `0.1.1` uses tag `v0.1.1`.
-3. Create and push that tag from the committed release state. The GitHub workflow runs checks and publishes `module.json` and `module.zip` as release assets. For the first release, use `git tag v0.1.1` and `git push origin v0.1.1`.
+The release must be public so The Forge can retrieve the manifest and ZIP.
 
-Run `python tools/package-release.py --tag v0.1.1` to check the ZIP locally before tagging. Generated files go into the ignored `dist/` directory. Keep the release public so The Forge can fetch both URLs.
+## Development Checks
 
-## Local checks
-
-Run `pnpm test` for the module and compiled Effect pack, plus `node --check` on each file in `scripts/` for syntax. Full gameplay behavior needs a Foundry v14 and PF2e 8.5.1 world with a GM and player client; it has not been verified in this repository alone.
+Run `pnpm test` to validate the module, examples, and compiled Effect pack. Run `pnpm run build:packs` after changing files under `packs/src/zone-effects/`.
