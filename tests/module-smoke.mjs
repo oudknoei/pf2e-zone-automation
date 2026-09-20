@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
@@ -30,6 +30,13 @@ test("manifest points to files that ship", () => {
   );
   for (const file of [...manifest.esmodules, ...manifest.styles]) {
     assert.ok(existsSync(resolve(root, file)), `${file} is missing`);
+  }
+  const forbiddenMacroReferences = [/game\.macros\b/, /\bGM_WORKER_NAME\b/, /\bpf2eZoneWorkerRequest\b/];
+  for (const script of readdirSync(resolve(root, "scripts")).filter((file) => file.endsWith(".js"))) {
+    const source = readFileSync(resolve(root, "scripts", script), "utf8");
+    for (const reference of forbiddenMacroReferences) {
+      assert.doesNotMatch(source, reference, `scripts/${script} retains a macro-only reference`);
+    }
   }
 });
 

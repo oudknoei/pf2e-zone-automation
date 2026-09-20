@@ -205,7 +205,7 @@ export async function openZoneBuilder() {
   /**
    * Self-contained Region runtime entrypoint. The function is serialized into
    * every created Region's Execute Script behavior. It therefore must not rely
-   * on lexical variables from the builder macro.
+   * on lexical variables from the builder module.
    */
   const COMMON_TRAITS = [
     "aura",
@@ -994,7 +994,7 @@ export async function openZoneBuilder() {
         </div>
 
         <div class="zb-bottom">
-          <span class="zb-muted">Builder ${BUILDER_VERSION} · Runtime ${RUNTIME_VERSION} · Schema ${SCHEMA_VERSION} · Player GM bridge: ${GM_WORKER_NAME}</span>
+          <span class="zb-muted">Builder ${BUILDER_VERSION} · Runtime ${RUNTIME_VERSION} · Schema ${SCHEMA_VERSION} · Player GM bridge: module socket</span>
           <div class="right">
             <button type="button" class="zb-close"><i class="fa-solid fa-xmark"></i> Close</button>
             <button type="button" class="zb-validate"><i class="fa-solid fa-list-check"></i> Validate</button>

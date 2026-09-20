@@ -80,6 +80,3 @@ git push origin v0.1.1
 
 The release must be public so The Forge can retrieve the manifest and ZIP.
 
-## Development Checks
-
-Run `pnpm test` to validate the module, examples, and compiled Effect pack. Run `pnpm run build:packs` after changing files under `packs/src/zone-effects/`.
