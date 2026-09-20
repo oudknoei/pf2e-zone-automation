@@ -46,10 +46,10 @@ The checked-in LevelDB pack is ready for Foundry. To rebuild it from the JSON so
 The source manifest points to a version-specific `module.zip` download. `tools/package-release.py` builds that ZIP with `module.json` at its root, the module scripts and styles, the three Effect images, and the compiled Effect pack. It also copies `module.json` as a separate release asset.
 
 1. Commit and push the module files and `.github/workflows/release.yml` to the repository's default branch.
-2. Set `version` in `module.json` and update its `download` URL to the matching tag. For example, version `0.1.0` uses tag `v0.1.0`.
-3. Create and push that tag from the committed release state. The GitHub workflow runs checks and publishes `module.json` and `module.zip` as release assets. For the first release, use `git tag v0.1.0` and `git push origin v0.1.0`.
+2. Set `version` in `module.json` and update its `download` URL to the matching tag. For example, version `0.1.1` uses tag `v0.1.1`.
+3. Create and push that tag from the committed release state. The GitHub workflow runs checks and publishes `module.json` and `module.zip` as release assets. For the first release, use `git tag v0.1.1` and `git push origin v0.1.1`.
 
-Run `python tools/package-release.py --tag v0.1.0` to check the ZIP locally before tagging. Generated files go into the ignored `dist/` directory. Keep the release public so The Forge can fetch both URLs.
+Run `python tools/package-release.py --tag v0.1.1` to check the ZIP locally before tagging. Generated files go into the ignored `dist/` directory. Keep the release public so The Forge can fetch both URLs.
 
 ## Local checks
 
