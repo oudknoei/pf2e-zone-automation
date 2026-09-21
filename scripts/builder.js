@@ -1,4 +1,5 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, resolveDurationRounds } from "./duration.js";
 import { requestGMWorker } from "./transport.js";
 
 /*
@@ -14,9 +15,9 @@ import { requestGMWorker } from "./transport.js";
 export async function openZoneBuilder() {
   "use strict";
 
-  const BUILDER_VERSION = "0.5.13";
-  const RUNTIME_VERSION = "0.5.13";
-  const SCHEMA_VERSION = 7;
+  const BUILDER_VERSION = "0.5.15";
+  const RUNTIME_VERSION = "0.5.15";
+  const SCHEMA_VERSION = 8;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -483,7 +484,7 @@ export async function openZoneBuilder() {
             : base.duration.type,
         rounds: cfg.duration?.type === "1-round"
           ? 1
-          : Math.max(1, Math.floor(Number(cfg.duration?.rounds) || 1)),
+          : normalizeDurationRounds(cfg.duration?.rounds, 1),
         dismissible: cfg.duration?.dismissible !== false
       },
       activationChoices: {
@@ -709,23 +710,48 @@ export async function openZoneBuilder() {
       </section>`;
   }
 
+  function blockSummary(block) {
+    const triggers = triggerLabels(block);
+    const outcomeKeys = block.save.enabled
+      ? ["criticalSuccess", "success", "failure", "criticalFailure"]
+      : ["noSave"];
+    const outcomes = outcomeKeys.map((key) => block.outcomes?.[key] ?? emptyOutcome(key));
+    const conditions = outcomes.reduce((count, outcome) => count + (outcome.conditions?.length ?? 0), 0);
+    const effects = outcomes.reduce((count, outcome) => count + (outcome.effects?.length ?? 0), 0);
+    const results = [];
+
+    if (block.save.enabled) {
+      results.push(`${block.save.type === "choice" ? "Target-choice" : titleCase(block.save.type)} save`);
+    }
+    if (block.damage.enabled) results.push(`Damage ${block.damage.formula || "formula needed"}`);
+    if (block.healing?.enabled) results.push(`Healing ${block.healing.formula || "formula needed"}`);
+    if (conditions) results.push(`${conditions} condition${conditions === 1 ? "" : "s"}`);
+    if (effects) results.push(`${effects} Effect Item${effects === 1 ? "" : "s"}`);
+    if (block.chatAlert?.enabled) results.push("Chat alert");
+
+    return `${triggers.length ? triggers.join(", ") : "Choose when this happens"} · ${results.length ? results.join(", ") : "Choose what happens"}`;
+  }
+
   function renderBlock(block, index) {
     const trigger = (key, label) => `
       <label class="zb-check"><input type="checkbox" data-trigger="${key}" ${block.triggers[key] ? "checked" : ""}> ${esc(label)}</label>`;
 
     return `
       <details class="zb-block" data-block-id="${esc(block.id)}" ${index === 0 ? "open" : ""}>
-        <summary><span>${esc(block.name || `Effect Block ${index + 1}`)}</span><span class="zb-summary-note">click to expand/collapse</span></summary>
+        <summary>
+          <span class="zb-block-title">${esc(block.name || `Effect Block ${index + 1}`)}</span>
+          <span class="zb-block-summary" data-block-summary>${esc(blockSummary(block))}</span>
+        </summary>
         <div class="zb-block-body">
           <div class="zb-grid two">
             <label>Block name
               <input data-field="block-name" type="text" value="${esc(block.name)}">
             </label>
-            <label>Trigger frequency
+            <label>How often a creature can be affected
               <select data-field="repeat">
-                <option value="every" ${block.repeat === "every" ? "selected" : ""}>Every valid trigger</option>
-                <option value="once-per-round" ${block.repeat === "once-per-round" ? "selected" : ""}>Once per round per creature</option>
-                <option value="once-per-zone" ${block.repeat === "once-per-zone" ? "selected" : ""}>Once per zone lifetime per creature</option>
+                <option value="every" ${block.repeat === "every" ? "selected" : ""}>Every time this happens</option>
+                <option value="once-per-round" ${block.repeat === "once-per-round" ? "selected" : ""}>Once each round</option>
+                <option value="once-per-zone" ${block.repeat === "once-per-zone" ? "selected" : ""}>Once for this zone</option>
               </select>
             </label>
           </div>
@@ -733,15 +759,15 @@ export async function openZoneBuilder() {
           <fieldset>
             <legend>Triggers</legend>
             <div class="zb-check-grid">
-              ${trigger("activation", "On Activation")}
-              ${trigger("enter", "On Entry")}
-              ${trigger("turnStart", "Start of Turn")}
-              ${trigger("sourceTurnStart", "Source Turn Start")}
-              ${trigger("turnEnd", "End of Turn")}
-              ${trigger("continuous", "Continuous While Inside")}
-              ${trigger("traitUse", "On Trait Use")}
+              ${trigger("activation", "When the zone is created")}
+              ${trigger("enter", "When a creature enters after creation")}
+              ${trigger("turnStart", "At the start of a creature's turn")}
+              ${trigger("sourceTurnStart", "At the start of the source's turn")}
+              ${trigger("turnEnd", "At the end of a creature's turn")}
+              ${trigger("continuous", "While a creature is inside")}
+              ${trigger("traitUse", "When a creature uses a trait")}
             </div>
-            <p class="notes"><b>Source Turn Start</b> fires when the tracked source's combat turn starts, even if the source is outside a fixed Area Region. It does not fire on the source turn during which the zone is first created.</p>
+            <p class="notes">Choose one or more events. “When the zone is created” affects eligible creatures already inside. “When a creature enters” only affects a creature that crosses into the zone later. The source-turn event follows the source combatant even when it is outside a fixed area, and does not run on the turn the zone is created.</p>
           </fieldset>
 
           <fieldset class="zb-trait-use-options">
@@ -965,8 +991,8 @@ export async function openZoneBuilder() {
                   <option value="unlimited" ${state.duration.type === "unlimited" ? "selected" : ""}>Unlimited</option>
                 </select>
               </label>
-              <label class="zb-duration-rounds">Rounds
-                <input data-zone="duration-rounds" type="number" min="1" step="1" value="${state.duration.rounds}">
+              <label class="zb-duration-rounds">Rounds or dice formula
+                <input data-zone="duration-rounds" type="text" inputmode="text" spellcheck="false" value="${esc(state.duration.rounds)}" placeholder="e.g. 6 or 2d4">
               </label>
             </div>
             <label class="zb-check" style="margin-top:8px"><input data-zone="dismissible" type="checkbox" ${state.duration.dismissible ? "checked" : ""}> Source can dismiss this zone</label>
@@ -985,7 +1011,7 @@ export async function openZoneBuilder() {
 
           <section class="zb-section">
             <h3>Effect Blocks</h3>
-            <p class="notes">A zone can have more than one block. Activation affects eligible creatures already inside when the zone is created. Entry only fires when a creature later crosses from outside to inside. Blocks can also use creature turn-start, source turn-start, turn-end, continuous occupancy, or trait-use triggers. Source Turn Start follows the tracked source combatant even when the source is outside a fixed Area. Chat Alert is an optional output for any block.</p>
+            <p class="notes">Each block says when something happens and what it does. Add a second block when the same zone needs a different trigger or result.</p>
             <div class="zb-block-list">
               ${state.effects.map((block, i) => renderBlock(block, i)).join("")}
             </div>
@@ -998,7 +1024,7 @@ export async function openZoneBuilder() {
           <div class="right">
             <button type="button" class="zb-close"><i class="fa-solid fa-xmark"></i> Close</button>
             <button type="button" class="zb-validate"><i class="fa-solid fa-list-check"></i> Validate</button>
-            <button type="button" class="zb-preview"><i class="fa-solid fa-message"></i> Validate & Preview</button>
+            <button type="button" class="zb-preview"><i class="fa-solid fa-message"></i> Post Preview to Chat</button>
             <button type="button" class="zb-create"><i class="fa-solid fa-circle-plus"></i> Create Zone</button>
           </div>
         </div>
@@ -1058,7 +1084,7 @@ export async function openZoneBuilder() {
       traits: [...new Set([...commonTraits, ...customTraits])],
       duration: {
         type: field(root, '[data-zone="duration-type"]').value,
-        rounds: Number(field(root, '[data-zone="duration-rounds"]').value),
+        rounds: field(root, '[data-zone="duration-rounds"]').value.trim(),
         dismissible: field(root, '[data-zone="dismissible"]').checked
       },
       activationChoices: {
@@ -1151,6 +1177,10 @@ export async function openZoneBuilder() {
     }
     if (!cfg.name) errors.push("Zone name is required.");
     if (!(cfg.radius > 0)) errors.push("Radius must be greater than 0.");
+    if (cfg.duration?.type === "custom-rounds") {
+      const durationError = durationRoundsError(cfg.duration.rounds);
+      if (durationError) errors.push(durationError);
+    }
     if (!cfg.effects.length) errors.push("At least one effect block is required.");
 
     const sharedDamageChoice = cfg.activationChoices?.damageType;
@@ -1381,17 +1411,20 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   function finiteDurationRounds(cfg) {
     switch (cfg.duration.type) {
       case "1-round": return 1;
-      case "custom-rounds": return Math.max(1, Number(cfg.duration.rounds) || 1);
+      case "custom-rounds": {
+        const rounds = Number(cfg.duration?.rounds);
+        return Number.isSafeInteger(rounds) && rounds > 0 ? rounds : null;
+      }
       case "1-minute": return 10;
       case "10-minutes": return 100;
       default: return null;
     }
   }
 
-  function initialRuntimeState(cfg, chosenDamageType) {
+  function initialRuntimeState(cfg, chosenDamageType, durationResolution = null) {
     const combat = game.combat;
     const sourceCombatant = sourceActor.combatant ?? null;
-    const rounds = finiteDurationRounds(cfg);
+    const rounds = durationResolution?.rounds ?? finiteDurationRounds(cfg);
     const currentIsSource = Boolean(combat && sourceCombatant && combat.combatant?.id === sourceCombatant.id);
     const currentTurnKey = currentIsSource
       ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${sourceCombatant.id}`
@@ -1420,6 +1453,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       lastSourceTriggerTurnKey: currentTurnKey,
       duration: rounds ? {
         rounds,
+        formula: durationResolution?.formula ?? null,
         worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
         combatId: combat?.id ?? null,
         sourceCombatantId: sourceCombatant?.id ?? null,
@@ -1482,14 +1516,18 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         color: game.user.color,
         areaCenter
       });
+      if (response.duration?.formula) {
+        ui.notifications.info(`PF2e Zone duration: ${response.duration.rounds} rounds (rolled ${response.duration.formula}).`);
+      }
 
       return await waitForRegion(response.sceneId, response.regionId);
     }
 
+    const durationResolution = await resolveDurationRounds(cfg.duration);
     const payload = {
       runtimeVersion: RUNTIME_VERSION,
       config: clone(cfg),
-      state: initialRuntimeState(cfg, chosenDamageType)
+      state: initialRuntimeState(cfg, chosenDamageType, durationResolution)
     };
     const regionData = {
       name: cfg.name,
@@ -1525,6 +1563,9 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!region) return null;
     const runtime = await zoneRuntimeEntrypoint();
     await runtime.activateRegion(region);
+    if (durationResolution?.formula) {
+      ui.notifications.info(`PF2e Zone duration: ${durationResolution.rounds} rounds (rolled ${durationResolution.formula}).`);
+    }
     return region;
   }
 
@@ -1719,17 +1760,23 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   function triggerLabels(block) {
     const triggers = block?.triggers ?? {};
     const labels = [];
-    if (triggers.activation) labels.push("Activation");
-    if (triggers.enter) labels.push("Entry");
-    if (triggers.turnStart) labels.push("Turn Start");
-    if (triggers.sourceTurnStart) labels.push("Source Turn Start");
-    if (triggers.turnEnd) labels.push("Turn End");
-    if (triggers.continuous) labels.push("Continuous");
-    if (triggers.traitUse) labels.push(`Trait Use (${titleCase(block?.traitUse?.trait || "trait")})`);
+    if (triggers.activation) labels.push("When created");
+    if (triggers.enter) labels.push("When a creature enters");
+    if (triggers.turnStart) labels.push("At creature turn start");
+    if (triggers.sourceTurnStart) labels.push("At source turn start");
+    if (triggers.turnEnd) labels.push("At creature turn end");
+    if (triggers.continuous) labels.push("While inside");
+    if (triggers.traitUse) labels.push(`When ${titleCase(block?.traitUse?.trait || "trait")} is used`);
     return labels;
   }
 
   function previewHtml(cfg, validation) {
+    const durationInput = cfg.duration?.type === "custom-rounds"
+      ? parseDurationRounds(cfg.duration.rounds)
+      : null;
+    const durationText = cfg.duration?.type === "custom-rounds"
+      ? `${cfg.duration.rounds} round${String(cfg.duration.rounds) === "1" ? "" : "s"}${durationInput?.kind === "formula" ? " (rolled when created)" : ""}`
+      : titleCase(cfg.duration?.type);
     const blocks = cfg.effects.map((block) => {
       const saveKind = block.save.type === "choice"
         ? `Target chooses ${block.save.choices.map(titleCase).join(" or ")}`
@@ -1754,7 +1801,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         <b>Targets:</b> ${esc(titleCase(cfg.targeting.affects))}${cfg.targeting.includeSelf ? ", including source" : ""}<br>
         <b>Traits:</b> ${cfg.traits.length ? cfg.traits.map(esc).join(", ") : "None"}<br>
         <b>Visibility:</b> ${cfg.visibility === "gm" ? "GM only" : "Everyone"}<br>
-        <b>Duration:</b> ${esc(titleCase(cfg.duration.type))}${cfg.duration.type === "custom-rounds" ? ` (${cfg.duration.rounds} rounds)` : ""}<br>
+        <b>Duration:</b> ${esc(durationText)}<br>
         <b>Shared activation damage type:</b> ${cfg.activationChoices?.damageType?.enabled ? cfg.activationChoices.damageType.options.map(titleCase).join(", ") : "None"}</p>
         <h4>Effect Blocks</h4>
         <ol>${blocks}</ol>
@@ -1783,6 +1830,15 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   function wire(root) {
     if (!root) return;
     refreshVisibility(root);
+
+    for (const blockElement of root.querySelectorAll("details.zb-block")) {
+      blockElement.addEventListener("toggle", () => {
+        if (blockElement.open) return;
+        const block = readConfig(root).effects.find((entry) => entry.id === blockElement.dataset.blockId);
+        const summary = blockElement.querySelector("[data-block-summary]");
+        if (block && summary) summary.textContent = blockSummary(block);
+      });
+    }
 
     root.addEventListener("change", (event) => {
       const target = event.target;

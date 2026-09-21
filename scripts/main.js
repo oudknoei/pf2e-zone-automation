@@ -21,7 +21,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
   tokenTools.pf2eZoneBuilder = {
     name: "pf2eZoneBuilder",
     title: "PF2e Zone Builder",
-    icon: "fa-solid fa-circle-nodes",
+	icon: "fa-solid fa-poo-storm", 
+    //icon: "fa-solid fa-circle-nodes",
     order: Object.keys(tokenTools).length,
     button: true,
     visible: game.system.id === "pf2e",

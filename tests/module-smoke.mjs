@@ -26,7 +26,7 @@ test("manifest points to files that ship", () => {
   assert.equal(manifest.socket, true);
   assert.deepEqual(
     new Set(manifest.relationships.requires.map(({ id }) => id)),
-    new Set(["advanced-macros", "pf2e-flatcheck-helper"])
+    new Set(["advanced-macros", "pf2e-flatcheck-helper", "lib-wrapper"])
   );
   for (const file of [...manifest.esmodules, ...manifest.styles]) {
     assert.ok(existsSync(resolve(root, file)), `${file} is missing`);

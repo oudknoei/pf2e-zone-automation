@@ -1,3 +1,4 @@
+import { resolveDurationRounds } from "./duration.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
@@ -5,8 +6,8 @@ import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 export async function handleWorkerRequest(request) {
   "use strict";
 
-  const WORKER_VERSION = "0.5.13";
-  const RUNTIME_VERSION = "0.5.13";
+  const WORKER_VERSION = "0.5.15";
+  const RUNTIME_VERSION = "0.5.15";
   const ZONE_COLOR_LIGHTEN = 0.1;
   const FLAG_SCOPE = "world";
   const FLAG_KEY = "pf2eZone";
@@ -349,17 +350,20 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   function finiteDurationRounds(cfg) {
     switch (cfg.duration?.type) {
       case "1-round": return 1;
-      case "custom-rounds": return Math.max(1, Number(cfg.duration?.rounds) || 1);
+      case "custom-rounds": {
+        const rounds = Number(cfg.duration?.rounds);
+        return Number.isSafeInteger(rounds) && rounds > 0 ? rounds : null;
+      }
       case "1-minute": return 10;
       case "10-minutes": return 100;
       default: return null;
     }
   }
 
-  function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy) {
+  function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy, durationResolution = null) {
     const combat = game.combat;
     const sourceCombatant = sourceActor.combatant ?? null;
-    const rounds = finiteDurationRounds(cfg);
+    const rounds = durationResolution?.rounds ?? finiteDurationRounds(cfg);
     const currentIsSource = Boolean(combat && sourceCombatant && combat.combatant?.id === sourceCombatant.id);
     const currentTurnKey = currentIsSource
       ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${sourceCombatant.id}`
@@ -389,6 +393,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       lastSourceTriggerTurnKey: currentTurnKey,
       duration: rounds ? {
         rounds,
+        formula: durationResolution?.formula ?? null,
         worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
         combatId: combat?.id ?? null,
         sourceCombatantId: sourceCombatant?.id ?? null,
@@ -411,10 +416,18 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     assertSourcePermission(sourceActor, requester);
 
     const cfg = normalizeConfig(request.config);
+    const durationResolution = await resolveDurationRounds(cfg.duration);
     const payload = {
       runtimeVersion: RUNTIME_VERSION,
       config: cfg,
-      state: initialRuntimeState(cfg, request.chosenDamageType ?? null, sourceActor, sourceToken, requester)
+      state: initialRuntimeState(
+        cfg,
+        request.chosenDamageType ?? null,
+        sourceActor,
+        sourceToken,
+        requester,
+        durationResolution
+      )
     };
     const regionData = {
       name: cfg.name,
@@ -457,7 +470,15 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!region) throw new Error("Foundry did not create the Region.");
     const runtime = await zoneRuntimeEntrypoint();
     await runtime.activateRegion(region);
-    return succeed({ action: "create", sceneId: scene.id, regionId: region.id, regionUuid: region.uuid });
+    return succeed({
+      action: "create",
+      sceneId: scene.id,
+      regionId: region.id,
+      regionUuid: region.uuid,
+      duration: durationResolution?.formula
+        ? { formula: durationResolution.formula, rounds: durationResolution.rounds }
+        : null
+    });
   }
 
   async function endZone() {

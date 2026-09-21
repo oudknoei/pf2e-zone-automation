@@ -1,16 +1,15 @@
 # PF2e Zone Automation
 
-PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition spells, hazards, and abilities with a circular area of effect. Build an emanation that follows its source token or a fixed circular area, then let the module manage the configured effects while creatures enter, leave, or remain in the zone.
+PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition spells, hazards, and abilities with circular areas of effect. Build an emanation that follows its source token or a fixed circular area, then let the module manage the configured effects as creatures enter, leave, or remain in the zone.
 
 ## Features
 
 - Create token-following emanations and fixed circular areas.
-- Configure one or more Effect Blocks in each zone.
-- Trigger Effect Blocks on activation, entry, creature turn start or end, source turn start, continuous occupancy, and trait use.
-- Resolve saves and outcome-specific damage, healing, conditions, and PF2e Effect Items.
-- Set durations, dismissal, immunity, chat alerts, and damage-type choices.
-- Save, share, load, update, and delete zone presets through the PF2e Zone Library.
-- Launch the builder from the supplied hotbar-ready Script Macro.
+- Configure one or more Effect Blocks for each zone.
+- Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, or when a watched trait is used.
+- Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
+- Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created and stores the result.
+- Save, share, load, update, and delete presets through the PF2e Zone Library.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 
 ## Requirements
@@ -19,8 +18,9 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Pathfinder 2e v8.5.1 or later
 - Advanced Macros v2.4.0 or later
 - PF2e Utility Buttons v0.21.0 or later (`pf2e-flatcheck-helper`)
+- libWrapper
 
-Advanced Macros and PF2e Utility Buttons are required module dependencies. Install and enable them in the same world as PF2e Zone Automation.
+Advanced Macros, PF2e Utility Buttons, and libWrapper are required module dependencies. Install and enable them in the same world as PF2e Zone Automation.
 
 ## Install on The Forge
 
@@ -32,41 +32,55 @@ https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module
 
 After installation, restart the Foundry server from **Games Configuration** if it is running. Open the PF2e world, then enable **PF2e Zone Automation** and its required dependencies under **Settings → Manage Modules**.
 
-## Create a Zone
+## How To
+
+### Open the builder
 
 1. Select exactly one token with an Actor.
-2. Click **PF2e Zone Builder** in the Token Controls.
-3. Choose the zone type, radius, duration, visibility, traits, and Effect Blocks.
-4. Select **Create Zone**. For a fixed area, click the Scene to place its center.
+2. Click **PF2e Zone Builder** in Token Controls, or run the **Open PF2e Zone Builder** macro from the supplied compendium.
+3. Confirm the source shown at the top of the builder. If the controlled token changed, select **Use Current Selection**.
 
-Use **Manage Existing Zones** in the builder to inspect, export, or dismiss zones on the active Scene. Saved presets are shared through the **PF2e Zone Library** Journal in the **PF2e Zone Automation** Journal Entries folder.
+A player can create a zone only from an Actor they own. An active GM must be connected when a player creates or dismisses a zone or changes the shared preset library.
 
-## PF2e Zone Macros
+### Set up the zone
 
-The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros:
+1. Give the zone a clear name.
+2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
+3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
+4. Choose the zone's visibility and any applicable traits.
+5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created. Use the dismissal checkbox when the source should be able to end the zone early.
 
-- **Open PF2e Zone Builder**: Select a source token, then run the macro to open the builder.
-- **Shielding Taunt**: Select a Guardian with the Shielding Taunt feat and a wielded shield, target one creature, then run the macro. It raises the Guardian's shield, applies PF2e's official auditory Taunt effect, and replaces that Guardian's previous Taunt.
+Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
 
-The macro commands call the module API, so their underlying logic updates with the module.
+### Configure an Effect Block
 
-## Example Configurations
+An Effect Block answers two questions: **when does this happen?** and **what happens?** A zone can have several blocks when it needs different triggers or results. The collapsed block header summarizes its configured trigger and result.
 
-Seven ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, and Soul Cutter - Soothe Souls.
+Choose one or more plain-language trigger choices:
 
-To use one, open its JSON file, copy its contents, select a source token, open **PF2e Zone Builder**, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Save** to add a configured zone to the shared **PF2e Zone Library** Journal.
+| Trigger | Use it when... |
+| --- | --- |
+| **When the zone is created** | Eligible creatures already inside should be affected immediately. |
+| **When a creature enters after creation** | A creature should be affected only when it crosses into the zone later. |
+| **At the start of a creature's turn** | The effect belongs at the beginning of an affected creature's turn. |
+| **At the end of a creature's turn** | The effect belongs at the end of an affected creature's turn. |
+| **At the start of the source's turn** | The source's combat turn controls the effect, even when the source is outside a fixed area. |
+| **While a creature is inside** | The no-save result should be maintained for occupants, such as an ongoing Effect Item. Verify damage and healing carefully before using this trigger. |
+| **When a creature uses a trait** | A creature inside the zone uses an item, spell, or ability with the watched trait. |
 
-## Player Use
+Then choose how often each creature can be affected: every time the event happens, once each round, or once for the zone's lifetime.
 
-Players open **PF2e Zone Builder** in the same way as a GM. They can create a zone only from an Actor they own and dismiss only a zone they are allowed to dismiss. The module sends these requests to the active GM client and verifies the player’s authority before it changes the Scene or shared preset library.
+### Define the result
 
-An active GM must remain connected for player-initiated zone creation, dismissal, and shared preset changes.
+Within an Effect Block, enable only the result sections the ability needs:
 
-## PF2e Zone Effects
+- **Chat Alert** posts a message when the block runs. It supports the listed placeholders such as `{creature}`, `{zone}`, and `{item}`.
+- **Saving Throw** requests the selected save against a custom DC or a statistic from the source Actor. Select **Basic save** for the normal 0 / half / full / double progression.
+- **Damage** and **Healing** post normal PF2e roll cards.
+- **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled.
+- **Temporary Immunity** prevents later applications for the chosen duration after the selected result.
 
-The three supplied Effects are in the separate **PF2e Zone Effects** Item compendium. Open **Compendium Packs** and select that pack to browse them. They do not appear in the world’s main Items directory unless a GM imports them.
-
-Use these UUIDs in an Effect Item field in the builder:
+To apply an Effect Item, paste its Item UUID into the relevant result. The supplied Effects are available in the **PF2e Zone Effects** compendium:
 
 | Effect | UUID |
 | --- | --- |
@@ -74,18 +88,28 @@ Use these UUIDs in an Effect Item field in the builder:
 | Focusing Hum Protection | `Compendium.pf2e-zone-automation.zone-effects.Item.j42JjZYGnRM1wf6R` |
 | Toxic Cloud – Obscured Vision | `Compendium.pf2e-zone-automation.zone-effects.Item.Qz16EDTu2GVTtUPV` |
 
-Each Effect uses its supplied PNG image from `assets/effects/`. Focusing Hum Protection is preserved as supplied: it has a description but no PF2e rule elements.
+Choose the Effect Item removal rule that matches the ability: keep the item's own duration, remove it when the creature exits, or remove it when the zone ends.
 
-## Releasing a New Version
+### Review, create, and manage the zone
 
-The GitHub release workflow runs checks, packages the module, and uploads `module.json` and `module.zip`. Set `version` in `module.json` and update its `download` URL to the matching tag, then commit, push, tag, and push the tag. For version `0.1.1`:
+1. Select **Validate** to check the configuration.
+2. Select **Post Preview to Chat** to validate and post a readable summary without creating a Region.
+3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center.
+4. Use **Manage Existing Zones** to inspect, export, or dismiss zones on the active Scene.
 
-```powershell
-git add -A
-git commit -m "Release PF2e Zone Automation 0.1.1"
-git push origin main
-git tag v0.1.1
-git push origin v0.1.1
-```
+### Save, import, and reuse configurations
 
-The release must be public so The Forge can retrieve the manifest and ZIP.
+Select **Save** to store the current configuration in the shared **PF2e Zone Library** Journal, inside the **PF2e Zone Automation** Journal Entries folder. Use **Save As** to create a new preset without changing the original. **Load Saved Zone** lists available presets.
+
+Seven ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, and Soul Cutter - Soothe Souls.
+
+To use an example, open its JSON file, copy its contents, select a source token, open the builder, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Export JSON** to copy a portable configuration for reuse.
+
+## Included Macros
+
+The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros. Both default to **Observer** ownership for players, and their commands call the module API so the underlying logic updates with the module.
+
+| Macro | What it does |
+| --- | --- |
+| **Open PF2e Zone Builder** | Opens the zone builder for the one controlled source token. |
+| **Shielding Taunt** | For a Guardian with Shielding Taunt and a wielded shield, raises the shield, applies PF2e's auditory Taunt effect to one targeted creature, and replaces that Guardian's prior Taunt. |

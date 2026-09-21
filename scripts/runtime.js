@@ -1,7 +1,7 @@
-// Zone runtime extracted from PF2e Zone Builder v0.5.13.
+// Zone runtime extracted from PF2e Zone Builder v0.5.15.
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.13";
+    const VERSION = "0.5.15";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -85,26 +85,36 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         async writePayload(region, payload) {
-          if (!this.isLiveRegion(region)) return;
+          if (!this.isLiveRegion(region)) return false;
 
           const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}`;
+          const staleRegionError = (error) =>
+            !this.isLiveRegion(region) && /does not exist|not found/i.test(String(error?.message ?? error));
 
-          // Foundry document updates recursively merge objects by default.
-          // That is wrong for our runtime state because deleting a pending
-          // save/immunity/applied-record from the local object must also delete
-          // it from the persisted Region flag. V14's _replace operator makes
-          // this payload an authoritative snapshot.
-          if (typeof globalThis._replace === "function") {
-            await region.update({ [path]: globalThis._replace(payload) });
-            return;
-          }
+          try {
+            // Foundry document updates recursively merge objects by default.
+            // That is wrong for our runtime state because deleting a pending
+            // save/immunity/applied-record from the local object must also delete
+            // it from the persisted Region flag. V14's _replace operator makes
+            // this payload an authoritative snapshot.
+            if (typeof globalThis._replace === "function") {
+              await region.update({ [path]: globalThis._replace(payload) });
+              return true;
+            }
 
-          // Defensive fallback for an unexpected V14 build where the documented
-          // global operator is unavailable. Slower, but preserves replacement
-          // semantics rather than silently merging stale runtime keys.
-          await region.unsetFlag(FLAG_SCOPE, FLAG_KEY);
-          if (this.isLiveRegion(region)) {
+            // Defensive fallback for an unexpected V14 build where the documented
+            // global operator is unavailable. Slower, but preserves replacement
+            // semantics rather than silently merging stale runtime keys.
+            await region.unsetFlag(FLAG_SCOPE, FLAG_KEY);
+            if (!this.isLiveRegion(region)) return false;
             await region.setFlag(FLAG_SCOPE, FLAG_KEY, payload);
+            return true;
+          } catch (error) {
+            // A manually deleted Region can disappear between the live-document
+            // check and Foundry receiving the update. Its state no longer needs
+            // persistence, so treat that lifecycle race as a completed write.
+            if (staleRegionError(error)) return false;
+            throw error;
           }
         },
 
@@ -124,6 +134,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async withState(region, callback) {
           if (!region?.uuid) return null;
           const key = region.uuid;
+
+          // endZone waits for work that was already accepted, but must not start
+          // another Region update once deletion has begun.
+          if (this.endingZones.has(key)) return null;
+
           const prior = this.locks.get(key) ?? Promise.resolve();
           const next = prior.catch(() => undefined).then(async () => {
             if (!this.isLiveRegion(region)) return null;
@@ -137,7 +152,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             // (notably a clickable save request) runs only after this completes,
             // so a fast click cannot be overwritten by the originating event's
             // stale payload snapshot.
-            if (this.isLiveRegion(region)) await this.writePayload(region, payload);
+            if (!this.isLiveRegion(region)) return result;
+            const persisted = await this.writePayload(region, payload);
+            if (!persisted || !this.isLiveRegion(region)) return result;
 
             for (const action of afterCommit) {
               try {
@@ -220,10 +237,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        durationRounds(config) {
+        durationRounds(config, state) {
+          const resolved = Number(state?.duration?.rounds);
+          if (Number.isSafeInteger(resolved) && resolved > 0) return resolved;
+
           switch (config?.duration?.type) {
             case "1-round": return 1;
-            case "custom-rounds": return Math.max(1, Number(config.duration.rounds) || 1);
+            case "custom-rounds": {
+              const configured = Number(config.duration.rounds);
+              return Number.isSafeInteger(configured) && configured > 0 ? configured : null;
+            }
             case "1-minute": return 10;
             case "10-minutes": return 100;
             default: return null;
@@ -1284,7 +1307,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               return;
             }
 
-            const rounds = this.durationRounds(payload.config);
+            // Formula durations are resolved once when the Region is created.
+            // Use the persisted total so reconnects and other clients never reroll it.
+            const rounds = this.durationRounds(payload.config, payload.state);
             if (!rounds) return;
             const d = payload.state.duration;
             d.rounds ??= rounds;
@@ -1373,8 +1398,23 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (this.endingZones.has(key)) return;
           this.endingZones.add(key);
 
+          const reconcileTimer = this.regionReconcileTimers.get(key);
+          if (reconcileTimer) clearTimeout(reconcileTimer);
+          this.regionReconcileTimers.delete(key);
+
           try {
-            await this.withState(liveRegion, async (payload) => this.cleanupZoneUnlocked(payload));
+            // Allow already accepted state work to commit before deleting the
+            // Region. New work is rejected by withState while endingZones holds
+            // this key, so no late update can target the deleted document.
+            const pending = this.locks.get(key);
+            if (pending) await pending.catch(() => undefined);
+
+            // The Region is about to be deleted, so cleanup only needs to remove
+            // owned effects and pending workflows. Writing the modified payload
+            // back first creates an unnecessary embedded-document update race.
+            const regionForCleanup = scene.regions?.get?.(regionId);
+            const payload = regionForCleanup ? this.readPayload(regionForCleanup) : null;
+            if (payload) await this.cleanupZoneUnlocked(payload);
 
             // Re-resolve after cleanup in case another concurrent lifecycle
             // event removed the Region while cleanup awaited embedded updates.
