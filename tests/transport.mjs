@@ -103,6 +103,46 @@ test("GM Worker rejects a player's request for an unowned source Actor", async (
   assert.match(result.error, /does not own the source Actor/);
 });
 
+test("GM Worker rejects a player's Shielding Taunt request for an unowned Guardian", async () => {
+  const scene = { id: "scene" };
+  const actor = {
+    name: "Unowned Guardian",
+    testUserPermission: () => false
+  };
+  game.scenes = { get: (id) => id === scene.id ? scene : null };
+  globalThis.fromUuid = async () => ({
+    documentName: "Token",
+    parent: scene,
+    actor
+  });
+
+  game.user = player;
+  const resultPromise = requestGMWorker({
+    protocol: 1,
+    action: "shielding-taunt",
+    requesterUserId: player.id,
+    sourceTokenUuid: "Scene.scene.Token.guardian",
+    targetTokenUuid: "Scene.scene.Token.target"
+  });
+  const request = sent.shift();
+
+  game.user = gm;
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await listener(request, player.id);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  const reply = sent.shift();
+
+  game.user = player;
+  await listener(reply, gm.id);
+  const result = await resultPromise;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /does not own the source Actor/);
+});
+
 test("player request requires an active GM", async () => {
   game.user = player;
   users.activeGM = null;

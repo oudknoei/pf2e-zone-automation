@@ -6,10 +6,26 @@ import test from "node:test";
 import { extractPack } from "@foundryvtt/foundryvtt-cli";
 
 const root = resolve(import.meta.dirname, "..");
-const macroId = "pzaOpenBuilder01";
-const macroImage = "modules/pf2e-zone-automation/assets/macros/pf2e-zone-builder.webp";
+const expectedMacros = new Map([
+  [
+    "pzaOpenBuilder01",
+    {
+      name: "Open PF2e Zone Builder",
+      image: "modules/pf2e-zone-automation/assets/macros/pf2e-zone-builder.webp",
+      api: "openBuilder"
+    }
+  ],
+  [
+    "pzaShieldTaunt01",
+    {
+      name: "Shielding Taunt",
+      image: "modules/pf2e-zone-automation/assets/macros/shielding-taunt.png",
+      api: "openShieldingTaunt"
+    }
+  ]
+]);
 
-test("compiled Macro pack provides the Zone Builder hotbar macro", async () => {
+test("compiled Macro pack provides the module hotbar macros", async () => {
   const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
   const pack = manifest.packs.find(({ name }) => name === "zone-macros");
   assert.equal(pack.type, "Macro");
@@ -23,20 +39,24 @@ test("compiled Macro pack provides the Zone Builder hotbar macro", async () => {
     const records = readdirSync(destination)
       .filter((name) => name.endsWith(".json"))
       .map((name) => JSON.parse(readFileSync(join(destination, name), "utf8")));
-    assert.equal(records.length, 1);
+    assert.equal(records.length, expectedMacros.size);
 
-    const macro = records[0];
-    assert.equal(macro._id, macroId);
-    assert.equal(macro.name, "Open PF2e Zone Builder");
-    assert.equal(macro.type, "script");
-    assert.equal(macro.ownership.default, 2);
-    assert.equal(macro.img, macroImage);
-    assert.match(macro.command, /game\.modules\.get\("pf2e-zone-automation"\)/);
-    assert.match(macro.command, /await zoneModule\.api\.openBuilder\(\)/);
+    for (const macro of records) {
+      const expected = expectedMacros.get(macro._id);
+      assert.ok(expected, `Unexpected macro ${macro._id}`);
+      assert.equal(macro.name, expected.name);
+      assert.equal(macro.type, "script");
+      assert.equal(macro.ownership.default, 2);
+      assert.equal(macro.img, expected.image);
+      assert.match(macro.command, /game\.modules\.get\("pf2e-zone-automation"\)/);
+      assert.match(macro.command, new RegExp(`await zoneModule\\.api\\.${expected.api}\\(\\)`));
+    }
 
-    const image = readFileSync(join(root, "assets", "macros", "pf2e-zone-builder.webp"));
-    assert.equal(image.subarray(0, 4).toString("ascii"), "RIFF");
-    assert.equal(image.subarray(8, 12).toString("ascii"), "WEBP");
+    const builderImage = readFileSync(join(root, "assets", "macros", "pf2e-zone-builder.webp"));
+    assert.equal(builderImage.subarray(0, 4).toString("ascii"), "RIFF");
+    assert.equal(builderImage.subarray(8, 12).toString("ascii"), "WEBP");
+    const tauntImage = readFileSync(join(root, "assets", "macros", "shielding-taunt.png"));
+    assert.equal(tauntImage.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
   } finally {
     assert.ok(scratch.startsWith(tmpdir()));
     rmSync(scratch, { recursive: true, force: true });

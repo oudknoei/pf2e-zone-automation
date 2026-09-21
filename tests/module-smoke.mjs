@@ -43,6 +43,8 @@ test("manifest points to files that ship", () => {
 test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("init")();
   assert.equal(typeof module.api.openBuilder, "function");
+  assert.equal(typeof module.api.openShieldingTaunt, "function");
+  assert.equal(typeof module.api.requestShieldingTaunt, "function");
   assert.equal(typeof module.api.handleRegionEvent, "function");
   const controls = { tokens: { tools: { select: {} } } };
   hooks.get("getSceneControlButtons")(controls);

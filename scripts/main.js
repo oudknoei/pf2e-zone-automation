@@ -1,5 +1,6 @@
 import { openZoneBuilder } from "./builder.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { openShieldingTaunt, requestShieldingTaunt } from "./shielding-taunt.js";
 import { registerZoneSocket } from "./transport.js";
 
 const MODULE_ID = "pf2e-zone-automation";
@@ -8,6 +9,8 @@ Hooks.once("init", () => {
   const module = game.modules.get(MODULE_ID);
   module.api = {
     openBuilder: openZoneBuilder,
+    openShieldingTaunt,
+    requestShieldingTaunt,
     handleRegionEvent: zoneRuntimeEntrypoint
   };
 });

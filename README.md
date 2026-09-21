@@ -43,7 +43,12 @@ Use **Manage Existing Zones** in the builder to inspect, export, or dismiss zone
 
 ## PF2e Zone Macros
 
-The **PF2e Zone Macros** compendium contains **Open PF2e Zone Builder**. Drag it from the compendium to a Macro Hotbar slot, then select a source token and run it to open the builder.
+The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros:
+
+- **Open PF2e Zone Builder**: Select a source token, then run the macro to open the builder.
+- **Shielding Taunt**: Select a Guardian with the Shielding Taunt feat and a wielded shield, target one creature, then run the macro. It raises the Guardian's shield, applies PF2e's official auditory Taunt effect, and replaces that Guardian's previous Taunt.
+
+The macro commands call the module API, so their underlying logic updates with the module.
 
 ## Example Configurations
 

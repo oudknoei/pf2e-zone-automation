@@ -1,5 +1,5 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
-
+import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
 
 export async function handleWorkerRequest(request) {
@@ -486,6 +486,15 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     switch (request.action) {
       case "create": return await createZone();
       case "end": return await endZone();
+      case "shielding-taunt": {
+        const requester = getRequester();
+        const sourceToken = await fromUuid(request.sourceTokenUuid ?? "");
+        if (sourceToken?.documentName !== "Token" || !sourceToken.actor) {
+          throw new Error("The Guardian token was not found.");
+        }
+        assertSourcePermission(sourceToken.actor, requester);
+        return succeed(await executeShieldingTaunt(request));
+      }
       case "library-list": return await listLibrary();
       case "library-save": return await saveLibraryPreset();
       case "library-delete": return await deleteLibraryPreset();
