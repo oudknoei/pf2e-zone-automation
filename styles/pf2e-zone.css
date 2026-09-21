@@ -7,6 +7,12 @@
 .pf2e-zone-builder .zb-source-name { font-size:1.25em; font-weight:700; }
 .pf2e-zone-builder .zb-muted, .pf2e-zone-builder .notes, .pf2e-zone-builder .zb-summary-note { opacity:.72; font-size:.88em; }
 .pf2e-zone-builder .zb-warning { padding:8px 10px; margin:8px 0; border-left:4px solid #c69200; background:rgba(198,146,0,.12); }
+.pf2e-zone-builder input.zb-invalid, .pf2e-zone-builder select.zb-invalid, .pf2e-zone-builder textarea.zb-invalid { border-color:#a22; box-shadow:0 0 0 1px rgba(170,34,34,.25); }
+.pf2e-zone-builder fieldset.zb-invalid, .pf2e-zone-builder .zb-source.zb-invalid, .pf2e-zone-builder .zb-block-list.zb-invalid, .pf2e-zone-builder .zb-subrow.zb-invalid, .pf2e-zone-builder .zb-activation-damage-choice.zb-invalid { border-color:#a22; }
+.pf2e-zone-builder .zb-save-choice-options.zb-invalid, .pf2e-zone-builder .zb-immunity-starts.zb-invalid { outline:1px solid #a22; outline-offset:4px; }
+.pf2e-zone-builder .zb-field-error { grid-column:1 / -1; margin-top:4px; color:#8d1a1a; font-size:.86em; font-weight:600; line-height:1.25; }
+.pf2e-zone-builder .zb-source > .zb-field-error { flex-basis:100%; }
+.pf2e-zone-builder label > .zb-field-error { width:100%; }
 .pf2e-zone-builder .zb-toolbar { flex:0 0 auto; display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 12px; }
 .pf2e-zone-builder .zb-toolbar button { flex:0 0 auto; }
 .pf2e-zone-builder .zb-section { border:1px solid var(--color-border-light-2, #888); border-radius:6px; padding:10px; margin:10px 0; }
@@ -59,7 +65,13 @@
 .pf2e-zone-builder .zb-block-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:10px; }
 .pf2e-zone-builder button.danger { border-color:#a22; }
 .pf2e-zone-builder .zb-bottom { position:sticky; bottom:0; z-index:5; display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:10px; padding:10px 8px; border-top:1px solid rgba(127,127,127,.35); background:#f2efe6; color:#191813; box-shadow:0 -2px 5px rgba(0,0,0,.15); }
-.pf2e-zone-builder .zb-bottom .right { display:flex; gap:6px; }
+.pf2e-zone-builder .zb-bottom-info { min-width:0; display:flex; flex:1 1 auto; flex-direction:column; gap:3px; }
+.pf2e-zone-builder .zb-readiness { display:flex; align-items:center; gap:5px; font-weight:700; color:#8d1a1a; }
+.pf2e-zone-builder .zb-readiness.is-ready { color:#156b35; }
+.pf2e-zone-builder .zb-operation-status { display:flex; align-items:center; gap:5px; color:#4c4c4c; font-size:.88em; }
+.pf2e-zone-builder .zb-operation-status.is-ready { color:#156b35; }
+.pf2e-zone-builder .zb-operation-status.has-errors { color:#8d1a1a; }
+.pf2e-zone-builder .zb-bottom .right { display:flex; flex:0 0 auto; gap:6px; }
 @media (max-width: 850px) {
   .pf2e-zone-builder .zb-grid.two, .pf2e-zone-builder .zb-grid.three { grid-template-columns:1fr; }
   .pf2e-zone-builder details.zb-block > summary { grid-template-columns:1fr; gap:3px; }
@@ -71,4 +83,6 @@
     grid-row:auto;
   }
   .pf2e-zone-builder .zb-immunity-options { grid-template-columns:1fr; }
+  .pf2e-zone-builder .zb-bottom { align-items:stretch; flex-direction:column; }
+  .pf2e-zone-builder .zb-bottom .right { flex-wrap:wrap; }
 }

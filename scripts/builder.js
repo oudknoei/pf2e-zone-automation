@@ -1,5 +1,6 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, resolveDurationRounds } from "./duration.js";
+import { postFormulaDurationToGMs } from "./duration-chat.js";
 import { requestGMWorker } from "./transport.js";
 
 /*
@@ -15,7 +16,7 @@ import { requestGMWorker } from "./transport.js";
 export async function openZoneBuilder() {
   "use strict";
 
-  const BUILDER_VERSION = "0.5.15";
+  const BUILDER_VERSION = "0.5.17";
   const RUNTIME_VERSION = "0.5.15";
   const SCHEMA_VERSION = 8;
   const ZONE_COLOR_LIGHTEN = 0.1;
@@ -102,6 +103,43 @@ export async function openZoneBuilder() {
       return "The PF2e Zone module socket is not connected. Refresh Foundry and try again.";
     }
     return null;
+  }
+
+  function currentOperationStatus() {
+    if (!selectionStillMatchesSource()) {
+      return {
+        text: "Source token changed",
+        detail: "Click Use Current Selection before previewing or creating a zone.",
+        icon: "fa-triangle-exclamation",
+        ready: false
+      };
+    }
+
+    if (game.user.isGM) {
+      return {
+        text: "GM connected",
+        detail: "This GM can create zones directly.",
+        icon: "fa-user-shield",
+        ready: true
+      };
+    }
+
+    const problem = workerSetupProblem();
+    if (!problem) {
+      return {
+        text: "Player creation available",
+        detail: "An active GM is available to create the requested zone.",
+        icon: "fa-user-check",
+        ready: true
+      };
+    }
+
+    return {
+      text: "Player creation unavailable",
+      detail: problem,
+      icon: "fa-triangle-exclamation",
+      ready: false
+    };
   }
 
   async function callGMWorker(action, data = {}) {
@@ -1020,7 +1058,16 @@ export async function openZoneBuilder() {
         </div>
 
         <div class="zb-bottom">
-          <span class="zb-muted">Builder ${BUILDER_VERSION} · Runtime ${RUNTIME_VERSION} · Schema ${SCHEMA_VERSION} · Player GM bridge: module socket</span>
+          <div class="zb-bottom-info">
+            <div class="zb-readiness" data-validation-status-container role="status" aria-live="polite">
+              <i class="fa-solid fa-circle-check" data-validation-status-icon></i>
+              <span data-validation-status>Checking configuration…</span>
+            </div>
+            <div class="zb-operation-status" data-operation-status-container role="status" aria-live="polite">
+              <i class="fa-solid fa-circle-notch fa-spin" data-operation-status-icon></i>
+              <span data-operation-status>Checking connection…</span>
+            </div>
+          </div>
           <div class="right">
             <button type="button" class="zb-close"><i class="fa-solid fa-xmark"></i> Close</button>
             <button type="button" class="zb-validate"><i class="fa-solid fa-list-check"></i> Validate</button>
@@ -1170,23 +1217,29 @@ export async function openZoneBuilder() {
   function validateConfig(cfg, { requireCurrentSource = false } = {}) {
     const errors = [];
     const warnings = [];
+    const issues = [];
     const dcChoices = getDcChoices(sourceActor);
+    const error = (message, target = null) => {
+      errors.push(message);
+      if (target) issues.push({ message, target });
+    };
+    const blockTarget = (index, field, extra = {}) => ({ scope: "block", index, field, ...extra });
 
     if (requireCurrentSource && !selectionStillMatchesSource()) {
-      errors.push("The controlled token has changed. Click 'Use Current Selection' before continuing.");
+      error("The controlled token has changed. Click 'Use Current Selection' before continuing.", { scope: "source" });
     }
-    if (!cfg.name) errors.push("Zone name is required.");
-    if (!(cfg.radius > 0)) errors.push("Radius must be greater than 0.");
+    if (!cfg.name) error("Zone name is required.", { scope: "zone", field: "name" });
+    if (!(cfg.radius > 0)) error("Radius must be greater than 0.", { scope: "zone", field: "radius" });
     if (cfg.duration?.type === "custom-rounds") {
       const durationError = durationRoundsError(cfg.duration.rounds);
-      if (durationError) errors.push(durationError);
+      if (durationError) error(durationError, { scope: "zone", field: "duration-rounds" });
     }
-    if (!cfg.effects.length) errors.push("At least one effect block is required.");
+    if (!cfg.effects.length) error("At least one effect block is required.", { scope: "blocks" });
 
     const sharedDamageChoice = cfg.activationChoices?.damageType;
     if (sharedDamageChoice?.enabled) {
       if (!sharedDamageChoice.options.length) {
-        errors.push("Shared activation damage type is enabled but no allowed damage types are selected.");
+        error("Shared activation damage type is enabled but no allowed damage types are selected.", { scope: "activation-damage-choice" });
       } else if (sharedDamageChoice.options.length === 1) {
         warnings.push("Shared activation damage type has only one allowed type; a fixed damage type may be simpler.");
       }
@@ -1194,36 +1247,47 @@ export async function openZoneBuilder() {
 
     cfg.effects.forEach((block, index) => {
       const prefix = `${block.name || `Effect Block ${index + 1}`}:`;
-      if (!Object.values(block.triggers).some(Boolean)) errors.push(`${prefix} select at least one trigger.`);
+      if (!Object.values(block.triggers).some(Boolean)) {
+        error(`${prefix} select at least one trigger.`, blockTarget(index, "triggers"));
+      }
       if (block.triggers.traitUse && !block.traitUse?.trait) {
-        errors.push(`${prefix} On Trait Use requires a watched trait.`);
+        error(`${prefix} On Trait Use requires a watched trait.`, blockTarget(index, "trait-use-trait"));
       }
       if (block.chatAlert?.enabled && !block.chatAlert?.text) {
-        errors.push(`${prefix} Chat Alert is enabled but no alert text was entered.`);
+        error(`${prefix} Chat Alert is enabled but no alert text was entered.`, blockTarget(index, "chat-alert-text"));
       }
 
       if (block.save.enabled) {
         if (block.save.type === "choice" && block.save.choices.length < 2) {
-          errors.push(`${prefix} target-choice save requires at least two allowed saves.`);
+          error(`${prefix} target-choice save requires at least two allowed saves.`, blockTarget(index, "save-choices"));
         }
         if (block.save.dc.mode === "custom") {
-          if (!(Number(block.save.dc.value) > 0)) errors.push(`${prefix} custom save DC must be greater than 0.`);
+          if (!(Number(block.save.dc.value) > 0)) {
+            error(`${prefix} custom save DC must be greater than 0.`, blockTarget(index, "custom-dc"));
+          }
         } else if (!dcChoices.some((x) => x.statistic === block.save.dc.statistic)) {
-          errors.push(`${prefix} DC statistic '${block.save.dc.statistic}' is not available on ${sourceActor.name}.`);
+          error(`${prefix} DC statistic '${block.save.dc.statistic}' is not available on ${sourceActor.name}.`, blockTarget(index, "dc-source"));
         }
       }
 
-      if (block.damage.enabled && !block.damage.formula) errors.push(`${prefix} damage is enabled but no formula was entered.`);
-      if (block.healing?.enabled && !block.healing.formula) errors.push(`${prefix} healing is enabled but no formula was entered.`);
+      if (block.damage.enabled && !block.damage.formula) {
+        error(`${prefix} damage is enabled but no formula was entered.`, blockTarget(index, "damage-formula"));
+      }
+      if (block.healing?.enabled && !block.healing.formula) {
+        error(`${prefix} healing is enabled but no formula was entered.`, blockTarget(index, "healing-formula"));
+      }
       if (block.damage.enabled && block.damage.typeMode === "activation-choice" && !sharedDamageChoice?.enabled) {
-        errors.push(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`);
+        error(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`, blockTarget(index, "damage-type-mode"));
       }
 
       for (const [outcomeKey, outcome] of Object.entries(block.outcomes)) {
-        for (const condition of outcome.conditions ?? []) {
+        for (const [conditionIndex, condition] of (outcome.conditions ?? []).entries()) {
           if (condition.removal === "condition-end") {
             if (!condition.condition) {
-              errors.push(`${prefix} ${titleCase(outcomeKey)} condition '${condition.slug}' must name the condition that ends it.`);
+              error(
+                `${prefix} ${titleCase(outcomeKey)} condition '${condition.slug}' must name the condition that ends it.`,
+                blockTarget(index, "condition-link", { outcomeKey, conditionIndex })
+              );
             } else if (condition.condition === condition.slug) {
               warnings.push(`${prefix} ${titleCase(outcomeKey)} condition '${condition.slug}' is set to end when itself ends.`);
             }
@@ -1237,8 +1301,10 @@ export async function openZoneBuilder() {
 
       for (const key of relevantOutcomes) {
         const outcome = block.outcomes[key];
-        outcome.effects.forEach((effect, i) => {
-          if (!effect.uuid) errors.push(`${prefix} ${titleCase(key)} Effect Item ${i + 1} has no UUID.`);
+        outcome.effects.forEach((effect, effectIndex) => {
+          if (!effect.uuid) {
+            error(`${prefix} ${titleCase(key)} Effect Item ${effectIndex + 1} has no UUID.`, blockTarget(index, "effect-uuid", { outcomeKey: key, effectIndex }));
+          }
         });
       }
 
@@ -1247,20 +1313,101 @@ export async function openZoneBuilder() {
       }
 
       if (block.immunity.duration !== "none" && block.immunity.starts.length === 0) {
-        errors.push(`${prefix} immunity has a duration but no start condition.`);
+        error(`${prefix} immunity has a duration but no start condition.`, blockTarget(index, "immunity-starts"));
       }
       if (block.immunity.starts.includes("after-save") && !block.save.enabled) {
         warnings.push(`${prefix} 'After any save' immunity is selected but this block has no save.`);
       }
       if (block.immunity.starts.includes("condition-recovery") && !block.immunity.recoveryCondition) {
-        errors.push(`${prefix} choose a recovery condition for condition-based immunity.`);
+        error(`${prefix} choose a recovery condition for condition-based immunity.`, blockTarget(index, "recovery-condition"));
       }
       if (block.triggers.continuous && (block.damage.enabled || block.healing?.enabled)) {
         warnings.push(`${prefix} continuous damage/healing will need special runtime semantics; verify this is intentional.`);
       }
     });
 
-    return { errors, warnings };
+    return { errors, warnings, issues };
+  }
+
+  function validationTarget(root, issue) {
+    const target = issue?.target;
+    if (!target) return null;
+    if (target.scope === "source") return root.querySelector(".zb-source");
+    if (target.scope === "blocks") return root.querySelector(".zb-block-list");
+    if (target.scope === "activation-damage-choice") return root.querySelector(".zb-activation-damage-choice");
+    if (target.scope === "zone") return root.querySelector(`[data-zone="${target.field}"]`);
+    if (target.scope !== "block") return null;
+
+    const block = [...root.querySelectorAll("[data-block-id]")][target.index];
+    if (!block) return null;
+    if (target.field === "triggers") return block.querySelector("fieldset");
+    if (target.field === "save-choices") return block.querySelector(".zb-save-choice-options");
+    if (target.field === "immunity-starts") return block.querySelector(".zb-immunity-starts");
+    if (target.field === "condition-link") {
+      const rows = [...block.querySelectorAll(`[data-outcome="${target.outcomeKey}"] .zb-condition-row`)];
+      return rows[target.conditionIndex]?.querySelector('[data-field="condition-link"]') ?? null;
+    }
+    if (target.field === "effect-uuid") {
+      const rows = [...block.querySelectorAll(`[data-outcome="${target.outcomeKey}"] .zb-effect-row`)];
+      return rows[target.effectIndex]?.querySelector('[data-field="effect-uuid"]') ?? null;
+    }
+    return block.querySelector(`[data-field="${target.field}"]`);
+  }
+
+  function validationErrorHost(target) {
+    if (!target) return null;
+    if (target.matches("fieldset, .zb-trait-use-options, .zb-chat-alert-options, .zb-save-choice-options, .zb-immunity-starts, .zb-activation-damage-choice, .zb-source, .zb-block-list, .zb-condition-row, .zb-effect-row")) return target;
+    return target.closest("label") ?? target.closest(".zb-subrow") ?? target;
+  }
+
+  function clearInlineValidation(root) {
+    for (const message of root.querySelectorAll(".zb-field-error")) message.remove();
+    for (const element of root.querySelectorAll(".zb-invalid")) {
+      element.classList.remove("zb-invalid");
+      element.removeAttribute("aria-invalid");
+    }
+  }
+
+  function renderInlineValidation(root, validation) {
+    clearInlineValidation(root);
+    for (const issue of validation.issues ?? []) {
+      const target = validationTarget(root, issue);
+      const host = validationErrorHost(target);
+      if (!target || !host) continue;
+
+      target.classList.add("zb-invalid");
+      target.setAttribute("aria-invalid", "true");
+      host.classList.add("zb-invalid");
+      const message = document.createElement("div");
+      message.className = "zb-field-error";
+      message.textContent = issue.message;
+      host.append(message);
+    }
+  }
+
+  function refreshLiveValidation(root) {
+    const cfg = readConfig(root);
+    const validation = validateConfig(cfg, { requireCurrentSource: true });
+    renderInlineValidation(root, validation);
+
+    const status = root.querySelector("[data-validation-status]");
+    const statusContainer = root.querySelector("[data-validation-status-container]");
+    const icon = root.querySelector("[data-validation-status-icon]");
+    const create = root.querySelector(".zb-create");
+    const errorCount = validation.errors.length;
+    const warningCount = validation.warnings.length;
+
+    if (status && statusContainer && icon) {
+      statusContainer.classList.toggle("is-ready", errorCount === 0);
+      statusContainer.classList.toggle("has-errors", errorCount > 0);
+      icon.className = `fa-solid ${errorCount ? "fa-triangle-exclamation" : "fa-circle-check"}`;
+      status.textContent = errorCount
+        ? `Fix ${errorCount} field${errorCount === 1 ? "" : "s"} to create`
+        : `Ready to create${warningCount ? ` · ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}`;
+    }
+    if (create) create.disabled = errorCount > 0;
+    refreshOperationStatus(root);
+    return validation;
   }
 
   function refreshVisibility(root) {
@@ -1563,6 +1710,12 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!region) return null;
     const runtime = await zoneRuntimeEntrypoint();
     await runtime.activateRegion(region);
+    await postFormulaDurationToGMs({
+      zoneName: cfg.name,
+      duration: durationResolution,
+      actor: sourceActor,
+      token: sourceToken.document
+    });
     if (durationResolution?.formula) {
       ui.notifications.info(`PF2e Zone duration: ${durationResolution.rounds} rounds (rolled ${durationResolution.formula}).`);
     }
@@ -1816,6 +1969,40 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   }
 
   let dialog;
+  let operationStatusTimer = null;
+
+  function refreshOperationStatus(root) {
+    const operation = currentOperationStatus();
+    const status = root.querySelector("[data-operation-status]");
+    const container = root.querySelector("[data-operation-status-container]");
+    const icon = root.querySelector("[data-operation-status-icon]");
+
+    if (status && container && icon) {
+      container.classList.toggle("is-ready", operation.ready);
+      container.classList.toggle("has-errors", !operation.ready);
+      icon.className = `fa-solid ${operation.icon}`;
+      status.textContent = operation.text;
+      status.title = operation.detail;
+    }
+    return operation;
+  }
+
+  function stopOperationStatusPolling() {
+    if (operationStatusTimer === null) return;
+    globalThis.clearInterval(operationStatusTimer);
+    operationStatusTimer = null;
+  }
+
+  function startOperationStatusPolling(root) {
+    stopOperationStatusPolling();
+    operationStatusTimer = globalThis.setInterval(() => {
+      if (!root.isConnected) {
+        stopOperationStatusPolling();
+        return;
+      }
+      refreshOperationStatus(root);
+    }, 1000);
+  }
 
   function rerenderInsideDialog() {
     const content = dialog.window.content;
@@ -1830,6 +2017,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   function wire(root) {
     if (!root) return;
     refreshVisibility(root);
+    refreshLiveValidation(root);
+    startOperationStatusPolling(root);
 
     for (const blockElement of root.querySelectorAll("details.zb-block")) {
       blockElement.addEventListener("toggle", () => {
@@ -1854,17 +2043,24 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           if (valued && !valueInput.value) valueInput.value = "1";
           if (!valued) valueInput.value = "";
         }
+        refreshLiveValidation(root);
         return;
       }
 
       if (target.matches('[data-field="condition-removal"]')) {
         refreshConditionRow(target.closest(".zb-condition-row"));
+        refreshLiveValidation(root);
         return;
       }
 
       if (target.matches('[data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
+      refreshLiveValidation(root);
+    });
+
+    root.addEventListener("input", (event) => {
+      if (event.target instanceof HTMLElement) refreshLiveValidation(root);
     });
 
     root.querySelector(".zb-use-selection").addEventListener("click", () => {
@@ -1934,6 +2130,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           list.append(row);
           refreshConditionRow(row);
         }
+        refreshLiveValidation(root);
         return;
       }
 
@@ -1946,6 +2143,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         if (!list.querySelector(".zb-condition-row")) {
           list.innerHTML = `<div class="zb-empty">No conditions</div>`;
         }
+        refreshLiveValidation(root);
         return;
       }
 
@@ -1966,6 +2164,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         );
         const row = holder.firstElementChild;
         if (row) list.append(row);
+        refreshLiveValidation(root);
         return;
       }
 
@@ -1978,6 +2177,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         if (!list.querySelector(".zb-effect-row")) {
           list.innerHTML = `<div class="zb-empty">No Effect Items</div>`;
         }
+        refreshLiveValidation(root);
       }
     });
 
@@ -2042,14 +2242,14 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
     root.querySelector(".zb-validate").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = validateConfig(cfg);
+      const validation = refreshLiveValidation(root);
       console.log("PF2e Zone Builder validation", { cfg, validation });
       await showValidation(validation);
     });
 
     root.querySelector(".zb-preview").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = validateConfig(cfg, { requireCurrentSource: true });
+      const validation = refreshLiveValidation(root);
       if (validation.errors.length) {
         await showValidation(validation);
         return;
@@ -2068,7 +2268,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
     root.querySelector(".zb-create").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = validateConfig(cfg, { requireCurrentSource: true });
+      const validation = refreshLiveValidation(root);
       if (validation.errors.length) {
         await showValidation(validation);
         return;
@@ -2095,7 +2295,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         console.error("PF2e Zone creation failed", error);
         ui.notifications.error(`PF2e Zone creation failed: ${error.message ?? error}`);
       } finally {
-        button.disabled = false;
+        refreshLiveValidation(root);
       }
     });
   }
@@ -2128,6 +2328,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       { action: "close", label: "Close", icon: "fa-solid fa-xmark", default: true }
     ]
   });
+
+  dialog.addEventListener("close", () => stopOperationStatusPolling(), { once: true });
 
   dialog.addEventListener("render", () => {
     // Do not override DialogV2's internal form/layout. The builder itself is the

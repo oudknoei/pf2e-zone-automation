@@ -15,12 +15,25 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /At the start of a creature's turn/);
   assert.match(builder, /data-block-summary/);
   assert.match(builder, /function blockSummary/);
+  assert.match(builder, /data-validation-status/);
+  assert.match(builder, /Ready to create/);
+  assert.match(builder, /data-operation-status/);
+  assert.match(builder, /GM connected/);
+  assert.match(builder, /Player creation available/);
+  assert.match(builder, /Source token changed/);
+  assert.doesNotMatch(builder, /Player GM bridge: module socket/);
+  assert.match(builder, /function renderInlineValidation/);
+  assert.match(builder, /function refreshLiveValidation/);
+  assert.match(builder, /function refreshOperationStatus/);
 });
 
 test("README provides a complete How To and omits retired sections", () => {
   assert.match(readme, /^## How To$/m);
   assert.match(readme, /^### Configure an Effect Block$/m);
   assert.match(readme, /^### Save, import, and reuse configurations$/m);
+  assert.match(readme, /GM connected/);
+  assert.match(readme, /Player creation available/);
+  assert.match(readme, /Source token changed/);
   assert.doesNotMatch(readme, /^## Create a Zone$/m);
   assert.doesNotMatch(readme, /^## Player Use$/m);
   assert.doesNotMatch(readme, /^## PF2e Zone Effects$/m);
