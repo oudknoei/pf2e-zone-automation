@@ -1,6 +1,6 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, resolveDurationRounds } from "./duration.js";
-import { postFormulaDurationToGMs } from "./duration-chat.js";
+import { postFormulaDurationMessage } from "./duration-chat.js";
 import { requestGMWorker } from "./transport.js";
 
 /*
@@ -1710,9 +1710,10 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!region) return null;
     const runtime = await zoneRuntimeEntrypoint();
     await runtime.activateRegion(region);
-    await postFormulaDurationToGMs({
+    await postFormulaDurationMessage({
       zoneName: cfg.name,
       duration: durationResolution,
+      visibility: cfg.visibility,
       actor: sourceActor,
       token: sourceToken.document
     });

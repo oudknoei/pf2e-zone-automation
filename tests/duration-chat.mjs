@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { postFormulaDurationToGMs } = await import("../scripts/duration-chat.js");
+const { postFormulaDurationMessage } = await import("../scripts/duration-chat.js");
 
-test("formula durations post their resolved length as a GM-only chat message", async () => {
+test("formula duration chat messages match their zone visibility", async () => {
   const originalChatMessage = globalThis.ChatMessage;
   let created = null;
   try {
@@ -21,9 +21,10 @@ test("formula durations post their resolved length as a GM-only chat message", a
       }
     };
 
-    await postFormulaDurationToGMs({
+    await postFormulaDurationMessage({
       zoneName: "Stoke the Fervent",
       duration: { formula: "2d4", rounds: 5 },
+      visibility: "gm",
       actor: { id: "actor" },
       token: { id: "token" }
     });
@@ -33,7 +34,16 @@ test("formula durations post their resolved length as a GM-only chat message", a
     assert.match(created.content, /Stoke the Fervent will last <strong>5 rounds<\/strong> \(rolled 2d4\)/);
 
     created = null;
-    await postFormulaDurationToGMs({ zoneName: "Fixed", duration: { formula: null, rounds: 6 } });
+    await postFormulaDurationMessage({
+      zoneName: "Public Zone",
+      duration: { formula: "1d4", rounds: 3 },
+      visibility: "everyone"
+    });
+    assert.equal("whisper" in created, false);
+    assert.match(created.content, /Public Zone will last <strong>3 rounds<\/strong> \(rolled 1d4\)/);
+
+    created = null;
+    await postFormulaDurationMessage({ zoneName: "Fixed", duration: { formula: null, rounds: 6 }, visibility: "gm" });
     assert.equal(created, null);
   } finally {
     if (originalChatMessage === undefined) delete globalThis.ChatMessage;

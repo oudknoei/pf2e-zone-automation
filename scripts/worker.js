@@ -1,5 +1,5 @@
 import { resolveDurationRounds } from "./duration.js";
-import { postFormulaDurationToGMs } from "./duration-chat.js";
+import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
@@ -471,9 +471,10 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!region) throw new Error("Foundry did not create the Region.");
     const runtime = await zoneRuntimeEntrypoint();
     await runtime.activateRegion(region);
-    await postFormulaDurationToGMs({
+    await postFormulaDurationMessage({
       zoneName: cfg.name,
       duration: durationResolution,
+      visibility: cfg.visibility,
       actor: sourceActor,
       token: sourceToken
     });

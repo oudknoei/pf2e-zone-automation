@@ -23,6 +23,9 @@ await import("../scripts/main.js");
 test("manifest points to files that ship", () => {
   const manifest = JSON.parse(readFileSync(resolve(root, "module.json"), "utf8"));
   assert.equal(manifest.id, "pf2e-zone-automation");
+  assert.equal(manifest.author, "m.mestemaker");
+  assert.deepEqual(manifest.authors, [{ name: "m.mestemaker" }]);
+  assert.deepEqual(manifest.systems, ["pf2e"]);
   assert.equal(manifest.socket, true);
   assert.deepEqual(
     new Set(manifest.relationships.requires.map(({ id }) => id)),

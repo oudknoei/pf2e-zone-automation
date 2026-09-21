@@ -8,7 +8,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Configure one or more Effect Blocks for each zone.
 - Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, or when a watched trait is used.
 - Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
-- Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration in a GM-only chat message.
+- Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration at the zone's visibility: GM-only for **GM** visibility and public otherwise.
 - Save, share, load, update, and delete presets through the PF2e Zone Library.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 
@@ -48,7 +48,7 @@ A player can create a zone only from an Actor they own. An active GM must be con
 2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
 3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
 4. Choose the zone's visibility and any applicable traits.
-5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created, and its result is recorded in a GM-only chat message. Use the dismissal checkbox when the source should be able to end the zone early.
+5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. Use the dismissal checkbox when the source should be able to end the zone early.
 
 Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
 
