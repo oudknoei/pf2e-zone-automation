@@ -1547,9 +1547,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             ...(Array.isArray(pf2e.context?.options) ? pf2e.context.options : [])
           ].map((option) => String(option));
 
-          // PF2e distinguishes actually casting a spell from merely posting its
-          // card to chat by adding action:cast-a-spell to the origin roll options.
-          if (origin.type === "spell" && !rollOptions.includes("action:cast-a-spell")) return null;
+          // PF2e spell casts normally mark the chat context as "spell-cast".
+          // Attack rolls can instead carry action:cast-a-spell in their roll
+          // options, so accept either supported marker.
+          const isSpellCast = pf2e.context?.type === "spell-cast"
+            || rollOptions.includes("action:cast-a-spell");
+          if (origin.type === "spell" && !isSpellCast) return null;
 
           let actor = null;
           try {

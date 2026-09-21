@@ -29,6 +29,7 @@ test("compiled Macro pack provides the Zone Builder hotbar macro", async () => {
     assert.equal(macro._id, macroId);
     assert.equal(macro.name, "Open PF2e Zone Builder");
     assert.equal(macro.type, "script");
+    assert.equal(macro.ownership.default, 2);
     assert.equal(macro.img, macroImage);
     assert.match(macro.command, /game\.modules\.get\("pf2e-zone-automation"\)/);
     assert.match(macro.command, /await zoneModule\.api\.openBuilder\(\)/);
