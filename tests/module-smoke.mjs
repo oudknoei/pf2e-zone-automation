@@ -32,6 +32,7 @@ test("manifest points to files that ship", () => {
     compatibility: { minimum: "8.5.1" }
   }]);
   assert.equal(manifest.socket, true);
+  assert.ok(manifest.packs.every((pack) => pack.system === "pf2e"));
   assert.deepEqual(
     new Set(manifest.relationships.requires.map(({ id }) => id)),
     new Set(["advanced-macros", "pf2e-flatcheck-helper", "lib-wrapper"])
