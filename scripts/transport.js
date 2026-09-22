@@ -5,6 +5,7 @@ const RESPONSE_TIMEOUT_MS = 60000;
 const pending = new Map();
 let listening = false;
 
+/** Installs one dispatcher so player requests reach a GM without requiring world macros. */
 export function registerZoneSocket() {
   if (listening) return;
   if (!game.socket) throw new Error("Foundry's game socket is unavailable.");
@@ -12,6 +13,7 @@ export function registerZoneSocket() {
   listening = true;
 }
 
+/** Gives callers a bounded request-response path instead of leaving player actions pending indefinitely. */
 export async function requestGMWorker(request) {
   if (game.user.isGM) return handleWorkerRequest(request);
 
@@ -38,6 +40,7 @@ export async function requestGMWorker(request) {
   });
 }
 
+/** Ensures only the active GM processes a player request and returns its result to the requester. */
 async function onSocketMessage(message, senderUserId) {
   if (!message || typeof message !== "object" || typeof message.id !== "string") return;
 

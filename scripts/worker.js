@@ -4,6 +4,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
 
+/** Keeps privileged world changes behind one GM-only entry point so player requests remain constrained. */
 export async function handleWorkerRequest(request) {
   "use strict";
 
@@ -21,11 +22,13 @@ export async function handleWorkerRequest(request) {
   const LIBRARY_SCHEMA_VERSION = 1;
   const fu = foundry.utils;
 
+  /** Prevents the worker from mutating caller-owned request data while it validates and enriches it. */
   const clone = (obj) => {
     if (globalThis.structuredClone) return structuredClone(obj);
     return JSON.parse(JSON.stringify(obj));
   };
 
+  /** Keeps a zone's border distinguishable from its fill without asking users for two colors. */
   function lightenZoneColor(value, amount = ZONE_COLOR_LIGHTEN) {
     const raw = String(value ?? "#999999").trim();
     const short = raw.match(/^#?([0-9a-f]{3})$/i);
@@ -39,13 +42,16 @@ export async function handleWorkerRequest(request) {
     return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
   }
 
+  /** Returns worker errors in one predictable shape so clients can present them safely. */
   const fail = (message) => ({ ok: false, workerVersion: WORKER_VERSION, error: String(message) });
+  /** Returns worker results in one predictable shape so the socket bridge can resolve requests consistently. */
   const succeed = (data = {}) => ({ ok: true, workerVersion: WORKER_VERSION, ...data });
 
   if (game.system.id !== "pf2e") return fail("PF2e Zone GM Worker requires the Pathfinder Second Edition system.");
   if (!game.user.isGM) return fail("PF2e Zone GM Worker must execute on an active GM client.");
   if (!request || request.protocol !== 1) return fail("No valid PF2e Zone worker request was supplied.");
 
+  /** Rejects stale or forged socket identities before any world data is changed. */
   function getRequester() {
     const user = game.users.get(request.requesterUserId ?? "");
     if (!user) throw new Error("The requesting user no longer exists.");
@@ -53,6 +59,7 @@ export async function handleWorkerRequest(request) {
     return user;
   }
 
+  /** Prevents a player from creating or changing zones through an Actor they do not own. */
   function assertSourcePermission(actor, requester) {
     if (requester.isGM) return;
     if (!actor?.testUserPermission?.(requester, "OWNER")) {
@@ -60,6 +67,7 @@ export async function handleWorkerRequest(request) {
     }
   }
 
+  /** Stops malformed client configuration from reaching Foundry document creation. */
   function normalizeConfig(raw) {
     const cfg = clone(raw ?? {});
     if (!cfg || typeof cfg !== "object") throw new Error("Zone configuration is missing.");
@@ -73,6 +81,7 @@ export async function handleWorkerRequest(request) {
   }
 
 
+  /** Keeps saved preset names from changing the Library Journal page markup. */
   const escHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -80,6 +89,7 @@ export async function handleWorkerRequest(request) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+  /** Lets older or incomplete Journal flags recover to a usable shared preset library. */
   function normalizeLibrary(raw) {
     const data = raw && typeof raw === "object" ? clone(raw) : {};
     const zones = data.zones && typeof data.zones === "object" && !Array.isArray(data.zones)
@@ -91,10 +101,12 @@ export async function handleWorkerRequest(request) {
     };
   }
 
+  /** Centralizes record filtering so every library operation ignores malformed entries. */
   function libraryRecords(data) {
     return Object.values(data.zones ?? {}).filter((record) => record && typeof record === "object");
   }
 
+  /** Keeps the Journal index useful as a human-readable view of shared presets. */
   function libraryIndexHtml(data) {
     const rows = libraryRecords(data)
       .sort((a, b) => {
@@ -107,10 +119,12 @@ export async function handleWorkerRequest(request) {
     return `<h2>PF2e Zone Library</h2>${rows ? `<ul>${rows}</ul>` : "<p><em>No saved zones.</em></p>"}`;
   }
 
+  /** Reuses the module-owned Journal so repeated requests never create competing libraries. */
   function findLibraryJournal() {
     return game.journal.find((journal) => Boolean(journal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY))) ?? null;
   }
 
+  /** Reuses the module folder so the Library Journal stays organized after reloads. */
   function findLibraryFolder() {
     return game.folders.find((folder) => (
       folder.type === "JournalEntry"
@@ -118,6 +132,7 @@ export async function handleWorkerRequest(request) {
     )) ?? null;
   }
 
+  /** Creates the required folder only when the world does not already have one. */
   async function ensureLibraryFolder() {
     let folder = findLibraryFolder();
     if (folder) return folder;
@@ -139,6 +154,7 @@ export async function handleWorkerRequest(request) {
     return folder;
   }
 
+  /** Establishes one authoritative Journal and keeps it in the expected folder. */
   async function ensureLibraryJournal() {
     const libraryFolder = await ensureLibraryFolder();
     let journal = findLibraryJournal();
@@ -193,6 +209,7 @@ export async function handleWorkerRequest(request) {
     return { journal, data, page };
   }
 
+  /** Writes both flags and index content together so the shared library cannot drift out of sync. */
   async function persistLibrary(journal, data, page = null) {
     const clean = normalizeLibrary(data);
     await journal.unsetFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY);
@@ -227,6 +244,7 @@ export async function handleWorkerRequest(request) {
     return clean;
   }
 
+  /** Limits shared data to the fields a client needs instead of exposing Journal internals. */
   function libraryRecordForClient(record) {
     return {
       id: record.id,
@@ -240,6 +258,7 @@ export async function handleWorkerRequest(request) {
     };
   }
 
+  /** Lets clients read presets through the GM without granting Journal write access. */
   async function listLibrary() {
     getRequester();
     const { journal, data } = await ensureLibraryJournal();
@@ -251,6 +270,7 @@ export async function handleWorkerRequest(request) {
     });
   }
 
+  /** Applies ownership and revision checks so one user cannot silently overwrite another user's work. */
   async function saveLibraryPreset() {
     const requester = getRequester();
     const { journal, data, page } = await ensureLibraryJournal();
@@ -299,6 +319,7 @@ export async function handleWorkerRequest(request) {
     });
   }
 
+  /** Applies the same ownership rules to deletion that the module uses for saving. */
   async function deleteLibraryPreset() {
     const requester = getRequester();
     const { journal, data, page } = await ensureLibraryJournal();
@@ -313,12 +334,14 @@ export async function handleWorkerRequest(request) {
     return succeed({ action: "library-delete", journalId: journal.id, recordId });
   }
 
+  /** Keeps Region behavior creation compatible with Foundry's changing internal type names. */
   function executeScriptBehaviorType() {
     const match = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
       .find(([, cls]) => cls?.name === "ExecuteScriptRegionBehaviorType");
     return match?.[0] ?? "executeScript";
   }
 
+  /** Makes created Regions call the installed module runtime so published fixes apply to existing zones. */
   function runtimeScriptSource() {
     return `
 const api = game.modules.get("pf2e-zone-automation")?.api;
@@ -327,6 +350,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 `;
   }
 
+  /** Defines the small event surface the module needs instead of attaching unrelated Region hooks. */
   function regionBehaviorData() {
     return {
       name: "PF2e Zone Runtime",
@@ -348,6 +372,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     };
   }
 
+  /** Separates automatic end times from indefinite zones so cleanup is scheduled only when needed. */
   function finiteDurationRounds(cfg) {
     switch (cfg.duration?.type) {
       case "1-round": return 1;
@@ -361,6 +386,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     }
   }
 
+  /** Captures authoritative source and duration facts at creation so later hooks need no client state. */
   function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy, durationResolution = null) {
     const combat = game.combat;
     const sourceCombatant = sourceActor.combatant ?? null;
@@ -404,6 +430,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     };
   }
 
+  /** Concentrates GM validation and document creation so player and GM workflows behave identically. */
   async function createZone() {
     const requester = getRequester();
     const scene = game.scenes.get(request.sceneId ?? "");
@@ -489,6 +516,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     });
   }
 
+  /** Routes manual dismissal through the runtime so linked effects and state are cleaned up consistently. */
   async function endZone() {
     const requester = getRequester();
     const scene = game.scenes.get(request.sceneId ?? "");

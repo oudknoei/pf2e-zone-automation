@@ -2,7 +2,7 @@ import { requestGMWorker } from "./transport.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 
-/** Request a Shielding Taunt using known source and target token UUIDs. */
+/** Keeps player-facing macros thin so all Shielding Taunt rule changes ship with the module. */
 export async function requestShieldingTaunt(sourceTokenUuid, targetTokenUuid) {
   if (!sourceTokenUuid || !targetTokenUuid) {
     throw new Error("Shielding Taunt requires a Guardian token and a target token.");
@@ -18,7 +18,7 @@ export async function requestShieldingTaunt(sourceTokenUuid, targetTokenUuid) {
   return response;
 }
 
-/** Read the current token selection and target, then request a Shielding Taunt. */
+/** Makes target selection explicit before the module asks the GM to alter combat state. */
 export async function openShieldingTaunt() {
   const controlled = canvas?.tokens?.controlled ?? [];
   const targets = [...(game.user?.targets ?? [])];

@@ -1,4 +1,7 @@
+import { highestClassOrSpellDc } from "./dc.js";
+
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
+/** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
     const VERSION = "0.5.15";
@@ -7,11 +10,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
     const SAVE_PREFIX = "pf2e-zone";
     const fu = foundry.utils;
 
+    /** Prevents reads of persisted zone flags from mutating the data that Foundry still owns. */
     const clone = (obj) => {
       if (globalThis.structuredClone) return structuredClone(obj);
       return JSON.parse(JSON.stringify(obj));
     };
 
+    /** Keeps actor, item, and zone text from changing chat card markup. */
     const escHtml = (value) => String(value ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
@@ -19,16 +24,21 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
 
+    /** Makes stored slugs readable in player-facing alerts without changing their data identity. */
     const titleCaseLocal = (slug) => String(slug ?? "")
       .replaceAll("-", " ")
       .replace(/\b\w/g, (m) => m.toUpperCase());
 
+    /** Creates durable keys when Foundry does not supply an identifier for a runtime event. */
     const randomId = () => fu.randomID?.(12) ?? crypto.randomUUID().slice(0, 12);
+    /** Uses shared world time so duration decisions remain consistent across connected clients. */
     const nowWorld = () => Number(game.time?.worldTime ?? 0);
+    /** Builds safe flag keys from document identifiers that may contain punctuation. */
     const stateKey = (...parts) => parts
       .map((part) => String(part ?? "").replace(/[^A-Za-z0-9_-]/g, "_"))
       .join("__");
 
+    /** Allows saved zones to be migrated safely when runtime behavior changes between releases. */
     const compareVersions = (a, b) => {
       const pa = String(a ?? "0").split(".").map((n) => Number(n) || 0);
       const pb = String(b ?? "0").split(".").map((n) => Number(n) || 0);
@@ -40,6 +50,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
       return 0;
     };
 
+    /** Keeps all transient locks and hooks together so one client runtime can manage a scene coherently. */
     function createRuntime() {
       const rt = {
         version: VERSION,
@@ -50,11 +61,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         chatAlertBatches: new Set(),
         regionReconcileTimers: new Map(),
 
+        /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
         isAuthority() {
           const activeGM = game.users?.activeGM ?? null;
           return activeGM ? activeGM.id === game.user.id : Boolean(game.user?.isGM);
         },
 
+        /** Normalizes persisted state on read so older zones can participate in newer runtime behavior. */
         readPayload(region) {
           const raw = region?.getFlag?.(FLAG_SCOPE, FLAG_KEY);
           if (!raw || typeof raw !== "object") return null;
@@ -79,15 +92,18 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return payload;
         },
 
+        /** Avoids persisting cleanup state to a Region that was deleted during an asynchronous action. */
         isLiveRegion(region) {
           const scene = region?.parent;
           return Boolean(scene?.regions?.get?.(region.id));
         },
 
+        /** Replaces runtime state atomically so removed saves, immunities, and effects do not reappear after a merge. */
         async writePayload(region, payload) {
           if (!this.isLiveRegion(region)) return false;
 
           const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}`;
+          /** Recognizes deletion races so a completed zone cleanup is not reported as an actionable error. */
           const staleRegionError = (error) =>
             !this.isLiveRegion(region) && /does not exist|not found/i.test(String(error?.message ?? error));
 
@@ -118,6 +134,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Defers outward side effects until their state record is safely persisted. */
         queueAfterCommit(payload, callback) {
           if (!payload || typeof callback !== "function") return;
           if (!Object.prototype.hasOwnProperty.call(payload, "__pf2eZoneAfterCommit")) {
@@ -131,6 +148,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.__pf2eZoneAfterCommit.push(callback);
         },
 
+        /** Serializes updates to one Region so simultaneous hooks cannot overwrite each other. */
         async withState(region, callback) {
           if (!region?.uuid) return null;
           const key = region.uuid;
@@ -140,6 +158,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (this.endingZones.has(key)) return null;
 
           const prior = this.locks.get(key) ?? Promise.resolve();
+          /** Chains work after an earlier state update even if that earlier update failed. */
           const next = prior.catch(() => undefined).then(async () => {
             if (!this.isLiveRegion(region)) return null;
             const payload = this.readPayload(region);
@@ -174,12 +193,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Limits scans to Regions created by this module instead of inspecting unrelated Scene automation. */
         allZones() {
           return game.scenes.contents.flatMap((scene) =>
             [...scene.regions].filter((region) => Boolean(region.getFlag(FLAG_SCOPE, FLAG_KEY)))
           );
         },
 
+        /** Uses Region membership as the source of truth for occupants instead of token geometry guesses. */
         tokensInside(region) {
           const scene = region?.parent;
           if (!scene?.tokens) return [...(region?.tokens ?? [])];
@@ -203,18 +224,21 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return inside;
         },
 
+        /** Resolves the stored source only when needed so a deleted source does not invalidate unrelated cleanup. */
         async resolveSource(payload) {
           const token = payload?.state?.sourceTokenUuid ? await fromUuid(payload.state.sourceTokenUuid) : null;
           const actor = token?.actor ?? (payload?.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null);
           return { token, actor };
         },
 
+        /** Resolves an applied-effect record so cleanup can survive token and actor document changes. */
         async resolveTarget(record) {
           const token = record?.tokenUuid ? await fromUuid(record.tokenUuid) : null;
           const actor = token?.actor ?? (record?.actorUuid ? await fromUuid(record.actorUuid) : null);
           return { token, actor };
         },
 
+        /** Applies targeting rules in one place so every trigger treats allies, enemies, and the source consistently. */
         async eligible(payload, token) {
           const targetActor = token?.actor;
           if (!targetActor?.isOfType?.("creature")) return false;
@@ -237,6 +261,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Prefers the creation-time duration result so dice formulas never reroll during later checks. */
         durationRounds(config, state) {
           const resolved = Number(state?.duration?.rounds);
           if (Number.isSafeInteger(resolved) && resolved > 0) return resolved;
@@ -253,6 +278,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Records both combat and world-time limits so temporary immunity behaves across combat transitions. */
         makeExpiry(duration) {
           const rounds = duration === "1-round" ? 1
             : duration === "1-minute" ? 10
@@ -269,6 +295,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           };
         },
 
+        /** Lets immunity checks make one consistent decision regardless of how the duration was measured. */
         expiryActive(expiry) {
           if (!expiry) return false;
           const combat = game.combat;
@@ -281,6 +308,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return nowWorld() < Number(expiry.worldExpires ?? 0);
         },
 
+        /** Keeps round-based immunity from expiring early when combat state changes. */
         syncImmunityCombatClock(payload) {
           const combat = game.combat;
           if (!combat?.id) return;
@@ -303,6 +331,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Finds the relevant record without making individual effect handlers understand storage details. */
         findImmunityEntry(payload, tokenUuid, blockId) {
           for (const [storageId, record] of Object.entries(payload.state.immunities ?? {})) {
             const recordMatches =
@@ -314,6 +343,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return null;
         },
 
+        /** Prevents a repeat trigger from reapplying an effect during its configured immunity period. */
         isImmune(payload, tokenUuid, blockId) {
           const entry = this.findImmunityEntry(payload, tokenUuid, blockId);
           if (!entry) {
@@ -361,6 +391,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return false;
         },
 
+        /** Keeps persisted state small and prevents expired entries from influencing later triggers. */
         pruneExpiredImmunities(payload) {
           let removed = 0;
           for (const [key, record] of Object.entries(payload.state.immunities ?? {})) {
@@ -379,6 +410,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return removed;
         },
 
+        /** Records a temporary exclusion immediately after the outcome that should grant it. */
         setImmunity(payload, tokenUuid, block) {
           if (!block?.immunity || block.immunity.duration === "none") return;
           const expiry = this.makeExpiry(block.immunity.duration);
@@ -413,10 +445,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Uses a stable identity so repeat limits are scoped to one creature and Effect Block. */
         repeatKey(tokenUuid, blockId) {
           return stateKey("repeat", tokenUuid, blockId);
         },
 
+        /** Creates a shared round marker so once-per-round effects cannot fire twice on one turn cycle. */
         roundStamp() {
           const combat = game.combat;
           return combat?.id
@@ -424,6 +458,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             : `world:${Math.floor(nowWorld() / 6)}`;
         },
 
+        /** Checks frequency limits before costly saves, rolls, and embedded-item changes are created. */
         repeatBlocked(payload, tokenUuid, block) {
           const policy = block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat;
           if (policy === "every") return false;
@@ -433,6 +468,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return record?.round === this.roundStamp();
         },
 
+        /** Records an accepted application so later hooks observe the configured frequency limit. */
         markRepeat(payload, tokenUuid, block) {
           const policy = block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat;
           if (policy === "every") return;
@@ -442,10 +478,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           else if (policy === "once-per-round") payload.state.repeat[key].round = this.roundStamp();
         },
 
+        /** Translates PF2e roll degrees into the stored outcome keys used by zone configurations. */
         outcomeFromDegree(degree) {
           return ["criticalFailure", "failure", "success", "criticalSuccess"][Number(degree)] ?? null;
         },
 
+        /** Treats an already resolved pending save as final so duplicate chat handling cannot reapply it. */
         completedOutcomeForPending(pending) {
           const messages = [...game.messages.contents].reverse();
           for (const message of messages) {
@@ -466,6 +504,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return null;
         },
 
+        /** Prevents a second save request while a creature still needs to choose or roll the first one. */
         async hasPending(payload, tokenUuid, blockId) {
           for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
             if (pending.tokenUuid !== tokenUuid || pending.blockId !== blockId) continue;
@@ -501,13 +540,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return false;
         },
 
+        /** Uses the source statistic at resolution time while protecting combined Class-or-Spell DCs from PF2e fallback data. */
         resolveDC(payload, block, sourceActor) {
           if (block.save.dc.mode === "custom") return Number(block.save.dc.value) || 0;
+          if (block.save.dc.statistic === "class-spell") return highestClassOrSpellDc(sourceActor);
           const statistic = sourceActor?.getStatistic?.(block.save.dc.statistic);
           const value = statistic?.dc?.value ?? statistic?.dc ?? null;
           return Number.isFinite(Number(value)) ? Number(value) : null;
         },
 
+        /** Identifies linked conditions so recovery watchers only observe outcomes this block can create. */
         inflictedSlugs(block) {
           const slugs = new Set();
           for (const outcome of Object.values(block.outcomes ?? {})) {
@@ -516,6 +558,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return [...slugs];
         },
 
+        /** Creates a single clear chat choice so the affected player can resolve the required save. */
         async postSaveRequest(region, payload, pending) {
           const buttons = pending.saveTypes.map((saveType) =>
             `<button type="button" data-pf2e-zone-save data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" data-save-type="${escHtml(saveType)}"><i class="fa-solid fa-dice-d20"></i> ${escHtml(titleCaseLocal(saveType))}</button>`
@@ -534,6 +577,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Records a pending save before chat output so late or duplicate clicks remain safe to handle. */
         async requestSave(region, payload, block, token, trigger, batchId, eventContext = {}) {
           if (await this.hasPending(payload, token.uuid, block.id)) {
             console.info("PF2e Zone save suppressed: pending save already exists", {
@@ -591,14 +635,17 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return true;
         },
 
+        /** Keeps immunity rules expressed in plain PF2e degree categories. */
         outcomeIsSuccessOrBetter(outcome) {
           return outcome === "success" || outcome === "criticalSuccess";
         },
 
+        /** Keeps immunity rules expressed in plain PF2e degree categories. */
         outcomeIsFailureOrWorse(outcome) {
           return outcome === "failure" || outcome === "criticalFailure";
         },
 
+        /** Uses PF2e condition APIs where possible so normal condition stacking rules still apply. */
         async addNormalCondition(actor, condition) {
           try {
             const desired = condition.value == null ? null : Number(condition.value);
@@ -633,14 +680,17 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Identifies items created by a zone without relying on item names or compendium provenance. */
         zoneItemFlag(item) {
           return fu.getProperty(item, `flags.${FLAG_SCOPE}.${FLAG_KEY}`) ?? null;
         },
 
+        /** Prevents overlapping cleanup requests from trying to remove the same embedded item twice. */
         itemDeleteKey(item) {
           return `${item?.parent?.uuid ?? "Actor"}::${item?.id ?? "Item"}`;
         },
 
+        /** Serializes item deletion so linked cleanup does not create Foundry collection errors. */
         async deleteOwnedItem(item, context = "zone cleanup") {
           if (!item?.parent) return;
           const key = this.itemDeleteKey(item);
@@ -665,6 +715,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Marks module-created conditions so only zone cleanup can remove its own temporary changes. */
         async addOwnedCondition(region, payload, block, token, condition) {
           const actor = token.actor;
           if (!actor) return false;
@@ -730,6 +781,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return true;
         },
 
+        /** Routes every condition application through one ownership-aware path. */
         async addCondition(region, payload, block, token, condition) {
           if (condition.removal === "normal") {
             const applied = await this.addNormalCondition(token.actor, condition);
@@ -738,6 +790,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return this.addOwnedCondition(region, payload, block, token, condition);
         },
 
+        /** Copies Effect Items with cleanup metadata so their removal follows the zone configuration. */
         async addEffectItem(region, payload, block, token, effect) {
           const actor = token.actor;
           if (!actor) return false;
@@ -810,10 +863,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return true;
         },
 
+        /** Uses the PF2e roll implementation when present so zone damage gets normal system behavior. */
         damageRollClass() {
           return CONFIG.Dice?.rolls?.find((cls) => cls?.name === "DamageRoll") ?? null;
         },
 
+        /** Resolves shared activation choices centrally so every relevant block uses the same selected type. */
         damageType(payload, block) {
           if (block.damage.typeMode === "activation-choice") {
             return payload.state.activation?.damageType ?? block.damage.type ?? "untyped";
@@ -821,6 +876,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return block.damage.type ?? "untyped";
         },
 
+        /** Caches each source roll per event so multiple targets receive one consistent damage result. */
         async baseDamageRoll(payload, block, batchId) {
           const DamageRoll = this.damageRollClass();
           if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
@@ -834,6 +890,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return { DamageRoll, type, roll };
         },
 
+        /** Posts system damage cards only after a degree of success establishes the correct multiplier. */
         async postDamage(region, payload, block, token, outcomeKey, multiplier, batchId) {
           if (!block.damage.enabled || !(Number(multiplier) > 0)) return false;
           try {
@@ -865,6 +922,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Caches each source healing roll per event so multiple targets share a consistent result. */
         async baseHealingRoll(payload, block, batchId) {
           const DamageRoll = this.damageRollClass();
           if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
@@ -877,6 +935,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return { DamageRoll, roll };
         },
 
+        /** Posts system healing cards only after a degree of success establishes the correct multiplier. */
         async postHealing(region, payload, block, token, outcomeKey, multiplier, batchId) {
           if (!block.healing?.enabled || !(Number(multiplier) > 0)) return false;
           try {
@@ -908,6 +967,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Applies the complete configured result in one ordered path after a trigger or save is resolved. */
         async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}) {
           const outcome = block.outcomes?.[outcomeKey];
           if (!outcome) return false;
@@ -930,6 +990,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return affected;
         },
 
+        /** Tracks conditions that must end before a zone grants temporary immunity. */
         registerRecoveryWatcher(payload, block, token) {
           if (!block.immunity?.starts?.includes("condition-recovery")) return;
           const condition = block.immunity.recoveryCondition;
@@ -944,6 +1005,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           };
         },
 
+        /** Applies immunity only for the selected outcome conditions rather than whenever a block runs. */
         applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave) {
           const starts = block.immunity?.starts ?? [];
           let startNow = false;
@@ -955,6 +1017,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (affected) this.registerRecoveryWatcher(payload, block, token);
         },
 
+        /** Coordinates eligibility, frequency, saves, and results so every trigger follows the same safeguards. */
         async processBlock(region, payload, block, token, trigger, batchId, { continuous = false, eventContext = {}, skipEligibility = false } = {}) {
           const resolvedEventContext = { trigger, ...(eventContext ?? {}) };
           if (!skipEligibility && !(await this.eligible(payload, token))) {
@@ -1014,6 +1077,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.applyImmunityStarts(payload, block, token, "noSave", affected, false);
         },
 
+        /** Runs all matching blocks while the caller already holds the Region state lock. */
         async processTriggerUnlocked(region, payload, token, trigger, batchId) {
           for (const block of payload.config.effects ?? []) {
             if (!block.triggers?.[trigger]) continue;
@@ -1029,6 +1093,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Distinguishes a real combat turn from repeated Foundry hooks during that same turn. */
         combatTurnKey(combat = game.combat) {
           const active = combat?.combatant ?? null;
           return combat?.id && active
@@ -1036,6 +1101,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             : null;
         },
 
+        /** Processes occupant turn effects inside an existing state lock to prevent duplicate applications. */
         async processTurnStartUnlocked(region, payload, token, batchPrefix = "turnStart") {
           if (!(await this.eligible(payload, token))) return;
 
@@ -1060,6 +1126,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
         },
 
+        /** Handles the current combatant once even if Foundry announces the turn through multiple hooks. */
         async processActiveTurnStart(region) {
           if (!this.isAuthority() || !this.isLiveRegion(region)) return;
           const combat = game.combat;
@@ -1079,11 +1146,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Catches up active zones after combat state changes that skip an individual turn hook. */
         async processAllActiveTurnStarts() {
           if (!this.isAuthority()) return;
           for (const region of this.allZones()) await this.processActiveTurnStart(region);
         },
 
+        /** Keeps source-controlled effects tied to the source combatant rather than Region occupancy. */
         async processSourceTurnStartUnlocked(region, payload, sourceToken, batchId) {
           for (const block of payload.config.effects ?? []) {
             if (!block.triggers?.sourceTurnStart) continue;
@@ -1099,6 +1168,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Reconciles maintained effects without treating each refresh as a new entry event. */
         async processContinuousUnlocked(region, payload, token, batchId, eventContext = {}) {
           for (const block of payload.config.effects ?? []) {
             if (!block.triggers?.continuous) continue;
@@ -1114,6 +1184,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Removes the stored cleanup reference only after its item or condition is no longer relevant. */
         async deleteAppliedRecord(payload, recordId) {
           const record = payload.state.applied[recordId];
           if (!record) return;
@@ -1123,12 +1194,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           delete payload.state.applied[recordId];
         },
 
+        /** Removes only exit-bound effects when a creature leaves while preserving other zone results. */
         async cleanupTokenOnExitUnlocked(payload, tokenUuid) {
           const records = Object.entries(payload.state.applied)
             .filter(([, record]) => record.tokenUuid === tokenUuid && record.removal === "on-exit");
           for (const [recordId] of records) await this.deleteAppliedRecord(payload, recordId);
         },
 
+        /** Collects all remaining zone-owned changes when a Region ends. */
         async cleanupZoneUnlocked(payload) {
           const records = Object.entries(payload.state.applied)
             .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
@@ -1138,6 +1211,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.state.deactivated = true;
         },
 
+        /** Finishes cleanup when Foundry deletes a Region outside the normal end-zone path. */
         async cleanupDeletedRegion(region, payload) {
           const records = Object.entries(payload?.state?.applied ?? {})
             .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
@@ -1148,6 +1222,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Aligns maintained effects with current occupants after missed or reordered Region events. */
         async reconcileContinuousUnlocked(region, payload) {
           const insideTokens = this.tokensInside(region);
           const inside = new Set(insideTokens.map((t) => t.uuid));
@@ -1172,6 +1247,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Coalesces rapid Foundry updates so occupancy reconciliation does not run repeatedly for one change. */
         scheduleRegionReconcile(region, delay = 100) {
           if (!region?.parent?.id || !region?.id) return;
           const key = region.uuid;
@@ -1198,6 +1274,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.regionReconcileTimers.set(key, timer);
         },
 
+        /** Handles initial occupants once so activation effects cannot be duplicated by Foundry membership reconciliation. */
         async processActivationTokenUnlocked(region, payload, token, batchSeed = randomId()) {
           if (payload.state.activationProcessed) return;
           if (!(await this.eligible(payload, token))) return;
@@ -1230,6 +1307,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Initializes a newly created Region before delayed hooks can process its occupants. */
         async activateRegion(region) {
           if (!this.isAuthority()) return;
 
@@ -1296,6 +1374,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Ends a zone when its source disappears or its stored duration expires. */
         async checkSourceAndDuration(region) {
           if (!this.isAuthority()) return;
           let shouldEnd = false;
@@ -1341,11 +1420,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (shouldEnd) await this.endZone(region, "duration/source");
         },
 
+        /** Lets world-time and combat changes reevaluate every active finite zone. */
         async checkAllDurations() {
           if (!this.isAuthority()) return;
           for (const region of this.allZones()) await this.checkSourceAndDuration(region);
         },
 
+        /** Provides a locked entry point for source-turn hooks that may arrive concurrently. */
         async processSourceTurnStart(region) {
           if (!this.isAuthority() || !this.isLiveRegion(region)) return;
 
@@ -1378,11 +1459,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Catches up source-turn effects after combat updates that do not name one Region. */
         async processAllSourceTurnStarts() {
           if (!this.isAuthority()) return;
           for (const region of this.allZones()) await this.processSourceTurnStart(region);
         },
 
+        /** Uses one orderly end path so Region deletion always cleans linked conditions and Effect Items. */
         async endZone(region, reason = "ended") {
           const scene = region?.parent;
           const regionId = region?.id;
@@ -1431,6 +1514,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Accepts a save result once and applies its outcome only after authorization and state checks pass. */
         async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null) {
           if (!this.isAuthority()) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
@@ -1515,6 +1599,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return resolved;
         },
 
+        /** Recognizes this module's chat result messages without interfering with ordinary PF2e rolls. */
         async handleSaveResult(message) {
           if (!this.isAuthority()) return;
           const context = message.flags?.pf2e?.context;
@@ -1545,6 +1630,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
         },
 
+        /** Ends condition-linked cleanup watches when actors change outside a zone event. */
         async reconcileActorDependencies(actor) {
           if (!this.isAuthority() || !actor) return;
 
@@ -1576,6 +1662,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
 
+        /** Extracts only attributable PF2e ability use so zones do not react to unrelated chat cards. */
         async traitUseInfoFromMessage(message) {
           if (!message) return null;
           const pf2e = message.flags?.pf2e ?? {};
@@ -1663,6 +1750,19 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           };
         },
 
+        /** Supports old and new trait-use data while ensuring each selected slug can be matched consistently. */
+        watchedTraitsForBlock(block) {
+          const selected = Array.isArray(block?.traitUse?.traits)
+            ? block.traitUse.traits
+            : [];
+          const legacy = block?.traitUse?.trait ?? "";
+          return [...new Set([...selected, legacy]
+            .flatMap((trait) => String(trait ?? "").split(","))
+            .map((trait) => trait.trim().toLowerCase().replace(/\s+/g, "-"))
+            .filter(Boolean))];
+        },
+
+        /** Lets configuration text use safe, named placeholders instead of executing arbitrary chat content. */
         formatChatAlert(template, values) {
           const replacements = {
             zone: values.zone,
@@ -1680,6 +1780,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Treats one multi-target event as one alert so activation reconciliation does not spam chat. */
         chatAlertBatchKey(region, block, batchId, eventContext = {}) {
           const trigger = String(eventContext?.trigger ?? "").trim();
           // Activation is a single zone-creation event even though Foundry can
@@ -1692,6 +1793,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return `${region.uuid}::${block.id}::${stableBatch}`;
         },
 
+        /** Suppresses duplicate alerts while Foundry finishes reporting a single trigger event. */
         async postChatAlertOnce(region, payload, block, token, batchId, eventContext = {}, outcomeKey = null) {
           if (!block.chatAlert?.enabled) return;
           const key = this.chatAlertBatchKey(region, block, batchId, eventContext);
@@ -1706,11 +1808,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           await this.postChatAlert(region, payload, block, token, outcomeKey, eventContext);
         },
 
+        /** Posts an auditable explanation of a configured effect without revealing unescaped world data. */
         async postChatAlert(region, payload, block, token, outcomeKey, eventContext = {}) {
           if (!block.chatAlert?.enabled) return;
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const sourceName = sourceToken?.name ?? sourceActor?.name ?? region.name ?? "Zone source";
-          const watchedTrait = String(block.traitUse?.trait ?? "").trim().toLowerCase();
+          const watchedTrait = this.watchedTraitsForBlock(block)[0] ?? "";
           const trait = String(eventContext?.trait ?? (block.triggers?.traitUse ? watchedTrait : "")).trim();
           const trigger = String(eventContext?.trigger ?? "").trim();
           const count = Math.max(1, Number(eventContext?.count ?? 1) || 1);
@@ -1749,6 +1852,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
+        /** Reacts to selected PF2e traits only when the acting token is currently inside an active zone. */
         async handleTraitUseMessage(message) {
           if (!this.isAuthority()) return;
 
@@ -1772,8 +1876,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
               for (const block of payload.config.effects ?? []) {
                 if (!block.triggers?.traitUse) continue;
-                const trait = String(block.traitUse?.trait ?? "").trim().toLowerCase();
-                if (!trait || !info.traits.has(trait)) continue;
+                const trait = this.watchedTraitsForBlock(block).find((candidate) => info.traits.has(candidate));
+                if (!trait) continue;
 
                 await this.processBlock(
                   region,
@@ -1798,6 +1902,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Repairs condition-based cleanup after reloads or broad actor updates. */
         async reconcileAllLinkedConditions() {
           if (!this.isAuthority()) return;
           const actors = new Set(game.actors.contents);
@@ -1811,6 +1916,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Releases hooks and timers so a replaced runtime cannot process events twice. */
         teardownHooks() {
           const registry = globalThis.PF2EZoneRuntimeHookRegistry;
           if (registry?.runtime !== this) {
@@ -1834,6 +1940,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.hooksInstalled = false;
         },
 
+        /** Subscribes to the narrow set of Foundry events needed to keep zones current. */
         installHooks() {
           if (this.hooksInstalled) return;
 
@@ -1848,6 +1955,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           const runtime = this;
           const hookIds = [];
+          /** Records hook IDs so teardown can reliably remove every runtime listener. */
           const on = (hookName, fn) => {
             const hookId = Hooks.on(hookName, fn);
             hookIds.push([hookName, hookId]);
@@ -1862,6 +1970,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             runtime.handleTraitUseMessage(message).catch((e) => console.error("PF2e Zone trait-use hook", e));
           });
 
+          /** Rechecks dependency watches when effects or conditions change outside a direct zone action. */
           const itemChanged = (item) => {
             // Dependency reconciliation is only relevant when a Condition
             // changes. Effect Items and other owned Items should not wake this
@@ -1928,6 +2037,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           });
 
+          /** Handles save buttons centrally so chat interactions remain GM-authoritative. */
           const clickHandler = async (event) => {
             const button = event.target?.closest?.("button[data-pf2e-zone-save]");
             if (!button) return;
@@ -2029,6 +2139,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
         },
 
+        /** Receives Region behavior events through the module API so existing zones use updated runtime code. */
         async handleRegionEvent({ event, region }) {
           this.installHooks();
           if (!this.isAuthority() || !region) return;

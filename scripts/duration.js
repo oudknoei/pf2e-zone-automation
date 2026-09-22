@@ -2,6 +2,7 @@ const POSITIVE_INTEGER = /^[1-9]\d*$/;
 const SAFE_DICE_FORMULA = /^[0-9dD+*\/()\s-]+$/;
 const HAS_DIE_TERM = /(?:\d*)d\d+/i;
 
+/** Keeps custom durations predictable by accepting only whole rounds or safe dice expressions. */
 export function parseDurationRounds(value) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) && value > 0
@@ -24,6 +25,7 @@ export function parseDurationRounds(value) {
   return { kind: "invalid" };
 }
 
+/** Preserves a valid duration for older presets while giving incomplete input a safe fallback. */
 export function normalizeDurationRounds(value, fallback = 1) {
   const parsed = parseDurationRounds(value);
   if (parsed.kind === "number") return parsed.rounds;
@@ -33,12 +35,14 @@ export function normalizeDurationRounds(value, fallback = 1) {
   return text || fallback;
 }
 
+/** Gives the builder one authoritative explanation for invalid duration input. */
 export function durationRoundsError(value) {
   return parseDurationRounds(value).kind === "invalid"
     ? "Duration rounds must be a positive whole number or a dice formula such as 2d4."
     : null;
 }
 
+/** Rolls a formula once at zone creation so every client shares the same lifetime. */
 export async function resolveDurationRounds(duration, { RollClass = globalThis.Roll } = {}) {
   switch (duration?.type) {
     case "1-round":

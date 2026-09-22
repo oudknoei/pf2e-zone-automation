@@ -59,6 +59,14 @@ test("a PF2e spell-cast chat message triggers a watched spell trait", async () =
     assert.equal(info?.token, token);
     assert.equal(info?.itemName, "Heal");
     assert.ok(info?.traits.has("vitality"));
+    assert.deepEqual(
+      runtime.watchedTraitsForBlock({ traitUse: { traits: ["void", "healing"] } }),
+      ["void", "healing"]
+    );
+    assert.deepEqual(
+      runtime.watchedTraitsForBlock({ traitUse: { trait: "vitality" } }),
+      ["vitality"]
+    );
 
     // Let the runtime's one-time hook initialization finish before restoring globals.
     await new Promise((resolve) => setTimeout(resolve, 0));

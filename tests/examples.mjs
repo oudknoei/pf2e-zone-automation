@@ -12,6 +12,7 @@ const expectedFiles = [
   "ghonatine-stench.json",
   "shadow-raid.json",
   "soulcutter-soothe-souls.json",
+  "stoke-the-fervent-urdefhan-tormentor.json",
   "toxic-cloud.json"
 ];
 

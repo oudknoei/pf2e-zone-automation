@@ -2,6 +2,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { requestGMWorker } from "./transport.js";
+import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
 
 /*
  * PF2e Zone Automation - Player Builder / Runtime
@@ -13,12 +14,13 @@ import { requestGMWorker } from "./transport.js";
  * Targeted and source-checked against PF2e 8.5.1 / Foundry VTT V14.
  */
 
+/** Keeps builder startup tied to the active PF2e scene and selected source token. */
 export async function openZoneBuilder() {
   "use strict";
 
-  const BUILDER_VERSION = "0.5.17";
+  const BUILDER_VERSION = "0.5.18";
   const RUNTIME_VERSION = "0.5.15";
-  const SCHEMA_VERSION = 8;
+  const SCHEMA_VERSION = 9;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -34,6 +36,7 @@ export async function openZoneBuilder() {
     return;
   }
 
+  /** Prevents ambiguous zones by requiring exactly one valid source before editing begins. */
   function selectedSourceToken({ notify = true } = {}) {
     const selected = canvas.tokens.controlled;
     if (selected.length !== 1) {
@@ -57,6 +60,7 @@ export async function openZoneBuilder() {
   if (!sourceToken) return;
   let sourceActor = sourceToken.actor;
 
+  /** Keeps actor and user text from changing the builder HTML. */
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -64,23 +68,28 @@ export async function openZoneBuilder() {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+  /** Makes stored slugs understandable without giving display text authority over saved data. */
   const titleCase = (slug) => String(slug ?? "")
     .replaceAll("-", " ")
     .replace(/\b\w/g, (m) => m.toUpperCase());
 
+  /** Uses PF2e translations when available while retaining a readable fallback for custom content. */
   const localize = (key, fallback) => {
     if (typeof key !== "string") return fallback;
     const localized = game.i18n.localize(key);
     return localized && localized !== key ? localized : fallback;
   };
 
+  /** Gives unsaved blocks stable identities so UI edits can target the intended block. */
   const newId = () => fu.randomID?.(8) ?? crypto.randomUUID().slice(0, 8);
 
+  /** Prevents preview and form changes from mutating a saved configuration by reference. */
   const clone = (obj) => {
     if (globalThis.structuredClone) return structuredClone(obj);
     return JSON.parse(JSON.stringify(obj));
   };
 
+  /** Keeps the Region border visible against its own fill color. */
   function lightenZoneColor(value, amount = ZONE_COLOR_LIGHTEN) {
     const raw = String(value ?? "#999999").trim();
     const short = raw.match(/^#?([0-9a-f]{3})$/i);
@@ -94,6 +103,7 @@ export async function openZoneBuilder() {
     return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
   }
 
+  /** Turns hidden player-to-GM prerequisites into an actionable builder status. */
   function workerSetupProblem() {
     if (game.user.isGM) return null;
     if (!game.users.activeGM) {
@@ -105,6 +115,7 @@ export async function openZoneBuilder() {
     return null;
   }
 
+  /** Explains whether this user can create a zone before they invest time configuring one. */
   function currentOperationStatus() {
     if (!selectionStillMatchesSource()) {
       return {
@@ -142,6 +153,7 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Keeps player creation requests on the same privileged path as direct GM actions. */
   async function callGMWorker(action, data = {}) {
     const problem = workerSetupProblem();
     if (problem) throw new Error(problem);
@@ -161,6 +173,7 @@ export async function openZoneBuilder() {
     return response;
   }
 
+  /** Avoids reporting success before Foundry has made the newly created Region available. */
   async function waitForRegion(sceneId, regionId, timeoutMs = 3000) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
@@ -171,6 +184,7 @@ export async function openZoneBuilder() {
     return game.scenes.get(sceneId)?.regions.get(regionId) ?? null;
   }
 
+  /** Removes the dialog from the canvas while placing an area so it cannot intercept the click. */
   function hideBuilderForAreaPlacement() {
     const element = dialog?.element ?? dialog?.window?.element ?? null;
     if (!element?.style) return () => {};
@@ -193,6 +207,7 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Makes fixed-area placement explicit and safely restores canvas input after completion or cancellation. */
   async function pickAreaCenter(name, radius) {
     if (!canvas?.ready || !canvas.scene) throw new Error("An active Scene is required to place an area.");
     const canvasElement = canvas.app?.canvas ?? canvas.app?.view;
@@ -204,17 +219,20 @@ export async function openZoneBuilder() {
 
     return await new Promise((resolve) => {
       let done = false;
+      /** Restores canvas input after an area-placement interaction ends. */
       const cleanup = () => {
         canvasElement.removeEventListener("pointerdown", onPointer, true);
         window.removeEventListener("keydown", onKey, true);
         canvasElement.style.cursor = priorCursor;
       };
+      /** Ensures area placement resolves once even when multiple input events occur. */
       const finish = (value) => {
         if (done) return;
         done = true;
         cleanup();
         resolve(value);
       };
+      /** Consumes the placement click so creating an area does not also move or select a token. */
       const onPointer = (event) => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -223,6 +241,7 @@ export async function openZoneBuilder() {
         const point = canvas.canvasCoordinatesFromClient({ x: event.clientX, y: event.clientY });
         finish({ x: Number(point.x), y: Number(point.y) });
       };
+      /** Lets users cancel placement without needing to close and reopen the builder. */
       const onKey = (event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -233,6 +252,7 @@ export async function openZoneBuilder() {
     });
   }
 
+  /** Prevents players from ending zones that their source ownership does not authorize them to dismiss. */
   async function canCurrentUserDismiss(payload) {
     if (game.user.isGM) return true;
     if (!payload?.config?.duration?.dismissible) return false;
@@ -262,6 +282,40 @@ export async function openZoneBuilder() {
     "visual",
     "void"
   ];
+
+  // These are common triggers for reactive auras and zones. The user can add
+  // any other PF2e trait slug in the field below this checklist.
+  const WATCHED_TRAITS = [
+    "auditory",
+    "concentrate",
+    "divine",
+    "emotion",
+    "fear",
+    "healing",
+    "holy",
+    "manipulate",
+    "mental",
+    "move",
+    "spirit",
+    "unholy",
+    "vitality",
+    "void"
+  ];
+
+  /** Keeps checkbox and custom trait input portable as normalized PF2e slugs. */
+  function normalizeTraitSlugs(values) {
+    const list = Array.isArray(values) ? values : [values];
+    return [...new Set(list
+      .flatMap((value) => Array.isArray(value) ? value : [value])
+      .flatMap((value) => String(value ?? "").split(","))
+      .map((value) => value.trim().toLowerCase().replace(/\s+/g, "-"))
+      .filter(Boolean))];
+  }
+
+  /** Preserves older single-trait configurations while supporting the current multi-trait editor. */
+  function watchedTraitSlugs(traitUse) {
+    return normalizeTraitSlugs([traitUse?.traits ?? [], traitUse?.trait ?? ""]);
+  }
 
   const FALLBACK_CONDITIONS = [
     "blinded", "clumsy", "concealed", "confused", "controlled", "dazzled",
@@ -295,6 +349,7 @@ export async function openZoneBuilder() {
     noSave: 1
   };
 
+  /** Uses the installed PF2e condition catalog so the builder follows the active system version. */
   function getConditionChoices() {
     const config = CONFIG.PF2E?.conditionTypes ?? {};
     const keys = new Set([...FALLBACK_CONDITIONS, ...Object.keys(config)]);
@@ -313,10 +368,12 @@ export async function openZoneBuilder() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }
 
+  /** Prevents the UI from asking for meaningless numeric values on binary conditions. */
   function isValuedCondition(slug) {
     return VALUED_CONDITIONS.has(String(slug ?? ""));
   }
 
+  /** Uses PF2e damage types so zone automation does not maintain a stale duplicate list. */
   function getDamageChoices() {
     const config = CONFIG.PF2E?.damageTypes ?? {};
     const values = Object.entries(config).map(([slug, labelKey]) => ({
@@ -327,11 +384,8 @@ export async function openZoneBuilder() {
     return values.sort((a, b) => a.label.localeCompare(b.label));
   }
 
-  function statDc(stat) {
-    const value = stat?.dc?.value ?? stat?.dc ?? null;
-    return Number.isFinite(Number(value)) ? Number(value) : null;
-  }
 
+  /** Retains system-provided statistic labels without making a missing translation block the builder. */
   function statLabel(stat, fallback) {
     const label = stat?.label;
     if (typeof label === "string") return localize(label, label) || fallback;
@@ -346,6 +400,7 @@ export async function openZoneBuilder() {
     const found = [];
     const seen = new Set();
 
+    /** Filters incomplete actor statistics so invalid preparation data cannot become a selectable DC. */
     const add = (statistic, label, dc) => {
       if (!statistic || seen.has(statistic) || !Number.isFinite(Number(dc))) return;
       seen.add(statistic);
@@ -364,20 +419,21 @@ export async function openZoneBuilder() {
       }
     } catch (_err) { /* ignore */ }
 
-    for (const [slug, label] of [
-      ["spell-dc", "Highest Spell DC"],
-      ["class-spell", "Highest Class or Spell DC"]
-    ]) {
-      try {
-        const stat = actor.getStatistic?.(slug);
-        add(slug, label, statDc(stat));
-      } catch (_err) { /* not supported by this actor type */ }
-    }
+    try {
+      add("spell-dc", "Highest Spell DC", statDc(actor.getStatistic?.("spell-dc")));
+    } catch (_err) { /* not supported by this actor type */ }
+
+    // PF2e's combined statistic can retain an unprepared 0 during actor data
+    // updates. Calculate its value from prepared class and spell statistics,
+    // and do the same when a save is resolved.
+    const classOrSpellDc = highestClassOrSpellDc(actor);
+    if (classOrSpellDc !== null) add("class-spell", "Highest Class or Spell DC", classOrSpellDc);
 
     // Avoid duplicate primary class choices that resolve to exactly the same slug/DC.
     return found.sort((a, b) => b.dc - a.dc || a.label.localeCompare(b.label));
   }
 
+  /** Provides an explicit result shape so every degree of success can be edited safely. */
   function emptyOutcome(key) {
     return {
       damageMultiplier: BASIC_MULTIPLIERS[key] ?? 1,
@@ -386,13 +442,14 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Starts each Effect Block without hidden behavior so the user must choose its triggers and results. */
   function newBlock(index = 1) {
     return {
       id: newId(),
       name: `Effect Block ${index}`,
       triggers: {
         activation: false,
-        enter: true,
+        enter: false,
         turnStart: false,
         sourceTurnStart: false,
         turnEnd: false,
@@ -400,7 +457,7 @@ export async function openZoneBuilder() {
         traitUse: false
       },
       traitUse: {
-        trait: "vitality"
+        traits: []
       },
       chatAlert: {
         enabled: false,
@@ -411,7 +468,7 @@ export async function openZoneBuilder() {
         enabled: false,
         type: "will",
         choices: ["reflex", "will"],
-        dc: { mode: "custom", value: 10 },
+        dc: { mode: "custom", value: "" },
         basic: false
       },
       damage: {
@@ -433,10 +490,11 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Makes important zone decisions visible instead of silently assuming traits, triggers, or a name. */
   function defaultConfig() {
     return {
       schemaVersion: SCHEMA_VERSION,
-      name: "New Zone",
+      name: "",
       mode: "emanation",
       radius: 15,
       visibility: "all",
@@ -444,7 +502,7 @@ export async function openZoneBuilder() {
         affects: "enemies",
         includeSelf: false
       },
-      traits: ["aura"],
+      traits: [],
       duration: {
         type: "until-dismissed",
         rounds: 1,
@@ -460,6 +518,7 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Repairs incomplete imported result data so presets from older versions remain editable. */
   function ensureOutcome(outcome, key) {
     const base = emptyOutcome(key);
     return {
@@ -493,17 +552,18 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Moves imported and saved configurations into one current shape before the UI uses them. */
   function normalizeConfig(input) {
     const base = defaultConfig();
     const cfg = input && typeof input === "object" ? input : {};
 
     const traits = Array.isArray(cfg.traits)
-      ? [...new Set(cfg.traits.map((x) => String(x).trim()).filter(Boolean))]
+      ? normalizeTraitSlugs(cfg.traits)
       : base.traits;
 
     const result = {
       schemaVersion: SCHEMA_VERSION,
-      name: String(cfg.name ?? base.name).trim() || base.name,
+      name: String(cfg.name ?? base.name).trim(),
       mode: ["area", "emanation"].includes(cfg.mode) ? cfg.mode : base.mode,
       radius: Math.max(1, Number(cfg.radius) || base.radius),
       visibility: ["all", "gm"].includes(cfg.visibility) ? cfg.visibility : base.visibility,
@@ -539,9 +599,15 @@ export async function openZoneBuilder() {
     const effects = Array.isArray(cfg.effects) && cfg.effects.length ? cfg.effects : base.effects;
     result.effects = effects.map((block, index) => {
       const saveMode = block?.save?.dc?.mode === "actorStatistic" ? "actorStatistic" : "custom";
+      const rawCustomDc = block?.save?.dc?.value;
+      const customDc = rawCustomDc == null || String(rawCustomDc).trim() === ""
+        ? ""
+        : Number.isFinite(Number(rawCustomDc))
+          ? Math.max(0, Number(rawCustomDc))
+          : "";
       const dc = saveMode === "actorStatistic"
         ? { mode: "actorStatistic", statistic: String(block?.save?.dc?.statistic ?? "class-dc") }
-        : { mode: "custom", value: Math.max(0, Number(block?.save?.dc?.value) || 0) };
+        : { mode: "custom", value: customDc };
 
       const outcomes = {};
       for (const [key] of OUTCOMES) outcomes[key] = ensureOutcome(block?.outcomes?.[key], key);
@@ -559,7 +625,7 @@ export async function openZoneBuilder() {
           traitUse: Boolean(block?.triggers?.traitUse)
         },
         traitUse: {
-          trait: String(block?.traitUse?.trait ?? "vitality").trim().toLowerCase()
+          traits: watchedTraitSlugs(block?.traitUse)
         },
         chatAlert: {
           enabled: block?.chatAlert?.enabled != null
@@ -625,20 +691,24 @@ export async function openZoneBuilder() {
   let state = defaultConfig();
   let loadedPreset = null; // { id, createdBy, modifiedBy, revision, ... } for the currently loaded/saved library entry
 
+  /** Protects shared presets from being overwritten by users who did not create them. */
   function canOverwritePreset(record = loadedPreset) {
     if (!record) return true;
     return game.user.isGM || record.createdBy?.userId === game.user.id;
   }
 
+  /** Shows ownership alongside a preset name so similarly named shared records remain distinguishable. */
   function presetLabel(record) {
     return `${record?.name ?? "Unnamed Zone"} (${record?.createdBy?.name ?? "Unknown"})`;
   }
 
+  /** Detects a changed token selection before it can create a zone from the wrong actor. */
   function selectionStillMatchesSource() {
     const current = selectedSourceToken({ notify: false });
     return Boolean(current && current.document.uuid === sourceToken.document.uuid);
   }
 
+  /** Keeps the save UI aligned with the source actor that is currently selected. */
   function dcOptionsHtml(selectedDc) {
     const choices = getDcChoices(sourceActor);
     const selectedMode = selectedDc?.mode ?? "custom";
@@ -657,18 +727,21 @@ export async function openZoneBuilder() {
     return html;
   }
 
+  /** Keeps condition dropdowns consistent with the current PF2e catalog. */
   function conditionOptions(selected) {
     return getConditionChoices().map(({ slug, label }) =>
       `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
     ).join("");
   }
 
+  /** Keeps damage-type dropdowns consistent with the current PF2e catalog. */
   function damageOptions(selected) {
     return getDamageChoices().map(({ slug, label }) =>
       `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
     ).join("");
   }
 
+  /** Keeps condition controls and their removal choices together so outcomes remain legible. */
   function renderConditionRow(condition, blockId, outcomeKey, index) {
     const valued = isValuedCondition(condition.slug);
     const value = valued ? (condition.value ?? 1) : "";
@@ -693,6 +766,7 @@ export async function openZoneBuilder() {
       </div>`;
   }
 
+  /** Hides unsupported condition inputs so stale controls cannot mislead the user. */
   function refreshConditionRow(row) {
     if (!row) return;
     const removal = row.querySelector('[data-field="condition-removal"]')?.value ?? "normal";
@@ -700,6 +774,7 @@ export async function openZoneBuilder() {
     if (link) link.style.display = removal === "condition-end" ? "flex" : "none";
   }
 
+  /** Keeps an effect UUID and its cleanup rule together because they describe one application. */
   function renderEffectRow(effect, blockId, outcomeKey, index) {
     return `
       <div class="zb-subrow zb-effect-row" data-effect-index="${index}">
@@ -713,6 +788,7 @@ export async function openZoneBuilder() {
       </div>`;
   }
 
+  /** Groups each possible result so users can see exactly when a payload will apply. */
   function renderOutcome(block, key, label) {
     const outcome = block.outcomes[key] ?? emptyOutcome(key);
     const isNoSave = key === "noSave";
@@ -748,6 +824,7 @@ export async function openZoneBuilder() {
       </section>`;
   }
 
+  /** Makes collapsed blocks reviewable without forcing users to reopen every configuration detail. */
   function blockSummary(block) {
     const triggers = triggerLabels(block);
     const outcomeKeys = block.save.enabled
@@ -770,7 +847,12 @@ export async function openZoneBuilder() {
     return `${triggers.length ? triggers.join(", ") : "Choose when this happens"} · ${results.length ? results.join(", ") : "Choose what happens"}`;
   }
 
+  /** Rebuilds a block from state so validation, import, and dynamic rows stay synchronized. */
   function renderBlock(block, index) {
+    const watchedTraits = watchedTraitSlugs(block.traitUse);
+    const watchedTraitSet = new Set(watchedTraits);
+    const customWatchedTraits = watchedTraits.filter((trait) => !WATCHED_TRAITS.includes(trait)).join(", ");
+    /** Uses one checkbox shape so every trigger communicates the same opt-in behavior. */
     const trigger = (key, label) => `
       <label class="zb-check"><input type="checkbox" data-trigger="${key}" ${block.triggers[key] ? "checked" : ""}> ${esc(label)}</label>`;
 
@@ -803,17 +885,20 @@ export async function openZoneBuilder() {
               ${trigger("sourceTurnStart", "At the start of the source's turn")}
               ${trigger("turnEnd", "At the end of a creature's turn")}
               ${trigger("continuous", "While a creature is inside")}
-              ${trigger("traitUse", "When a creature uses a trait")}
+              ${trigger("traitUse", "When a creature uses a selected trait")}
             </div>
             <p class="notes">Choose one or more events. “When the zone is created” affects eligible creatures already inside. “When a creature enters” only affects a creature that crosses into the zone later. The source-turn event follows the source combatant even when it is outside a fixed area, and does not run on the turn the zone is created.</p>
           </fieldset>
 
           <fieldset class="zb-trait-use-options">
             <legend>Trait Use Trigger</legend>
-            <label>Watched trait
-              <input data-field="trait-use-trait" type="text" value="${esc(block.traitUse?.trait ?? "vitality")}" placeholder="vitality">
+            <div class="zb-traits">
+              ${WATCHED_TRAITS.map((trait) => `<label class="zb-check"><input type="checkbox" data-trait-use-trait="${trait}" ${watchedTraitSet.has(trait) ? "checked" : ""}> ${titleCase(trait)}</label>`).join("")}
+            </div>
+            <label>Other trait slugs (comma-separated)
+              <input data-field="trait-use-custom-traits" type="text" value="${esc(customWatchedTraits)}" placeholder="e.g. curse, fire">
             </label>
-            <p class="notes">The block runs when a creature inside the zone uses an item, spell, or ability with this trait. For spells, PF2e must mark the spell as actually cast; generic abilities are detected from their PF2e chat card.</p>
+            <p class="notes">Choose one or more traits. The block runs once when a creature inside the zone uses an item, spell, or ability with any selected trait. For spells, PF2e must mark the spell as actually cast; generic abilities are detected from their PF2e chat card.</p>
           </fieldset>
 
           <fieldset>
@@ -844,7 +929,7 @@ export async function openZoneBuilder() {
                   <select data-field="dc-source">${dcOptionsHtml(block.save.dc)}</select>
                 </label>
                 <label class="zb-custom-dc">Custom DC
-                  <input data-field="custom-dc" type="number" min="0" step="1" value="${block.save.dc.mode === "custom" ? block.save.dc.value : 10}">
+                  <input data-field="custom-dc" type="number" min="0" step="1" value="${block.save.dc.mode === "custom" ? block.save.dc.value : ""}">
                 </label>
               </div>
               <div class="zb-save-choice-options">
@@ -945,6 +1030,7 @@ export async function openZoneBuilder() {
       </details>`;
   }
 
+  /** Rebuilds the dialog from canonical state instead of preserving potentially stale DOM values. */
   function renderRoot() {
     const commonSet = new Set(COMMON_TRAITS);
     const customTraits = state.traits.filter((t) => !commonSet.has(t)).join(", ");
@@ -979,7 +1065,7 @@ export async function openZoneBuilder() {
             <h3>Zone</h3>
             <div class="zb-grid two">
               <label>Name
-                <input data-zone="name" type="text" value="${esc(state.name)}">
+                <input data-zone="name" type="text" value="${esc(state.name)}" required aria-required="true">
               </label>
               <label>Zone type
                 <select data-zone="mode">
@@ -1078,10 +1164,12 @@ export async function openZoneBuilder() {
       </div>`;
   }
 
+  /** Keeps selector lookup in one place so form reads fail consistently if the UI changes. */
   function field(root, selector) {
     return root.querySelector(selector);
   }
 
+  /** Converts outcome controls into portable data before validation or saving. */
   function readOutcome(outcomeEl, key) {
     const conditions = [...outcomeEl.querySelectorAll(".zb-condition-row")].map((row) => {
       const slug = row.querySelector('[data-field="condition-slug"]').value;
@@ -1111,6 +1199,7 @@ export async function openZoneBuilder() {
     };
   }
 
+  /** Treats the form as input only and produces a serializable zone configuration for all actions. */
   function readConfig(root) {
     const commonTraits = [...root.querySelectorAll("[data-trait]:checked")].map((x) => x.dataset.trait);
     const customTraits = field(root, '[data-zone="custom-traits"]').value
@@ -1144,9 +1233,12 @@ export async function openZoneBuilder() {
     };
 
     for (const [index, blockEl] of [...root.querySelectorAll("[data-block-id]")].entries()) {
+      const watchedTraits = [...blockEl.querySelectorAll("[data-trait-use-trait]:checked")].map((input) => input.dataset.traitUseTrait);
+      const customWatchedTraits = normalizeTraitSlugs(blockEl.querySelector('[data-field="trait-use-custom-traits"]').value);
       const dcSource = blockEl.querySelector('[data-field="dc-source"]').value;
+      const rawCustomDc = blockEl.querySelector('[data-field="custom-dc"]').value.trim();
       const dc = dcSource === "custom"
-        ? { mode: "custom", value: Number(blockEl.querySelector('[data-field="custom-dc"]').value) }
+        ? { mode: "custom", value: rawCustomDc === "" ? "" : Number(rawCustomDc) }
         : { mode: "actorStatistic", statistic: dcSource.replace(/^stat:/, "") };
 
       const outcomes = {};
@@ -1168,7 +1260,7 @@ export async function openZoneBuilder() {
           traitUse: blockEl.querySelector('[data-trigger="traitUse"]').checked
         },
         traitUse: {
-          trait: blockEl.querySelector('[data-field="trait-use-trait"]').value.trim().toLowerCase()
+          traits: [...new Set([...watchedTraits, ...customWatchedTraits])]
         },
         chatAlert: {
           enabled: blockEl.querySelector('[data-field="chat-alert-enabled"]').checked,
@@ -1204,6 +1296,7 @@ export async function openZoneBuilder() {
     return normalizeConfig(cfg);
   }
 
+  /** Lets validation distinguish an intentionally empty block from one with an actual result. */
   function getPayloadCount(block) {
     const keys = block.save.enabled
       ? ["criticalSuccess", "success", "failure", "criticalFailure"]
@@ -1214,15 +1307,18 @@ export async function openZoneBuilder() {
     }, 0);
   }
 
+  /** Stops a zone from being created when the runtime could not apply it predictably. */
   function validateConfig(cfg, { requireCurrentSource = false } = {}) {
     const errors = [];
     const warnings = [];
     const issues = [];
     const dcChoices = getDcChoices(sourceActor);
+    /** Keeps validation errors tied to their field so the UI can explain how to fix them. */
     const error = (message, target = null) => {
       errors.push(message);
       if (target) issues.push({ message, target });
     };
+    /** Provides a stable location for errors in a block list whose rows can be added or removed. */
     const blockTarget = (index, field, extra = {}) => ({ scope: "block", index, field, ...extra });
 
     if (requireCurrentSource && !selectionStillMatchesSource()) {
@@ -1250,8 +1346,8 @@ export async function openZoneBuilder() {
       if (!Object.values(block.triggers).some(Boolean)) {
         error(`${prefix} select at least one trigger.`, blockTarget(index, "triggers"));
       }
-      if (block.triggers.traitUse && !block.traitUse?.trait) {
-        error(`${prefix} On Trait Use requires a watched trait.`, blockTarget(index, "trait-use-trait"));
+      if (block.triggers.traitUse && !watchedTraitSlugs(block.traitUse).length) {
+        error(`${prefix} On Trait Use requires at least one watched trait.`, blockTarget(index, "trait-use-traits"));
       }
       if (block.chatAlert?.enabled && !block.chatAlert?.text) {
         error(`${prefix} Chat Alert is enabled but no alert text was entered.`, blockTarget(index, "chat-alert-text"));
@@ -1329,6 +1425,7 @@ export async function openZoneBuilder() {
     return { errors, warnings, issues };
   }
 
+  /** Finds the most useful UI element for each validation problem instead of showing only a global list. */
   function validationTarget(root, issue) {
     const target = issue?.target;
     if (!target) return null;
@@ -1341,6 +1438,7 @@ export async function openZoneBuilder() {
     const block = [...root.querySelectorAll("[data-block-id]")][target.index];
     if (!block) return null;
     if (target.field === "triggers") return block.querySelector("fieldset");
+    if (target.field === "trait-use-traits") return block.querySelector(".zb-trait-use-options");
     if (target.field === "save-choices") return block.querySelector(".zb-save-choice-options");
     if (target.field === "immunity-starts") return block.querySelector(".zb-immunity-starts");
     if (target.field === "condition-link") {
@@ -1354,12 +1452,14 @@ export async function openZoneBuilder() {
     return block.querySelector(`[data-field="${target.field}"]`);
   }
 
+  /** Places inline feedback beside the control users need to change. */
   function validationErrorHost(target) {
     if (!target) return null;
     if (target.matches("fieldset, .zb-trait-use-options, .zb-chat-alert-options, .zb-save-choice-options, .zb-immunity-starts, .zb-activation-damage-choice, .zb-source, .zb-block-list, .zb-condition-row, .zb-effect-row")) return target;
     return target.closest("label") ?? target.closest(".zb-subrow") ?? target;
   }
 
+  /** Removes stale warnings before rendering the current configuration state. */
   function clearInlineValidation(root) {
     for (const message of root.querySelectorAll(".zb-field-error")) message.remove();
     for (const element of root.querySelectorAll(".zb-invalid")) {
@@ -1368,6 +1468,7 @@ export async function openZoneBuilder() {
     }
   }
 
+  /** Makes blocking errors visible where they occur so users do not have to interpret a summary list. */
   function renderInlineValidation(root, validation) {
     clearInlineValidation(root);
     for (const issue of validation.issues ?? []) {
@@ -1385,6 +1486,7 @@ export async function openZoneBuilder() {
     }
   }
 
+  /** Keeps readiness accurate as the user edits rather than waiting for a failed create attempt. */
   function refreshLiveValidation(root) {
     const cfg = readConfig(root);
     const validation = validateConfig(cfg, { requireCurrentSource: true });
@@ -1410,6 +1512,7 @@ export async function openZoneBuilder() {
     return validation;
   }
 
+  /** Hides controls that cannot affect the current configuration so the editor stays approachable. */
   function refreshVisibility(root) {
     const durationType = field(root, '[data-zone="duration-type"]').value;
     field(root, ".zb-duration-rounds").style.display = durationType === "custom-rounds" ? "flex" : "none";
@@ -1471,6 +1574,7 @@ export async function openZoneBuilder() {
     }
   }
 
+  /** Lets users copy export data without opening developer tools or altering live zones. */
   async function showJson(title, json) {
     const content = document.createElement("div");
     content.innerHTML = `
@@ -1488,6 +1592,7 @@ export async function openZoneBuilder() {
     await dlg.render({ force: true });
   }
 
+  /** Keeps source ownership out of imported data so a preset cannot redirect a zone to another actor. */
   async function importJson() {
     const content = document.createElement("div");
     content.innerHTML = `
@@ -1517,6 +1622,7 @@ export async function openZoneBuilder() {
     }
   }
 
+  /** Condenses validation into a review dialog while preserving warnings that do not block creation. */
   function validationMessage({ errors, warnings }) {
     if (!errors.length && !warnings.length) return "Configuration is valid.";
     const parts = [];
@@ -1525,6 +1631,7 @@ export async function openZoneBuilder() {
     return parts.join("\n\n");
   }
 
+  /** Gives users an explicit review step when they ask to validate rather than create. */
   async function showValidation(result) {
     const content = document.createElement("div");
     const errors = result.errors.map((x) => `<li>${esc(x)}</li>`).join("");
@@ -1541,12 +1648,14 @@ export async function openZoneBuilder() {
   }
 
 
+  /** Keeps Region behavior creation compatible with Foundry internal type changes. */
   function executeScriptBehaviorType() {
     const match = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
       .find(([, cls]) => cls?.name === "ExecuteScriptRegionBehaviorType");
     return match?.[0] ?? "executeScript";
   }
 
+  /** Makes each Region call the installed module runtime so later module fixes apply to existing zones. */
   function runtimeScriptSource() {
     return `
 const api = game.modules.get("pf2e-zone-automation")?.api;
@@ -1555,6 +1664,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 `;
   }
 
+  /** Separates automatic cleanup schedules from zones that are meant to continue indefinitely. */
   function finiteDurationRounds(cfg) {
     switch (cfg.duration.type) {
       case "1-round": return 1;
@@ -1568,6 +1678,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     }
   }
 
+  /** Captures source and duration facts at creation so future events can be resolved authoritatively. */
   function initialRuntimeState(cfg, chosenDamageType, durationResolution = null) {
     const combat = game.combat;
     const sourceCombatant = sourceActor.combatant ?? null;
@@ -1610,6 +1721,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     };
   }
 
+  /** Asks once for shared damage type choices so every block uses the same activation decision. */
   async function chooseActivationDamageType(cfg) {
     const choice = cfg.activationChoices?.damageType;
     if (!choice?.enabled) return null;
@@ -1626,6 +1738,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     return fd ? String(fd.damageType ?? "") : undefined;
   }
 
+  /** Limits Region hooks to the events zone automation actually needs to observe. */
   function regionBehaviorData() {
     return {
       name: "PF2e Zone Runtime",
@@ -1647,6 +1760,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     };
   }
 
+  /** Keeps direct GM creation on the same data shape and runtime activation path as player creation. */
   async function createZoneRegion(cfg, chosenDamageType) {
     if (!game.user.isGM) {
       let areaCenter = null;
@@ -1724,11 +1838,13 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   }
 
 
+  /** Reads shared presets through the GM worker so players do not need Journal write permissions. */
   async function fetchSavedZoneRecords() {
     const response = await callGMWorker("library-list");
     return Array.isArray(response.records) ? response.records : [];
   }
 
+  /** Preserves ownership and revision checks when users save a zone for later reuse. */
   async function saveCurrentPreset(root, { asNew = false } = {}) {
     const cfg = syncState(root);
     const validation = validateConfig(cfg);
@@ -1753,6 +1869,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     return true;
   }
 
+  /** Lets users choose a shared preset without exposing the implementation details of the Library Journal. */
   async function showSavedZones() {
     const records = await fetchSavedZoneRecords();
     records.sort((a, b) => {
@@ -1844,6 +1961,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     await dlg.render({ force: true });
   }
 
+  /** Provides a safe lifecycle view for active zones instead of requiring users to find Regions manually. */
   async function manageExistingZones() {
     const runtime = await zoneRuntimeEntrypoint();
     const zones = [...canvas.scene.regions].filter((r) => r.getFlag("world", "pf2eZone"));
@@ -1911,6 +2029,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     await dlg.render({ force: true });
   }
 
+  /** Keeps previews and collapsed summaries understandable without exposing internal trigger keys. */
   function triggerLabels(block) {
     const triggers = block?.triggers ?? {};
     const labels = [];
@@ -1920,10 +2039,14 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (triggers.sourceTurnStart) labels.push("At source turn start");
     if (triggers.turnEnd) labels.push("At creature turn end");
     if (triggers.continuous) labels.push("While inside");
-    if (triggers.traitUse) labels.push(`When ${titleCase(block?.traitUse?.trait || "trait")} is used`);
+    if (triggers.traitUse) {
+      const watchedTraits = watchedTraitSlugs(block?.traitUse);
+      labels.push(`When ${watchedTraits.length ? watchedTraits.map(titleCase).join(" or ") : "a selected trait"} is used`);
+    }
     return labels;
   }
 
+  /** Lets users review the actual serialized configuration before it changes the Scene. */
   function previewHtml(cfg, validation) {
     const durationInput = cfg.duration?.type === "custom-rounds"
       ? parseDurationRounds(cfg.duration.rounds)
@@ -1964,6 +2087,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       </div>`;
   }
 
+  /** Captures current form input before actions that rerender, save, preview, or create. */
   function syncState(root) {
     state = readConfig(root);
     return state;
@@ -1972,6 +2096,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   let dialog;
   let operationStatusTimer = null;
 
+  /** Keeps connection and ownership limits visible while the builder remains open. */
   function refreshOperationStatus(root) {
     const operation = currentOperationStatus();
     const status = root.querySelector("[data-operation-status]");
@@ -1988,12 +2113,14 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     return operation;
   }
 
+  /** Prevents background timers from surviving after the dialog is closed. */
   function stopOperationStatusPolling() {
     if (operationStatusTimer === null) return;
     globalThis.clearInterval(operationStatusTimer);
     operationStatusTimer = null;
   }
 
+  /** Refreshes player availability when a GM connects or disconnects while the dialog is open. */
   function startOperationStatusPolling(root) {
     stopOperationStatusPolling();
     operationStatusTimer = globalThis.setInterval(() => {
@@ -2005,16 +2132,19 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     }, 1000);
   }
 
+  /** Updates dynamic content without losing the current dialog context or its event wiring. */
   function rerenderInsideDialog() {
     const content = dialog.window.content;
     content.innerHTML = renderRoot();
     wire(content.querySelector(".pf2e-zone-builder"));
   }
 
+  /** Finds the canonical block before mutations so UI buttons cannot edit an obsolete copy. */
   function findBlock(blockId) {
     return state.effects.find((b) => b.id === blockId);
   }
 
+  /** Connects the rendered controls to state changes while keeping validation current after every edit. */
   function wire(root) {
     if (!root) return;
     refreshVisibility(root);
@@ -2279,6 +2409,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
       const button = root.querySelector(".zb-create");
       button.disabled = true;
+      /** Gives the creation flow one safe restoration callback whether or not the builder was hidden for placement. */
       const restoreBuilder = cfg.mode === "area" ? hideBuilderForAreaPlacement() : () => {};
       try {
         globalThis.PF2EZoneBuilderLastConfig = clone(cfg);
@@ -2320,7 +2451,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   const builderWidth = Math.max(720, Math.min(980, globalThis.innerWidth - 120));
 
   dialog = new DialogV2({
-    window: { title: "PF2e Zone Automation" },
+    window: { title: `PF2e Zone Automation v${game.modules.get("pf2e-zone-automation")?.version ?? "unknown"}` },
     position: { width: builderWidth },
     content,
     // DialogV2 requires at least one native button. The builder has its own

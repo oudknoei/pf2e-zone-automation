@@ -14,6 +14,7 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /When a creature enters after creation/);
   assert.match(builder, /At the start of a creature's turn/);
   assert.match(builder, /data-block-summary/);
+  assert.match(builder, /PF2e Zone Automation v\$\{game\.modules\.get\("pf2e-zone-automation"\)\?\.version/);
   assert.match(builder, /function blockSummary/);
   assert.match(builder, /data-validation-status/);
   assert.match(builder, /Ready to create/);
@@ -25,6 +26,14 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /function renderInlineValidation/);
   assert.match(builder, /function refreshLiveValidation/);
   assert.match(builder, /function refreshOperationStatus/);
+  assert.match(builder, /name: ""/);
+  assert.match(builder, /traits: \[\]/);
+  assert.match(builder, /enter: false/);
+  assert.match(builder, /dc: \{ mode: "custom", value: "" \}/);
+  assert.match(builder, /data-zone="name" type="text" value="\$\{esc\(state\.name\)\}" required/);
+  assert.match(builder, /data-trait-use-trait/);
+  assert.match(builder, /WATCHED_TRAITS/);
+  assert.doesNotMatch(builder, /trait: "vitality"/);
 });
 
 test("README provides a complete How To and omits retired sections", () => {

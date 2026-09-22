@@ -44,10 +44,10 @@ A player can create a zone only from an Actor they own. An active GM must be con
 
 ### Set up the zone
 
-1. Give the zone a clear name.
+1. Give the zone a clear name. A name is required.
 2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
 3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
-4. Choose the zone's visibility and any applicable traits.
+4. Choose the zone's visibility and any applicable traits. Traits begin unchecked.
 5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. Use the dismissal checkbox when the source should be able to end the zone early.
 
 Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
@@ -66,7 +66,9 @@ Choose one or more plain-language trigger choices:
 | **At the end of a creature's turn** | The effect belongs at the end of an affected creature's turn. |
 | **At the start of the source's turn** | The source's combat turn controls the effect, even when the source is outside a fixed area. |
 | **While a creature is inside** | The no-save result should be maintained for occupants, such as an ongoing Effect Item. Verify damage and healing carefully before using this trigger. |
-| **When a creature uses a trait** | A creature inside the zone uses an item, spell, or ability with the watched trait. |
+| **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
+
+For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
 
 Then choose how often each creature can be affected: every time the event happens, once each round, or once for the zone's lifetime.
 
@@ -75,7 +77,7 @@ Then choose how often each creature can be affected: every time the event happen
 Within an Effect Block, enable only the result sections the ability needs:
 
 - **Chat Alert** posts a message when the block runs. It supports the listed placeholders such as `{creature}`, `{zone}`, and `{item}`.
-- **Saving Throw** requests the selected save against a custom DC or a statistic from the source Actor. Select **Basic save** for the normal 0 / half / full / double progression.
+- **Saving Throw** requests the selected save against a custom DC or a statistic from the source Actor. A custom DC begins blank and is required only when the saving throw is enabled. Select **Basic save** for the normal 0 / half / full / double progression.
 - **Damage** and **Healing** post normal PF2e roll cards.
 - **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled.
 - **Temporary Immunity** prevents later applications for the chosen duration after the selected result.

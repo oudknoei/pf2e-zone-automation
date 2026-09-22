@@ -1,6 +1,7 @@
 const TAUNT_ACTION_UUID = "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb";
 const TAUNT_EFFECT_UUID = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
 
+/** Keeps chat text safe when actor and target names come from world data. */
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -8,10 +9,12 @@ const escapeHtml = (value) => String(value ?? "")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&#039;");
 
+/** Uses a consistent item identity so rules checks survive display-name changes. */
 function itemSlug(item) {
   return String(item?.slug ?? item?.system?.slug ?? "").trim().toLowerCase();
 }
 
+/** Fails early with a useful message when the requested combatants are no longer on a scene. */
 async function resolveToken(tokenUuid, label) {
   const token = await fromUuid(String(tokenUuid ?? ""));
   if (token?.documentName !== "Token" || !token.actor) {
@@ -20,6 +23,7 @@ async function resolveToken(tokenUuid, label) {
   return token;
 }
 
+/** Includes synthetic and scene actors so prior Taunts can be found across the active world. */
 function allActors() {
   const actors = new Map();
   for (const actor of game.actors ?? []) actors.set(actor.uuid, actor);
@@ -31,6 +35,7 @@ function allActors() {
   return actors.values();
 }
 
+/** Removes only this Guardian's old Taunts so a new Taunt does not disturb other guardians. */
 function previousTauntsFrom(guardian) {
   const prior = [];
   for (const actor of allActors()) {
@@ -45,6 +50,7 @@ function previousTauntsFrom(guardian) {
   return prior;
 }
 
+/** Uses Foundry's scene measurement so Taunt range follows the current grid and distance rules. */
 function measureTauntRange(sourceToken, targetToken) {
   if (sourceToken.parent?.id !== targetToken.parent?.id) {
     throw new Error("The Guardian and target must be on the same Scene.");

@@ -5,6 +5,7 @@ import { registerZoneSocket } from "./transport.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 
+/** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
   const module = game.modules.get(MODULE_ID);
   module.api = {
@@ -15,6 +16,7 @@ Hooks.once("init", () => {
   };
 });
 
+/** Adds the builder where token-focused preparation naturally begins, avoiding a separate setup macro. */
 Hooks.on("getSceneControlButtons", (controls) => {
   const tokenTools = controls.tokens?.tools;
   if (!tokenTools) return;
@@ -35,6 +37,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
   };
 });
 
+/** Starts cross-client requests and runtime reconciliation only after Foundry services and documents are available. */
 Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") return;
   try {

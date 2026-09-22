@@ -1,3 +1,4 @@
+/** Keeps zone names and formulas from changing the structure of the duration announcement. */
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -7,10 +8,7 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-/**
- * Record a formula duration at the same visibility as its zone.
- * Formula durations have already been evaluated exactly once by the caller.
- */
+/** Keeps a randomly determined zone lifetime visible to exactly the people allowed to see that zone. */
 export async function postFormulaDurationMessage({ zoneName, duration, visibility, actor = null, token = null } = {}) {
   const formula = String(duration?.formula ?? "").trim();
   const rounds = Number(duration?.rounds);
