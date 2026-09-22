@@ -20,7 +20,7 @@ export async function openZoneBuilder() {
 
   const BUILDER_VERSION = "0.5.18";
   const RUNTIME_VERSION = "0.5.15";
-  const SCHEMA_VERSION = 10;
+  const SCHEMA_VERSION = 11;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -255,7 +255,6 @@ export async function openZoneBuilder() {
   /** Prevents players from ending zones that their source ownership does not authorize them to dismiss. */
   async function canCurrentUserDismiss(payload) {
     if (game.user.isGM) return true;
-    if (!payload?.config?.duration?.dismissible) return false;
     const actor = payload?.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null;
     return Boolean(actor?.testUserPermission?.(game.user, "OWNER"));
   }
@@ -505,9 +504,8 @@ export async function openZoneBuilder() {
       },
       traits: [],
       duration: {
-        type: "until-dismissed",
-        rounds: 1,
-        dismissible: true
+        type: "unlimited",
+        rounds: 1
       },
       activationChoices: {
         damageType: {
@@ -577,15 +575,16 @@ export async function openZoneBuilder() {
       },
       traits,
       duration: {
-        type: cfg.duration?.type === "1-round"
-          ? "custom-rounds"
-          : ["custom-rounds", "1-minute", "10-minutes", "until-dismissed", "unlimited"].includes(cfg.duration?.type)
-            ? cfg.duration.type
-            : base.duration.type,
+        type: cfg.duration?.type === "until-dismissed"
+          ? "unlimited"
+          : cfg.duration?.type === "1-round"
+            ? "custom-rounds"
+            : ["custom-rounds", "1-minute", "10-minutes", "unlimited"].includes(cfg.duration?.type)
+              ? cfg.duration.type
+              : base.duration.type,
         rounds: cfg.duration?.type === "1-round"
           ? 1
-          : normalizeDurationRounds(cfg.duration?.rounds, 1),
-        dismissible: cfg.duration?.dismissible !== false
+          : normalizeDurationRounds(cfg.duration?.rounds, 1)
       },
       activationChoices: {
         damageType: {
@@ -912,7 +911,7 @@ export async function openZoneBuilder() {
               <label>Chat alert text
                 <input data-field="chat-alert-text" type="text" value="${esc(block.chatAlert?.text ?? "")}">
               </label>
-              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, <b>{trigger}</b>, and <b>{outcome}</b>. Trait-use and spell-cast triggers provide <b>{item}</b>; trait-use triggers also provide <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets. For a saving-throw block, the alert is posted before the save requests, so <b>{outcome}</b> is blank.</p>
+              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, and <b>{trigger}</b>. Trait-use and spell-cast triggers provide <b>{item}</b>; trait-use triggers also provide <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets.</p>
             </div>
           </fieldset>
 
@@ -1115,7 +1114,6 @@ export async function openZoneBuilder() {
                   <option value="custom-rounds" ${state.duration.type === "custom-rounds" ? "selected" : ""}>X rounds</option>
                   <option value="1-minute" ${state.duration.type === "1-minute" ? "selected" : ""}>1 minute</option>
                   <option value="10-minutes" ${state.duration.type === "10-minutes" ? "selected" : ""}>10 minutes</option>
-                  <option value="until-dismissed" ${state.duration.type === "until-dismissed" ? "selected" : ""}>Until dismissed</option>
                   <option value="unlimited" ${state.duration.type === "unlimited" ? "selected" : ""}>Unlimited</option>
                 </select>
               </label>
@@ -1123,7 +1121,6 @@ export async function openZoneBuilder() {
                 <input data-zone="duration-rounds" type="text" inputmode="text" spellcheck="false" value="${esc(state.duration.rounds)}" placeholder="e.g. 6 or 2d4">
               </label>
             </div>
-            <label class="zb-check" style="margin-top:8px"><input data-zone="dismissible" type="checkbox" ${state.duration.dismissible ? "checked" : ""}> Source can dismiss this zone</label>
           </section>
 
           <section class="zb-section">
@@ -1224,8 +1221,7 @@ export async function openZoneBuilder() {
       traits: [...new Set([...commonTraits, ...customTraits])],
       duration: {
         type: field(root, '[data-zone="duration-type"]').value,
-        rounds: field(root, '[data-zone="duration-rounds"]').value.trim(),
-        dismissible: field(root, '[data-zone="dismissible"]').checked
+        rounds: field(root, '[data-zone="duration-rounds"]').value.trim()
       },
       activationChoices: {
         damageType: {
@@ -1989,7 +1985,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       const canEnd = await canCurrentUserDismiss(payload);
       zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
         <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(titleCase(cfg.mode))} · ${esc(cfg.radius)} ft · ${esc(titleCase(cfg.duration?.type))}</div></div>
-        <button type="button" data-action="export"><i class="fa-solid fa-file-export"></i> Export</button>
+        <button type="button" data-action="load-config"><i class="fa-solid fa-folder-open"></i> Load Config</button>
         ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> Dismiss</button>` : `<span></span>`}
       </div>`);
     }
@@ -2018,8 +2014,16 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         const region = row ? canvas.scene.regions.get(row.dataset.regionId) : null;
         if (!button || !region) return;
         const payload = region.getFlag("world", "pf2eZone");
-        if (button.dataset.action === "export") {
-          await showJson(`Export Zone JSON — ${payload.config.name}`, JSON.stringify(payload.config, null, 2));
+        if (button.dataset.action === "load-config") {
+          if (!payload?.config) {
+            ui.notifications.warn(`PF2e Zone '${region.name}' has no saved configuration to load.`);
+            return;
+          }
+          state = normalizeConfig(payload.config);
+          loadedPreset = null;
+          await dlg.close();
+          rerenderInsideDialog();
+          ui.notifications.info(`Loaded the configuration from '${region.name}'. Source actor was not changed.`);
         } else if (button.dataset.action === "end") {
           button.disabled = true;
           try {

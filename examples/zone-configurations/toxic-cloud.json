@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 5,
+  "schemaVersion": 11,
   "name": "Toxic Cloud (rank 5)",
   "mode": "area",
   "radius": 20,
@@ -13,8 +13,7 @@
   ],
   "duration": {
     "type": "1-minute",
-    "rounds": 1,
-    "dismissible": true
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {

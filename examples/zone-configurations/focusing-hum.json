@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 11,
   "name": "Focusing Hum",
   "mode": "emanation",
   "radius": 15,
@@ -10,8 +10,7 @@
   "traits": [],
   "duration": {
     "type": "1-minute",
-    "rounds": 1,
-    "dismissible": true
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {

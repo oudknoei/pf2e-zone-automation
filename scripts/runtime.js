@@ -1053,8 +1053,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               block,
               token,
               batchId,
-              resolvedEventContext,
-              block.save?.enabled ? null : "noSave"
+              resolvedEventContext
             );
           }
 
@@ -1674,12 +1673,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             ...(Array.isArray(pf2e.context?.options) ? pf2e.context.options : [])
           ].map((option) => String(option));
 
-          // PF2e spell casts normally mark the chat context as "spell-cast".
-          // Attack rolls can instead carry action:cast-a-spell in their roll
-          // options, so accept either supported marker.
-          const isSpellCast = pf2e.context?.type === "spell-cast"
+          // No-defense spells such as Detect Magic do not create PF2e's
+          // spell-cast context or action roll option. Their spell origin is
+          // still the durable record that a spell was cast, and lets trait
+          // detection continue to the originating Item.
+          const isSpellCast = origin.type === "spell"
+            || pf2e.context?.type === "spell-cast"
             || rollOptions.includes("action:cast-a-spell");
-          if (origin.type === "spell" && !isSpellCast) return null;
 
           let actor = null;
           try {
@@ -1730,9 +1730,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           }
 
-          // PF2e includes a spell's traits as unprefixed roll options on its
-          // cast card. This is especially important for spells such as Detect
-          // Magic, which have no defense and therefore no spell-cast context.
+          // PF2e can include a spell's traits as unprefixed roll options on its
+          // cast card. The originating Item remains the fallback for no-defense
+          // spells whose card contains no roll options.
           if (origin.type === "spell") {
             for (const option of rollOptions) {
               const trait = option.trim().toLowerCase();
@@ -1783,10 +1783,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             source: values.source,
             trait: values.trait,
             trigger: values.trigger,
-            outcome: values.outcome,
             count: values.count
           };
-          return String(template ?? "").replace(/\{(zone|block|creature|item|source|trait|trigger|outcome|count)\}/gi, (_match, key) => {
+          return String(template ?? "").replace(/\{(zone|block|creature|item|source|trait|trigger|count)\}/gi, (_match, key) => {
             return String(replacements[String(key).toLowerCase()] ?? "");
           });
         },
@@ -1805,7 +1804,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Suppresses duplicate alerts while Foundry finishes reporting a single trigger event. */
-        async postChatAlertOnce(region, payload, block, token, batchId, eventContext = {}, outcomeKey = null) {
+        async postChatAlertOnce(region, payload, block, token, batchId, eventContext = {}) {
           if (!block.chatAlert?.enabled) return;
           const key = this.chatAlertBatchKey(region, block, batchId, eventContext);
           if (this.chatAlertBatches.has(key)) return;
@@ -1816,11 +1815,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // grow for the life of the world.
           setTimeout(() => this.chatAlertBatches.delete(key), 5000);
 
-          await this.postChatAlert(region, payload, block, token, outcomeKey, eventContext);
+          await this.postChatAlert(region, payload, block, token, eventContext);
         },
 
         /** Posts an auditable explanation of a configured effect without revealing unescaped world data. */
-        async postChatAlert(region, payload, block, token, outcomeKey, eventContext = {}) {
+        async postChatAlert(region, payload, block, token, eventContext = {}) {
           if (!block.chatAlert?.enabled) return;
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const sourceName = sourceToken?.name ?? sourceActor?.name ?? region.name ?? "Zone source";
@@ -1840,7 +1839,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             source: sourceName,
             trait,
             trigger: trigger ? titleCaseLocal(trigger) : "",
-            outcome: outcomeKey ? titleCaseLocal(outcomeKey) : "",
             count
           });
 
@@ -1854,7 +1852,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                   blockId: block.id,
                   tokenUuid: token?.uuid ?? null,
                   trigger: eventContext?.trigger ?? null,
-                  outcome: outcomeKey ?? null,
                   sourceMessageId: eventContext?.sourceMessageId ?? null
                 }
               }

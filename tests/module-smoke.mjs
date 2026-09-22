@@ -61,6 +61,59 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
 });
 
+test("a source owner can dismiss a zone regardless of its retired dismissal flag", async () => {
+  const prior = {
+    user: game.user,
+    users: game.users,
+    scenes: game.scenes,
+    fromUuid: globalThis.fromUuid,
+    runtime: globalThis.PF2EZoneRuntime
+  };
+  const requester = { id: "player", name: "Player", active: true, isGM: false };
+  const sourceActor = { testUserPermission: (user, level) => user === requester && level === "OWNER" };
+  const scene = { id: "scene", regions: { get: (id) => id === "zone" ? region : null } };
+  const region = {
+    id: "zone",
+    parent: scene,
+    getFlag: () => ({
+      config: { duration: { type: "unlimited", dismissible: false } },
+      state: { sourceActorUuid: "Actor.source" }
+    })
+  };
+  let ended = null;
+
+  try {
+    game.user = { id: "gm", isGM: true };
+    game.users = { get: (id) => id === requester.id ? requester : null };
+    game.scenes = { get: (id) => id === scene.id ? scene : null };
+    globalThis.fromUuid = async (uuid) => uuid === "Actor.source" ? sourceActor : null;
+    globalThis.PF2EZoneRuntime = {
+      version: "0.5.15",
+      installHooks: () => undefined,
+      endZone: async (target, reason) => { ended = { target, reason }; }
+    };
+
+    const result = await handleWorkerRequest({
+      protocol: 1,
+      action: "end",
+      requesterUserId: requester.id,
+      sceneId: scene.id,
+      regionId: region.id
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(ended?.target, region);
+  } finally {
+    game.user = prior.user;
+    game.users = prior.users;
+    game.scenes = prior.scenes;
+    if (prior.fromUuid === undefined) delete globalThis.fromUuid;
+    else globalThis.fromUuid = prior.fromUuid;
+    if (prior.runtime === undefined) delete globalThis.PF2EZoneRuntime;
+    else globalThis.PF2EZoneRuntime = prior.runtime;
+  }
+});
+
 test("worker rejects non-GM execution and dispatches GM requests", async () => {
   const request = { protocol: 1, action: "ping", requesterUserId: "gm" };
   game.user.isGM = false;

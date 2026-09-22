@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 11,
   "name": "Courageous Anthem",
   "mode": "emanation",
   "radius": 60,
@@ -13,8 +13,7 @@
   ],
   "duration": {
     "type": "custom-rounds",
-    "rounds": 1,
-    "dismissible": false
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {

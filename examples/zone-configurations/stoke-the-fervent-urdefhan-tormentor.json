@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 8,
+  "schemaVersion": 11,
   "name": "Stoke the Fervent - Urdefhan Tormentor",
   "mode": "emanation",
   "radius": 30,
@@ -16,8 +16,7 @@
   ],
   "duration": {
     "type": "custom-rounds",
-    "rounds": "2d4",
-    "dismissible": false
+    "rounds": "2d4"
   },
   "activationChoices": {
     "damageType": {

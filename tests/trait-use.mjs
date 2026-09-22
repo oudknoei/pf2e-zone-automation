@@ -18,6 +18,11 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
     type: "spell",
     system: { traits: { value: ["healing", "vitality"] } }
   };
+  const detectMagic = {
+    name: "Detect Magic",
+    type: "spell",
+    system: { traits: { value: ["concentrate", "detection", "divination", "manipulate"] } }
+  };
 
   try {
     globalThis.PF2EZoneRuntime = undefined;
@@ -36,7 +41,8 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
     };
     globalThis.fromUuid = async (uuid) => ({
       "Actor.dragon": actor,
-      "Actor.dragon.Item.heal": item
+      "Actor.dragon.Item.heal": item,
+      "Actor.dragon.Item.detect-magic": detectMagic
     })[uuid] ?? null;
 
     const { zoneRuntimeEntrypoint } = await import(`../scripts/runtime.js?trait-use-test=${Date.now()}`);
@@ -59,6 +65,10 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
     assert.equal(info?.token, token);
     assert.equal(info?.itemName, "Heal");
     assert.ok(info?.traits.has("vitality"));
+    assert.equal(
+      runtime.formatChatAlert("{zone}: {outcome} / {count}", { zone: "Test Zone", outcome: "Success", count: 1 }),
+      "Test Zone: {outcome} / 1"
+    );
 
     const detectMagicMessage = {
       id: "detect-magic-message",
@@ -67,10 +77,7 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
           origin: {
             type: "spell",
             actor: "Actor.dragon",
-            uuid: "Actor.dragon.Item.detect-magic",
-            // PF2e puts spell traits directly in the cast card's roll options.
-            // Detect Magic has no defense, so the card has no spell-cast context.
-            rollOptions: ["action:cast-a-spell", "concentrate", "detection", "divination", "manipulate"]
+            uuid: "Actor.dragon.Item.detect-magic"
           }
         }
       },
@@ -78,13 +85,18 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
     };
     const detectMagicInfo = await runtime.traitUseInfoFromMessage(detectMagicMessage);
 
-    assert.equal(detectMagicInfo?.itemName, "an ability");
+    assert.equal(detectMagicInfo?.itemName, "Detect Magic");
     assert.equal(detectMagicInfo?.isSpellCast, true);
     assert.ok(detectMagicInfo?.traits.has("manipulate"));
     assert.ok(detectMagicInfo?.traits.has("concentrate"));
 
     const spellCastBlock = { id: "spell-cast", triggers: { spellCast: true } };
-    const payload = { config: { effects: [spellCastBlock] }, state: {} };
+    const manipulateBlock = {
+      id: "manipulate",
+      triggers: { traitUse: true },
+      traitUse: { traits: ["manipulate"] }
+    };
+    const payload = { config: { effects: [spellCastBlock, manipulateBlock] }, state: {} };
     const region = {
       uuid: "Scene.scene.Region.reach",
       parent: { id: "scene" },
@@ -97,9 +109,13 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
     runtime.processBlock = async (...args) => processed.push(args);
 
     await runtime.handleTraitUseMessage(detectMagicMessage);
-    assert.equal(processed.length, 1);
-    assert.equal(processed[0][4], "spellCast");
-    assert.equal(processed[0][6].eventContext.itemName, "an ability");
+    assert.equal(processed.length, 2);
+    assert.deepEqual(processed.map((entry) => entry[4]).sort(), ["spellCast", "traitUse"]);
+    assert.ok(processed.every((entry) => entry[6].eventContext.itemName === "Detect Magic"));
+    assert.equal(
+      processed.find((entry) => entry[4] === "traitUse")?.[6].eventContext.trait,
+      "manipulate"
+    );
     assert.deepEqual(
       runtime.watchedTraitsForBlock({ traitUse: { traits: ["void", "healing"] } }),
       ["void", "healing"]

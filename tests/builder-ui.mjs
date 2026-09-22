@@ -27,6 +27,12 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /GM connected/);
   assert.match(builder, /Player creation available/);
   assert.match(builder, /Source token changed/);
+  assert.match(builder, /data-action="load-config"/);
+  assert.match(builder, /Load Config/);
+  assert.doesNotMatch(builder, /data-action="export"/);
+  assert.doesNotMatch(builder, /\{outcome\}/);
+  assert.match(builder, /Loaded the configuration from '\$\{region\.name\}'/);
+  assert.match(builder, /Source actor was not changed/);
   assert.doesNotMatch(builder, /Player GM bridge: module socket/);
   assert.match(builder, /function renderInlineValidation/);
   assert.match(builder, /function refreshLiveValidation/);
@@ -36,6 +42,9 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /enter: false/);
   assert.match(builder, /dc: \{ mode: "custom", value: "" \}/);
   assert.match(builder, /data-zone="name" type="text" value="\$\{esc\(state\.name\)\}" required/);
+  assert.match(builder, /type: "unlimited"/);
+  assert.doesNotMatch(builder, /option value="until-dismissed"/);
+  assert.doesNotMatch(builder, /data-zone="dismissible"/);
   assert.match(builder, /data-trait-use-trait/);
   assert.match(builder, /WATCHED_TRAITS/);
   assert.doesNotMatch(builder, /trait: "vitality"/);

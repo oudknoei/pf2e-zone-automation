@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 11,
   "name": "Frightful Presence",
   "mode": "emanation",
   "radius": 90,
@@ -15,8 +15,7 @@
   ],
   "duration": {
     "type": "unlimited",
-    "rounds": 1,
-    "dismissible": false
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {

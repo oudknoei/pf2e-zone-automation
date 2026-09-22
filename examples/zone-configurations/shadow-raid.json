@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 11,
   "name": "Shadow Raid (7th rank)",
   "mode": "area",
   "radius": 30,
@@ -14,8 +14,7 @@
   ],
   "duration": {
     "type": "1-minute",
-    "rounds": 1,
-    "dismissible": false
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {

@@ -48,7 +48,7 @@ A player can create a zone only from an Actor they own. An active GM must be con
 2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
 3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
 4. Choose **Visible to everyone** or **Creator only**, then add any applicable traits. Creator-only zones and their module chat alerts are visible to the creator; Foundry GMs retain their normal access. Traits begin unchecked.
-5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. Use the dismissal checkbox when the source should be able to end the zone early.
+5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`, or choose **Unlimited** for a zone that remains until ended. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. The source owner can always dismiss a zone early from **Manage Existing Zones**.
 
 Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
 
@@ -98,7 +98,7 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 1. Select **Validate** to check the configuration.
 2. Select **Post Preview to Chat** to validate and post a readable summary without creating a Region.
 3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center.
-4. Use **Manage Existing Zones** to inspect, export, or dismiss zones on the active Scene.
+4. Use **Manage Existing Zones** to inspect, load the configuration from, or dismiss zones on the active Scene. Loading a configuration keeps the builder's selected source token, so you can use it to create a new zone for that source.
 
 As you edit, the footer shows **Ready to create** when the configuration has no blocking errors. It also reports **GM connected** for a GM, **Player creation available** when a player can reach an active GM, or **Source token changed** when you need to update the controlled source. Invalid fields receive an inline explanation; warnings remain visible in the validation and preview views but do not prevent creation.
 

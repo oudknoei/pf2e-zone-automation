@@ -25,6 +25,8 @@ test("each JSON template is available as a standalone import example", () => {
     assert.match(config.name, /\S/, `${file} needs a name`);
     assert.ok(["area", "emanation"].includes(config.mode), `${file} has an invalid mode`);
     assert.ok(Number(config.radius) > 0, `${file} needs a positive radius`);
+    assert.notEqual(config.duration?.type, "until-dismissed", `${file} uses a retired duration type`);
+    assert.equal(config.duration?.dismissible, undefined, `${file} retains a retired dismissal setting`);
     assert.ok(Array.isArray(config.effects), `${file} needs Effect Blocks`);
   }
 });

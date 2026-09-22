@@ -75,6 +75,14 @@ export async function handleWorkerRequest(request) {
     if (!['emanation', 'area'].includes(cfg.mode)) throw new Error(`Unsupported zone mode '${cfg.mode}'.`);
     const requestedVisibility = cfg.visibility === "gm" ? "creator" : cfg.visibility;
     cfg.visibility = ["all", "creator"].includes(requestedVisibility) ? requestedVisibility : "all";
+    const requestedDurationType = cfg.duration?.type === "until-dismissed" ? "unlimited" : cfg.duration?.type;
+    cfg.duration = {
+      ...(cfg.duration && typeof cfg.duration === "object" ? cfg.duration : {}),
+      type: ["custom-rounds", "1-minute", "10-minutes", "unlimited"].includes(requestedDurationType)
+        ? requestedDurationType
+        : "unlimited"
+    };
+    delete cfg.duration.dismissible;
     cfg.radius = Number(cfg.radius);
     if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) throw new Error("Zone radius is invalid.");
     if (!Array.isArray(cfg.effects)) throw new Error("Zone effect blocks are missing.");
@@ -535,7 +543,6 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!payload) throw new Error("The requested Region is not a PF2e Zone.");
 
     if (!requester.isGM) {
-      if (!payload.config?.duration?.dismissible) throw new Error("This zone is not dismissible by its source.");
       const sourceActor = payload.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null;
       if (!sourceActor?.testUserPermission?.(requester, "OWNER")) {
         throw new Error("You do not own the source Actor for this zone.");

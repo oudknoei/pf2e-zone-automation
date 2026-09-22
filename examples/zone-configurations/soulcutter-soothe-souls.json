@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 11,
   "name": "Soul Cutter - Soothe Souls",
   "mode": "emanation",
   "radius": 20,
@@ -15,8 +15,7 @@
   ],
   "duration": {
     "type": "1-minute",
-    "rounds": 1,
-    "dismissible": true
+    "rounds": 1
   },
   "activationChoices": {
     "damageType": {
