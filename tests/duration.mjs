@@ -54,3 +54,23 @@ test("formula durations reject non-integer or non-positive totals", async () => 
   );
   assert.deepEqual(await resolveDurationRounds({ type: "1-minute" }), { rounds: 10, formula: null });
 });
+test("duration formulas use Foundry's parser before they are rolled", async () => {
+  const checked = [];
+  class SyntaxRoll {
+    static validate(formula) {
+      checked.push(formula);
+      return formula !== "2d4 +";
+    }
+    async evaluate() {
+      assert.fail("an invalid formula must not be rolled");
+    }
+  }
+
+  assert.equal(durationRoundsError("2d4", { RollClass: SyntaxRoll }), null);
+  assert.match(durationRoundsError("2d4 +", { RollClass: SyntaxRoll }), /Foundry does not recognize/);
+  await assert.rejects(
+    resolveDurationRounds({ type: "custom-rounds", rounds: "2d4 +" }, { RollClass: SyntaxRoll }),
+    /Foundry does not recognize/
+  );
+  assert.deepEqual(checked, ["2d4", "2d4 +", "2d4 +"]);
+});

@@ -35,11 +35,20 @@ export function normalizeDurationRounds(value, fallback = 1) {
   return text || fallback;
 }
 
-/** Gives the builder one authoritative explanation for invalid duration input. */
-export function durationRoundsError(value) {
-  return parseDurationRounds(value).kind === "invalid"
-    ? "Duration rounds must be a positive whole number or a dice formula such as 2d4."
-    : null;
+/** Checks Foundry's parser before a duration formula can be saved or rolled. */
+export function durationRoundsError(value, { RollClass = globalThis.Roll } = {}) {
+  const parsed = parseDurationRounds(value);
+  if (parsed.kind === "invalid") {
+    return "Duration rounds must be a positive whole number or a dice formula such as 2d4.";
+  }
+  if (parsed.kind === "formula" && typeof RollClass?.validate === "function") {
+    try {
+      if (!RollClass.validate(parsed.formula)) return "Foundry does not recognize this duration formula.";
+    } catch {
+      return "Foundry does not recognize this duration formula.";
+    }
+  }
+  return null;
 }
 
 /** Rolls a formula once at zone creation so every client shares the same lifetime. */
@@ -49,7 +58,7 @@ export async function resolveDurationRounds(duration, { RollClass = globalThis.R
       return { rounds: 1, formula: null };
     case "custom-rounds": {
       const parsed = parseDurationRounds(duration.rounds);
-      const error = durationRoundsError(duration.rounds);
+      const error = durationRoundsError(duration.rounds, { RollClass });
       if (error) throw new Error(error);
 
       if (parsed.kind === "number") return { rounds: parsed.rounds, formula: null };

@@ -5,6 +5,7 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const builder = readFileSync(resolve(root, "scripts", "builder.js"), "utf8");
+const styles = readFileSync(resolve(root, "styles", "pf2e-zone.css"), "utf8");
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 
 test("builder uses plain-language triggers and summarizes collapsed Effect Blocks", () => {
@@ -27,11 +28,15 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /GM connected/);
   assert.match(builder, /Player creation available/);
   assert.match(builder, /Source token changed/);
-  assert.match(builder, /data-action="load-config"/);
-  assert.match(builder, /Load Config/);
+  assert.doesNotMatch(builder, /data-action="load-config"/);
+  assert.match(builder, /data-action="end"/);
+  assert.match(builder, /savedPresetId: loadedPreset\?\.id \?\? null/);
+  assert.match(builder, /loadedPreset = savedPreset \? clone\(savedPreset\) : null/);
+  assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
+  assert.match(builder, /class="zb-clear"/);
+  assert.match(builder, /Zone configuration cleared/);
   assert.doesNotMatch(builder, /data-action="export"/);
   assert.doesNotMatch(builder, /\{outcome\}/);
-  assert.match(builder, /Loaded the configuration from '\$\{region\.name\}'/);
   assert.match(builder, /Source actor was not changed/);
   assert.doesNotMatch(builder, /Player GM bridge: module socket/);
   assert.match(builder, /function renderInlineValidation/);
@@ -40,6 +45,8 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /name: ""/);
   assert.match(builder, /traits: \[\]/);
   assert.match(builder, /enter: false/);
+  assert.match(builder, /repeat: "once-per-round"/);
+  assert.match(builder, /pf2eFormulaError\(block\.damage\.formula/);
   assert.match(builder, /dc: \{ mode: "custom", value: "" \}/);
   assert.match(builder, /data-zone="name" type="text" value="\$\{esc\(state\.name\)\}" required/);
   assert.match(builder, /type: "unlimited"/);
@@ -48,6 +55,18 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-trait-use-trait/);
   assert.match(builder, /WATCHED_TRAITS/);
   assert.doesNotMatch(builder, /trait: "vitality"/);
+  const zoneStart = builder.indexOf("<h3>Zone</h3>");
+  const zoneEnd = builder.indexOf("</section>", zoneStart);
+  const zoneMarkup = builder.slice(zoneStart, zoneEnd);
+  assert.ok(zoneMarkup.indexOf('data-zone="visibility"') < zoneMarkup.indexOf('data-zone="duration-type"'));
+  assert.ok(zoneMarkup.indexOf('data-zone="duration-type"') < zoneMarkup.indexOf('data-zone="affects-allies"'));
+  assert.match(zoneMarkup, /data-zone="affects-allies"/);
+  assert.match(zoneMarkup, /data-zone="affects-enemies"/);
+  assert.match(zoneMarkup, /data-zone="affects-self"/);
+  assert.doesNotMatch(zoneMarkup, /<select data-zone="affects">/);
+  assert.doesNotMatch(zoneMarkup, /Include source actor/);
+  assert.doesNotMatch(builder, /<h3>Duration<\/h3>/);
+  assert.match(styles, /\.zb-source img \{ width:36px; height:36px;/);
 });
 
 test("README provides a complete How To and omits retired sections", () => {

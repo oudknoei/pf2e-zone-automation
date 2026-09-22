@@ -254,8 +254,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             case "enemies":
               return Boolean(targetActor.isEnemyOf?.(sourceActor));
             case "both":
-              // "Both" is the portable representation for unrestricted "a creature" targeting.
+              // Keep the stored "both" value's existing unrestricted behavior for older zones.
               return true;
+            case "none":
+              return false;
             default:
               return false;
           }

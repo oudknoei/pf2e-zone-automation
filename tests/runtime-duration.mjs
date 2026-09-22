@@ -75,3 +75,33 @@ test("zone cleanup serializes accepted state work before deleting the Region", a
   assert.equal(regions.has(region.id), false);
   delete globalThis._replace;
 });
+
+test("self-only and legacy both targeting remain compatible", async () => {
+  const sourceActor = { uuid: "Actor.source", isOfType: () => true };
+  const sourceToken = { uuid: "Token.source", actor: sourceActor };
+  const actor = (name, ally, enemy) => ({
+    uuid: `Actor.${name}`,
+    isOfType: () => true,
+    isAllyOf: () => ally,
+    isEnemyOf: () => enemy
+  });
+  const ally = { uuid: "Token.ally", actor: actor("ally", true, false) };
+  const enemy = { uuid: "Token.enemy", actor: actor("enemy", false, true) };
+  const neutral = { uuid: "Token.neutral", actor: actor("neutral", false, false) };
+  const originalResolveSource = runtime.resolveSource;
+  runtime.resolveSource = async () => ({ token: sourceToken, actor: sourceActor });
+  try {
+    const selfOnly = { config: { targeting: { affects: "none", includeSelf: true } } };
+    assert.equal(await runtime.eligible(selfOnly, sourceToken), true);
+    assert.equal(await runtime.eligible(selfOnly, ally), false);
+    assert.equal(await runtime.eligible(selfOnly, enemy), false);
+
+    const both = { config: { targeting: { affects: "both", includeSelf: false } } };
+    assert.equal(await runtime.eligible(both, sourceToken), false);
+    assert.equal(await runtime.eligible(both, ally), true);
+    assert.equal(await runtime.eligible(both, enemy), true);
+    assert.equal(await runtime.eligible(both, neutral), true);
+  } finally {
+    runtime.resolveSource = originalResolveSource;
+  }
+});

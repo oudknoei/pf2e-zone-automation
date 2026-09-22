@@ -1,7 +1,9 @@
-import { resolveDurationRounds } from "./duration.js";
+import { durationRoundsError, resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
+import { hasTargetSelection } from "./targeting.js";
+import { pf2eFormulaError } from "./formula-validation.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
 
 /** Keeps privileged world changes behind one GM-only entry point so player requests remain constrained. */
@@ -83,9 +85,26 @@ export async function handleWorkerRequest(request) {
         : "unlimited"
     };
     delete cfg.duration.dismissible;
+    if (cfg.duration.type === "custom-rounds") {
+      const durationError = durationRoundsError(cfg.duration.rounds);
+      if (durationError) throw new Error(durationError);
+    }
     cfg.radius = Number(cfg.radius);
     if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) throw new Error("Zone radius is invalid.");
+    if (!hasTargetSelection(cfg.targeting)) throw new Error("Select at least one target: Allies, Enemies, or Self (Source Actor).");
     if (!Array.isArray(cfg.effects)) throw new Error("Zone effect blocks are missing.");
+    for (const [index, block] of cfg.effects.entries()) {
+      const name = String(block?.name ?? `Effect Block ${index + 1}`);
+      if (block?.damage?.enabled) {
+        const type = block.damage.typeMode === "activation-choice" ? "untyped" : (block.damage.type ?? "untyped");
+        const formulaError = pf2eFormulaError(block.damage.formula, type);
+        if (formulaError) throw new Error(`${name} damage: ${formulaError}`);
+      }
+      if (block?.healing?.enabled) {
+        const formulaError = pf2eFormulaError(block.healing.formula, "healing");
+        if (formulaError) throw new Error(`${name} healing: ${formulaError}`);
+      }
+    }
     return cfg;
   }
 
@@ -396,7 +415,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   }
 
   /** Captures authoritative source and duration facts at creation so later hooks need no client state. */
-  function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy, durationResolution = null) {
+  function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy, durationResolution = null, savedPresetId = null) {
     const combat = game.combat;
     const sourceCombatant = sourceActor.combatant ?? null;
     const rounds = durationResolution?.rounds ?? finiteDurationRounds(cfg);
@@ -408,6 +427,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     return {
       createdWorldTime: Number(game.time?.worldTime ?? 0),
       createdBy: createdBy ? { userId: createdBy.id, name: createdBy.name } : { userId: game.user.id, name: game.user.name },
+      savedPresetId,
       sourceActorUuid: sourceActor.uuid,
       sourceTokenUuid: sourceToken.uuid,
       activation: { damageType: chosenDamageType ?? null },
@@ -453,6 +473,11 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     assertSourcePermission(sourceActor, requester);
 
     const cfg = normalizeConfig(request.config);
+    const savedPresetId = String(request.savedPresetId ?? "").trim() || null;
+    if (savedPresetId) {
+      const { data } = await ensureLibraryJournal();
+      if (!data.zones[savedPresetId]) throw new Error("The saved zone this configuration came from no longer exists.");
+    }
     const durationResolution = await resolveDurationRounds(cfg.duration);
     const payload = {
       runtimeVersion: RUNTIME_VERSION,
@@ -463,7 +488,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         sourceActor,
         sourceToken,
         requester,
-        durationResolution
+        durationResolution,
+        savedPresetId
       )
     };
     const regionData = {

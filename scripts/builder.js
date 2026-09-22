@@ -3,6 +3,8 @@ import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, reso
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { requestGMWorker } from "./transport.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
+import { hasTargetSelection, storedTargeting, targetLabels, targetingChoices } from "./targeting.js";
+import { pf2eFormulaError } from "./formula-validation.js";
 
 /*
  * PF2e Zone Automation - Player Builder / Runtime
@@ -20,7 +22,7 @@ export async function openZoneBuilder() {
 
   const BUILDER_VERSION = "0.5.18";
   const RUNTIME_VERSION = "0.5.15";
-  const SCHEMA_VERSION = 11;
+  const SCHEMA_VERSION = 12;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -463,7 +465,7 @@ export async function openZoneBuilder() {
         enabled: false,
         text: "{zone}: {creature} triggered {block}."
       },
-      repeat: "every",
+      repeat: "once-per-round",
       save: {
         enabled: false,
         type: "will",
@@ -499,7 +501,7 @@ export async function openZoneBuilder() {
       radius: 15,
       visibility: "all",
       targeting: {
-        affects: "enemies",
+        affects: "none",
         includeSelf: false
       },
       traits: [],
@@ -568,7 +570,7 @@ export async function openZoneBuilder() {
       radius: Math.max(1, Number(cfg.radius) || base.radius),
       visibility: ["all", "creator"].includes(importedVisibility) ? importedVisibility : base.visibility,
       targeting: {
-        affects: ["enemies", "allies", "both"].includes(cfg.targeting?.affects)
+        affects: ["enemies", "allies", "both", "none"].includes(cfg.targeting?.affects)
           ? cfg.targeting.affects
           : base.targeting.affects,
         includeSelf: Boolean(cfg.targeting?.includeSelf)
@@ -641,7 +643,7 @@ export async function openZoneBuilder() {
         },
         repeat: ["every", "once-per-round", "once-per-zone", "once-per-activation"].includes(block?.repeat)
           ? (block.repeat === "once-per-activation" ? "once-per-zone" : block.repeat)
-          : "every",
+          : "once-per-round",
         save: {
           enabled: Boolean(block?.save?.enabled),
           type: ["fortitude", "reflex", "will", "choice"].includes(block?.save?.type) ? block.save.type : "will",
@@ -1037,6 +1039,7 @@ export async function openZoneBuilder() {
   function renderRoot() {
     const commonSet = new Set(COMMON_TRAITS);
     const customTraits = state.traits.filter((t) => !commonSet.has(t)).join(", ");
+    const targetChoices = targetingChoices(state.targeting);
     const selectionWarning = selectionStillMatchesSource()
       ? ""
       : `<div class="zb-warning"><i class="fa-solid fa-triangle-exclamation"></i> The controlled token has changed since this builder was opened. Click <b>Use Current Selection</b> before previewing or creating a zone.</div>`;
@@ -1054,7 +1057,8 @@ export async function openZoneBuilder() {
         ${selectionWarning}
 
         <div class="zb-toolbar">
-          <button type="button" class="zb-load-saved"><i class="fa-solid fa-folder-open"></i> Load Saved Zone</button>
+          <button type="button" class="zb-load-saved"><i class="fa-solid fa-folder-open"></i> Open</button>
+          <button type="button" class="zb-clear"><i class="fa-solid fa-eraser"></i> Clear</button>
           <button type="button" class="zb-save"${loadedPreset && !canOverwritePreset() ? " disabled" : ""}><i class="fa-solid fa-floppy-disk"></i> Save</button>
           <button type="button" class="zb-save-as"><i class="fa-solid fa-copy"></i> Save As</button>
           <button type="button" class="zb-import"><i class="fa-solid fa-file-import"></i> Import JSON</button>
@@ -1085,30 +1089,6 @@ export async function openZoneBuilder() {
                   <option value="creator" ${state.visibility === "creator" ? "selected" : ""}>Creator only</option>
                 </select>
               </label>
-              <label>Affects
-                <select data-zone="affects">
-                  <option value="enemies" ${state.targeting.affects === "enemies" ? "selected" : ""}>Enemies</option>
-                  <option value="allies" ${state.targeting.affects === "allies" ? "selected" : ""}>Allies</option>
-                  <option value="both" ${state.targeting.affects === "both" ? "selected" : ""}>Both</option>
-                </select>
-              </label>
-            </div>
-            <label class="zb-check" style="margin-top:8px"><input data-zone="include-self" type="checkbox" ${state.targeting.includeSelf ? "checked" : ""}> Include source actor</label>
-          </section>
-
-          <section class="zb-section">
-            <h3>Traits</h3>
-            <div class="zb-traits">
-              ${COMMON_TRAITS.map((trait) => `<label class="zb-check"><input type="checkbox" data-trait="${trait}" ${state.traits.includes(trait) ? "checked" : ""}> ${titleCase(trait)}</label>`).join("")}
-            </div>
-            <label>Other trait slugs (comma-separated)
-              <input data-zone="custom-traits" type="text" value="${esc(customTraits)}" placeholder="e.g. disease, magical">
-            </label>
-          </section>
-
-          <section class="zb-section">
-            <h3>Duration</h3>
-            <div class="zb-grid two">
               <label>Duration
                 <select data-zone="duration-type">
                   <option value="custom-rounds" ${state.duration.type === "custom-rounds" ? "selected" : ""}>X rounds</option>
@@ -1120,7 +1100,25 @@ export async function openZoneBuilder() {
               <label class="zb-duration-rounds">Rounds or dice formula
                 <input data-zone="duration-rounds" type="text" inputmode="text" spellcheck="false" value="${esc(state.duration.rounds)}" placeholder="e.g. 6 or 2d4">
               </label>
+              <fieldset class="zb-targeting" data-zone="targeting">
+                <legend>Affects</legend>
+                <div class="zb-check-grid">
+                  <label class="zb-check"><input data-zone="affects-allies" type="checkbox" ${targetChoices.allies ? "checked" : ""}> Allies</label>
+                  <label class="zb-check"><input data-zone="affects-enemies" type="checkbox" ${targetChoices.enemies ? "checked" : ""}> Enemies</label>
+                  <label class="zb-check"><input data-zone="affects-self" type="checkbox" ${targetChoices.self ? "checked" : ""}> Self (Source Actor)</label>
+                </div>
+              </fieldset>
             </div>
+          </section>
+
+          <section class="zb-section">
+            <h3>Traits</h3>
+            <div class="zb-traits">
+              ${COMMON_TRAITS.map((trait) => `<label class="zb-check"><input type="checkbox" data-trait="${trait}" ${state.traits.includes(trait) ? "checked" : ""}> ${titleCase(trait)}</label>`).join("")}
+            </div>
+            <label>Other trait slugs (comma-separated)
+              <input data-zone="custom-traits" type="text" value="${esc(customTraits)}" placeholder="e.g. disease, magical">
+            </label>
           </section>
 
           <section class="zb-section">
@@ -1214,10 +1212,11 @@ export async function openZoneBuilder() {
       mode: field(root, '[data-zone="mode"]').value,
       radius: Number(field(root, '[data-zone="radius"]').value),
       visibility: field(root, '[data-zone="visibility"]').value,
-      targeting: {
-        affects: field(root, '[data-zone="affects"]').value,
-        includeSelf: field(root, '[data-zone="include-self"]').checked
-      },
+      targeting: storedTargeting({
+        allies: field(root, '[data-zone="affects-allies"]').checked,
+        enemies: field(root, '[data-zone="affects-enemies"]').checked,
+        self: field(root, '[data-zone="affects-self"]').checked
+      }),
       traits: [...new Set([...commonTraits, ...customTraits])],
       duration: {
         type: field(root, '[data-zone="duration-type"]').value,
@@ -1327,6 +1326,7 @@ export async function openZoneBuilder() {
     }
     if (!cfg.name) error("Zone name is required.", { scope: "zone", field: "name" });
     if (!(cfg.radius > 0)) error("Radius must be greater than 0.", { scope: "zone", field: "radius" });
+    if (!hasTargetSelection(cfg.targeting)) error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
     if (cfg.duration?.type === "custom-rounds") {
       const durationError = durationRoundsError(cfg.duration.rounds);
       if (durationError) error(durationError, { scope: "zone", field: "duration-rounds" });
@@ -1367,11 +1367,14 @@ export async function openZoneBuilder() {
         }
       }
 
-      if (block.damage.enabled && !block.damage.formula) {
-        error(`${prefix} damage is enabled but no formula was entered.`, blockTarget(index, "damage-formula"));
+      if (block.damage.enabled) {
+        const type = block.damage.typeMode === "activation-choice" ? "untyped" : (block.damage.type ?? "untyped");
+        const formulaError = pf2eFormulaError(block.damage.formula, type);
+        if (formulaError) error(`${prefix} damage: ${formulaError}`, blockTarget(index, "damage-formula"));
       }
-      if (block.healing?.enabled && !block.healing.formula) {
-        error(`${prefix} healing is enabled but no formula was entered.`, blockTarget(index, "healing-formula"));
+      if (block.healing?.enabled) {
+        const formulaError = pf2eFormulaError(block.healing.formula, "healing");
+        if (formulaError) error(`${prefix} healing: ${formulaError}`, blockTarget(index, "healing-formula"));
       }
       if (block.damage.enabled && block.damage.typeMode === "activation-choice" && !sharedDamageChoice?.enabled) {
         error(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`, blockTarget(index, "damage-type-mode"));
@@ -1692,6 +1695,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     return {
       createdWorldTime: Number(game.time?.worldTime ?? 0),
       createdBy: { userId: game.user.id, name: game.user.name },
+      savedPresetId: loadedPreset?.id ?? null,
       sourceActorUuid: sourceActor.uuid,
       sourceTokenUuid: sourceToken.document.uuid,
       activation: { damageType: chosenDamageType ?? null },
@@ -1763,6 +1767,10 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
   /** Keeps direct GM creation on the same data shape and runtime activation path as player creation. */
   async function createZoneRegion(cfg, chosenDamageType) {
+    const savedPresetId = loadedPreset?.id ?? null;
+    if (savedPresetId && !(await fetchSavedZoneRecords()).some((record) => record.id === savedPresetId)) {
+      throw new Error("The saved zone this configuration came from no longer exists. Use Save As to create a new preset.");
+    }
     if (!game.user.isGM) {
       let areaCenter = null;
       if (cfg.mode === "area") {
@@ -1774,6 +1782,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         sceneId: canvas.scene.id,
         sourceTokenUuid: sourceToken.document.uuid,
         config: clone(cfg),
+        savedPresetId: loadedPreset?.id ?? null,
         chosenDamageType: chosenDamageType ?? null,
         color: game.user.color,
         areaCenter
@@ -1897,7 +1906,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         <div>
           <b>${esc(presetLabel(record))}</b>
         </div>
-        <button type="button" data-action="load"><i class="fa-solid fa-folder-open"></i> Load</button>
+        <button type="button" data-action="load"><i class="fa-solid fa-folder-open"></i> Load Config</button>
         ${canDelete ? `<button type="button" data-action="delete" class="danger"><i class="fa-solid fa-trash"></i> Delete</button>` : `<span></span>`}
       </div>`;
     }).join("");
@@ -1985,7 +1994,6 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       const canEnd = await canCurrentUserDismiss(payload);
       zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
         <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(titleCase(cfg.mode))} · ${esc(cfg.radius)} ft · ${esc(titleCase(cfg.duration?.type))}</div></div>
-        <button type="button" data-action="load-config"><i class="fa-solid fa-folder-open"></i> Load Config</button>
         ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> Dismiss</button>` : `<span></span>`}
       </div>`);
     }
@@ -1994,7 +2002,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     content.innerHTML = `
       <style>
         .pza-manage { max-height:55vh; overflow:auto; }
-        .pza-zone-row { display:grid; grid-template-columns:minmax(180px,1fr) auto auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid rgba(127,127,127,.3); }
+        .pza-zone-row { display:grid; grid-template-columns:minmax(180px,1fr) auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid rgba(127,127,127,.3); }
         .pza-zone-row:last-child { border-bottom:0; }
         .pza-zone-meta { opacity:.72; font-size:.9em; }
       </style>
@@ -2014,31 +2022,33 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         const region = row ? canvas.scene.regions.get(row.dataset.regionId) : null;
         if (!button || !region) return;
         const payload = region.getFlag("world", "pf2eZone");
-        if (button.dataset.action === "load-config") {
-          if (!payload?.config) {
-            ui.notifications.warn(`PF2e Zone '${region.name}' has no saved configuration to load.`);
-            return;
+        if (button.dataset.action !== "end") return;
+        button.disabled = true;
+        try {
+          if (!payload?.config) throw new Error(`PF2e Zone '${region.name}' has no configuration to load.`);
+          const zoneConfig = normalizeConfig(payload.config);
+          const savedPresetId = String(payload.state?.savedPresetId ?? "").trim();
+          const savedPreset = savedPresetId
+            ? (await fetchSavedZoneRecords()).find((record) => record.id === savedPresetId) ?? null
+            : null;
+
+          if (game.user.isGM) {
+            await runtime.endZone(region, "manager");
+          } else {
+            await callGMWorker("end", { sceneId: canvas.scene.id, regionId: region.id });
           }
-          state = normalizeConfig(payload.config);
-          loadedPreset = null;
+          state = zoneConfig;
+          loadedPreset = savedPreset ? clone(savedPreset) : null;
           await dlg.close();
           rerenderInsideDialog();
-          ui.notifications.info(`Loaded the configuration from '${region.name}'. Source actor was not changed.`);
-        } else if (button.dataset.action === "end") {
-          button.disabled = true;
-          try {
-            if (game.user.isGM) {
-              await runtime.endZone(region, "manager");
-            } else {
-              await callGMWorker("end", { sceneId: canvas.scene.id, regionId: region.id });
-            }
-            row.remove();
-            if (!root.querySelector("[data-region-id]")) await dlg.close();
-          } catch (error) {
-            console.error("PF2e Zone dismissal failed", error);
-            ui.notifications.error(`PF2e Zone dismissal failed: ${error.message ?? error}`);
-            button.disabled = false;
+          ui.notifications.info(`Dismissed '${region.name}' and opened its configuration. Source actor was not changed.`);
+          if (savedPresetId && !savedPreset) {
+            ui.notifications.warn("The zone's saved preset no longer exists. Save will create a new preset.");
           }
+        } catch (error) {
+          console.error("PF2e Zone dismissal failed", error);
+          ui.notifications.error(`PF2e Zone dismissal failed: ${error.message ?? error}`);
+          button.disabled = false;
         }
       });
     }, { once: true });
@@ -2092,7 +2102,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         <h3>${esc(cfg.name)}</h3>
         <p><b>Source:</b> ${esc(sourceActor.name)} (${esc(sourceToken.name)})<br>
         <b>Zone:</b> ${esc(titleCase(cfg.mode))}, ${cfg.radius}-foot radius<br>
-        <b>Targets:</b> ${esc(titleCase(cfg.targeting.affects))}${cfg.targeting.includeSelf ? ", including source" : ""}<br>
+        <b>Targets:</b> ${esc(targetLabels(cfg.targeting).join(", "))}<br>
         <b>Traits:</b> ${cfg.traits.length ? cfg.traits.map(esc).join(", ") : "None"}<br>
         <b>Visibility:</b> ${cfg.visibility === "creator" ? "Creator only" : "Everyone"}<br>
         <b>Duration:</b> ${esc(durationText)}<br>
@@ -2327,6 +2337,13 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         }
         refreshLiveValidation(root);
       }
+    });
+
+    root.querySelector(".zb-clear").addEventListener("click", () => {
+      state = defaultConfig();
+      loadedPreset = null;
+      rerenderInsideDialog();
+      ui.notifications.info("Zone configuration cleared. Source actor was not changed.");
     });
 
     root.querySelector(".zb-load-saved").addEventListener("click", async () => {

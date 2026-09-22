@@ -46,9 +46,9 @@ A player can create a zone only from an Actor they own. An active GM must be con
 
 1. Give the zone a clear name. A name is required.
 2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
-3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
+3. Enter the radius in feet, then check any combination of **Allies**, **Enemies**, and **Self (Source Actor)**. Select at least one. Older saved zones open with the equivalent boxes checked.
 4. Choose **Visible to everyone** or **Creator only**, then add any applicable traits. Creator-only zones and their module chat alerts are visible to the creator; Foundry GMs retain their normal access. Traits begin unchecked.
-5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`, or choose **Unlimited** for a zone that remains until ended. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. The source owner can always dismiss a zone early from **Manage Existing Zones**.
+5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`, or choose **Unlimited** for a zone that remains until ended. Foundry checks the formula syntax before creation. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. The source owner can always dismiss a zone early from **Manage Existing Zones**.
 
 Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
 
@@ -71,7 +71,7 @@ Choose one or more plain-language trigger choices:
 
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
 
-Then choose how often each creature can be affected: every time the event happens, once each round, or once for the zone's lifetime.
+Then choose how often each creature can be affected: every time the event happens, once each round, or once for the zone's lifetime. New Effect Blocks default to **Once each round**.
 
 ### Define the result
 
@@ -79,7 +79,7 @@ Within an Effect Block, enable only the result sections the ability needs:
 
 - **Chat Alert** posts a message when the block runs. It supports the listed placeholders such as `{creature}`, `{zone}`, and `{item}`.
 - **Saving Throw** requests the selected save against a custom DC or a statistic from the source Actor. A custom DC begins blank and is required only when the saving throw is enabled. Select **Basic save** for the normal 0 / half / full / double progression.
-- **Damage** and **Healing** post normal PF2e roll cards.
+- **Damage** and **Healing** post normal PF2e roll cards. Enabled formulas are checked with PF2e's damage-roll parser before the zone can be created.
 - **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled.
 - **Temporary Immunity** prevents later applications for the chosen duration after the selected result.
 
@@ -98,15 +98,15 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 1. Select **Validate** to check the configuration.
 2. Select **Post Preview to Chat** to validate and post a readable summary without creating a Region.
 3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center.
-4. Use **Manage Existing Zones** to inspect, load the configuration from, or dismiss zones on the active Scene. Loading a configuration keeps the builder's selected source token, so you can use it to create a new zone for that source.
+4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place.
 
 As you edit, the footer shows **Ready to create** when the configuration has no blocking errors. It also reports **GM connected** for a GM, **Player creation available** when a player can reach an active GM, or **Source token changed** when you need to update the controlled source. Invalid fields receive an inline explanation; warnings remain visible in the validation and preview views but do not prevent creation.
 
 ### Save, import, and reuse configurations
 
-Select **Save** to store the current configuration in the shared **PF2e Zone Library** Journal, inside the **PF2e Zone Automation** Journal Entries folder. Use **Save As** to create a new preset without changing the original. **Load Saved Zone** lists available presets.
+Select **Save** to store the current configuration in the shared **PF2e Zone Library** Journal, inside the **PF2e Zone Automation** Journal Entries folder. Use **Save As** to create a new preset without changing the original. **Open** lists available presets. **Clear** resets the editor to a new blank configuration. When a zone was created from a saved preset, dismissing it restores that preset link; **Save** updates the same preset, subject to its creator permissions. **Save As** makes a separate copy. Zones created before this feature cannot recover a preset link automatically.
 
-Seven ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, and Soul Cutter - Soothe Souls.
+Eight ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, Soul Cutter - Soothe Souls, and Stoke the Fervent.
 
 To use an example, open its JSON file, copy its contents, select a source token, open the builder, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Export JSON** to copy a portable configuration for reuse.
 

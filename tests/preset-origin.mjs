@@ -1,0 +1,204 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { handleWorkerRequest } from "../scripts/worker.js";
+
+test("player zones retain their saved preset link for later overwrite", async () => {
+  const priorClamp = Math.clamp;
+  const gm = { id: "gm", name: "GM", active: true, isGM: true, color: "#336699" };
+  const player = { id: "player", name: "Player", active: true, isGM: false, color: "#336699" };
+  const config = {
+    name: "Original Zone",
+    mode: "emanation",
+    radius: 5,
+    targeting: { affects: "enemies", includeSelf: false },
+    visibility: "all",
+    duration: { type: "unlimited", rounds: 1 },
+    effects: []
+  };
+  const record = {
+    id: "saved-zone",
+    name: config.name,
+    createdBy: { userId: player.id, name: player.name },
+    revision: 1,
+    config
+  };
+  const folder = { id: "zone-folder", name: "PF2e Zone Automation", type: "JournalEntry", getFlag: () => false };
+  const page = {
+    id: "index",
+    getFlag: (_scope, key) => key === "pf2eZoneLibraryIndex",
+    async update() {}
+  };
+  const journal = {
+    id: "library",
+    folder: folder.id,
+    flags: { world: { pf2eZoneLibrary: { zones: { [record.id]: record } } } },
+    pages: [page],
+    getFlag(scope, key) { return this.flags?.[scope]?.[key]; },
+    async unsetFlag(scope, key) { delete this.flags[scope][key]; },
+    async setFlag(scope, key, value) { this.flags[scope][key] = value; }
+  };
+  let createdData = null;
+  let creations = 0;
+  let endedRegion = null;
+  const scene = { id: "scene", regions: { get: (id) => id === "region" ? region : null } };
+  const sourceActor = {
+    uuid: "Actor.source",
+    testUserPermission: (user, level) => user === player && level === "OWNER"
+  };
+  const sourceToken = {
+    uuid: "Scene.scene.Token.source",
+    documentName: "Token",
+    parent: scene,
+    actor: sourceActor
+  };
+  const region = {
+    id: "region",
+    uuid: "Scene.scene.Region.region",
+    parent: scene,
+    getFlag(scope, key) { return createdData?.flags?.[scope]?.[key]; }
+  };
+
+  try {
+    Math.clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    globalThis.foundry = { utils: {} };
+    globalThis.CONST = { REGION_VISIBILITY: { ALWAYS: 2 } };
+    globalThis.CONFIG = {
+      Region: {
+        documentClass: {
+          async createTokenEmanation(_token, _radius, data) {
+            creations += 1;
+            createdData = data;
+            return region;
+          }
+        }
+      }
+    };
+    globalThis.game = {
+      system: { id: "pf2e" },
+      user: gm,
+      users: new Map([[gm.id, gm], [player.id, player]]),
+      scenes: { get: (id) => id === scene.id ? scene : null },
+      folders: [folder],
+      journal: [journal],
+      time: { worldTime: 0 },
+      combat: null
+    };
+    globalThis.fromUuid = async (uuid) => ({
+      [sourceToken.uuid]: sourceToken,
+      [sourceActor.uuid]: sourceActor
+    })[uuid] ?? null;
+    globalThis.PF2EZoneRuntime = {
+      version: "0.5.15",
+      installHooks() {},
+      async activateRegion() {},
+      async endZone(target) { endedRegion = target; }
+    };
+
+    const request = {
+      protocol: 1,
+      action: "create",
+      requesterUserId: player.id,
+      sceneId: scene.id,
+      sourceTokenUuid: sourceToken.uuid,
+      config,
+      savedPresetId: record.id
+    };
+    const created = await handleWorkerRequest(request);
+    assert.equal(created.ok, true, created.error);
+    assert.equal(createdData.flags.world.pf2eZone.state.savedPresetId, record.id);
+    assert.deepEqual(createdData.flags.world.pf2eZone.config, config);
+
+    const dismissed = await handleWorkerRequest({
+      protocol: 1,
+      action: "end",
+      requesterUserId: player.id,
+      sceneId: scene.id,
+      regionId: region.id
+    });
+    assert.equal(dismissed.ok, true, dismissed.error);
+    assert.equal(endedRegion, region);
+
+    const saved = await handleWorkerRequest({
+      protocol: 1,
+      action: "library-save",
+      requesterUserId: player.id,
+      recordId: createdData.flags.world.pf2eZone.state.savedPresetId,
+      config: { ...config, name: "Revised Zone" }
+    });
+    assert.equal(saved.ok, true, saved.error);
+    assert.equal(saved.record.id, record.id);
+    assert.equal(saved.record.revision, 2);
+    assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones[record.id].name, "Revised Zone");
+
+    const priorError = console.error;
+    let invalid;
+    try {
+      console.error = () => {};
+      invalid = await handleWorkerRequest({ ...request, savedPresetId: "missing-zone" });
+    } finally {
+      console.error = priorError;
+    }
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.error, /no longer exists/);
+    assert.equal(creations, 1);
+
+    let emptyTargets;
+    const priorTargetError = console.error;
+    try {
+      console.error = () => {};
+      emptyTargets = await handleWorkerRequest({
+        ...request,
+        config: { ...config, targeting: { affects: "none", includeSelf: false } }
+      });
+    } finally {
+      console.error = priorTargetError;
+    }
+    assert.equal(emptyTargets.ok, false);
+    assert.match(emptyTargets.error, /Select at least one target/);
+
+    globalThis.CONFIG.Dice = { rolls: [class DamageRoll {
+      static validate(formula) { return !formula.includes("2d6+"); }
+    }] };
+    let invalidDamage;
+    const priorFormulaError = console.error;
+    try {
+      console.error = () => {};
+      invalidDamage = await handleWorkerRequest({
+        ...request,
+        config: {
+          ...config,
+          effects: [{
+            name: "Invalid Damage",
+            damage: { enabled: true, formula: "2d6+", typeMode: "fixed", type: "fire" }
+          }]
+        }
+      });
+    } finally {
+      console.error = priorFormulaError;
+    }
+    assert.equal(invalidDamage.ok, false);
+    assert.match(invalidDamage.error, /PF2e does not recognize this formula/);
+
+    globalThis.Roll = class {
+      static validate(formula) { return formula !== "2d4 +"; }
+    };
+    let invalidDuration;
+    const priorDurationError = console.error;
+    try {
+      console.error = () => {};
+      invalidDuration = await handleWorkerRequest({
+        ...request,
+        config: { ...config, duration: { type: "custom-rounds", rounds: "2d4 +" } }
+      });
+    } finally {
+      console.error = priorDurationError;
+    }
+    assert.equal(invalidDuration.ok, false);
+    assert.match(invalidDuration.error, /Foundry does not recognize this duration formula/);
+    assert.equal(creations, 1);
+  } finally {
+    if (priorClamp === undefined) delete Math.clamp;
+    else Math.clamp = priorClamp;
+  }
+});

@@ -19,7 +19,7 @@ const expectedMacros = new Map([
     "pzaShieldTaunt01",
     {
       name: "Shielding Taunt",
-      image: "modules/pf2e-zone-automation/assets/macros/shielding-taunt.png",
+      image: "modules/pf2e-zone-automation/assets/macros/shielding-taunt.webp",
       api: "openShieldingTaunt"
     }
   ]
@@ -55,8 +55,9 @@ test("compiled Macro pack provides the module hotbar macros", async () => {
     const builderImage = readFileSync(join(root, "assets", "macros", "pf2e-zone-builder.webp"));
     assert.equal(builderImage.subarray(0, 4).toString("ascii"), "RIFF");
     assert.equal(builderImage.subarray(8, 12).toString("ascii"), "WEBP");
-    const tauntImage = readFileSync(join(root, "assets", "macros", "shielding-taunt.png"));
-    assert.equal(tauntImage.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    const tauntImage = readFileSync(join(root, "assets", "macros", "shielding-taunt.webp"));
+    assert.equal(tauntImage.subarray(0, 4).toString("ascii"), "RIFF");
+    assert.equal(tauntImage.subarray(8, 12).toString("ascii"), "WEBP");
   } finally {
     assert.ok(scratch.startsWith(tmpdir()));
     rmSync(scratch, { recursive: true, force: true });

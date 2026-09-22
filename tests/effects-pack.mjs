@@ -7,12 +7,12 @@ import { extractPack } from "@foundryvtt/foundryvtt-cli";
 
 const root = resolve(import.meta.dirname, "..");
 const expected = new Map([
-  ["WGhBnNhQNH3uVgP1", "shadow-raid-obscured-vision.png"],
-  ["j42JjZYGnRM1wf6R", "focusing-hum-protection.png"],
-  ["Qz16EDTu2GVTtUPV", "toxic-cloud-obscured-vision.png"]
+  ["WGhBnNhQNH3uVgP1", "shadow-raid-obscured-vision.webp"],
+  ["j42JjZYGnRM1wf6R", "focusing-hum-protection.webp"],
+  ["Qz16EDTu2GVTtUPV", "toxic-cloud-obscured-vision.webp"]
 ]);
 
-test("compiled Effect pack contains three top-level Items with bundled PNG images", async () => {
+test("compiled Effect pack contains three top-level Items with bundled WebP images", async () => {
   const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
   const pack = manifest.packs.find(({ name }) => name === "zone-effects");
   assert.equal(pack.type, "Item");
@@ -44,7 +44,8 @@ test("compiled Effect pack contains three top-level Items with bundled PNG image
       assert.deepEqual(item.system.rules, sourceItems.get(item._id)?.system.rules);
       assert.equal(item.img, `modules/pf2e-zone-automation/assets/effects/${image}`);
       const data = readFileSync(join(root, "assets", "effects", image));
-      assert.equal(data.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+      assert.equal(data.subarray(0, 4).toString("ascii"), "RIFF");
+      assert.equal(data.subarray(8, 12).toString("ascii"), "WEBP");
     }
   } finally {
     assert.ok(scratch.startsWith(tmpdir()));

@@ -4,7 +4,7 @@
   "scope": "global",
   "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.openShieldingTaunt) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  await zoneModule.api.openShieldingTaunt();\n}\n",
   "author": null,
-  "img": "modules/pf2e-zone-automation/assets/macros/shielding-taunt.png",
+  "img": "modules/pf2e-zone-automation/assets/macros/shielding-taunt.webp",
   "folder": null,
   "sort": 1,
   "ownership": {
