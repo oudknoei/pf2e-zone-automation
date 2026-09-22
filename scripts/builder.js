@@ -20,7 +20,7 @@ export async function openZoneBuilder() {
 
   const BUILDER_VERSION = "0.5.18";
   const RUNTIME_VERSION = "0.5.15";
-  const SCHEMA_VERSION = 9;
+  const SCHEMA_VERSION = 10;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -454,7 +454,8 @@ export async function openZoneBuilder() {
         sourceTurnStart: false,
         turnEnd: false,
         continuous: false,
-        traitUse: false
+        traitUse: false,
+        spellCast: false
       },
       traitUse: {
         traits: []
@@ -561,12 +562,13 @@ export async function openZoneBuilder() {
       ? normalizeTraitSlugs(cfg.traits)
       : base.traits;
 
+    const importedVisibility = cfg.visibility === "gm" ? "creator" : cfg.visibility;
     const result = {
       schemaVersion: SCHEMA_VERSION,
       name: String(cfg.name ?? base.name).trim(),
       mode: ["area", "emanation"].includes(cfg.mode) ? cfg.mode : base.mode,
       radius: Math.max(1, Number(cfg.radius) || base.radius),
-      visibility: ["all", "gm"].includes(cfg.visibility) ? cfg.visibility : base.visibility,
+      visibility: ["all", "creator"].includes(importedVisibility) ? importedVisibility : base.visibility,
       targeting: {
         affects: ["enemies", "allies", "both"].includes(cfg.targeting?.affects)
           ? cfg.targeting.affects
@@ -622,7 +624,8 @@ export async function openZoneBuilder() {
           sourceTurnStart: Boolean(block?.triggers?.sourceTurnStart),
           turnEnd: Boolean(block?.triggers?.turnEnd),
           continuous: Boolean(block?.triggers?.continuous),
-          traitUse: Boolean(block?.triggers?.traitUse)
+          traitUse: Boolean(block?.triggers?.traitUse),
+          spellCast: Boolean(block?.triggers?.spellCast)
         },
         traitUse: {
           traits: watchedTraitSlugs(block?.traitUse)
@@ -885,6 +888,7 @@ export async function openZoneBuilder() {
               ${trigger("sourceTurnStart", "At the start of the source's turn")}
               ${trigger("turnEnd", "At the end of a creature's turn")}
               ${trigger("continuous", "While a creature is inside")}
+              ${trigger("spellCast", "When a creature casts a spell")}
               ${trigger("traitUse", "When a creature uses a selected trait")}
             </div>
             <p class="notes">Choose one or more events. “When the zone is created” affects eligible creatures already inside. “When a creature enters” only affects a creature that crosses into the zone later. The source-turn event follows the source combatant even when it is outside a fixed area, and does not run on the turn the zone is created.</p>
@@ -908,7 +912,7 @@ export async function openZoneBuilder() {
               <label>Chat alert text
                 <input data-field="chat-alert-text" type="text" value="${esc(block.chatAlert?.text ?? "")}">
               </label>
-              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, <b>{trigger}</b>, and <b>{outcome}</b>. Trait-use triggers also provide <b>{item}</b> and <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets. For a saving-throw block, the alert is posted before the save requests, so <b>{outcome}</b> is blank.</p>
+              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, <b>{trigger}</b>, and <b>{outcome}</b>. Trait-use and spell-cast triggers provide <b>{item}</b>; trait-use triggers also provide <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets. For a saving-throw block, the alert is posted before the save requests, so <b>{outcome}</b> is blank.</p>
             </div>
           </fieldset>
 
@@ -1079,7 +1083,7 @@ export async function openZoneBuilder() {
               <label>Visibility
                 <select data-zone="visibility">
                   <option value="all" ${state.visibility === "all" ? "selected" : ""}>Visible to everyone</option>
-                  <option value="gm" ${state.visibility === "gm" ? "selected" : ""}>GM only</option>
+                  <option value="creator" ${state.visibility === "creator" ? "selected" : ""}>Creator only</option>
                 </select>
               </label>
               <label>Affects
@@ -1257,7 +1261,8 @@ export async function openZoneBuilder() {
           sourceTurnStart: blockEl.querySelector('[data-trigger="sourceTurnStart"]').checked,
           turnEnd: blockEl.querySelector('[data-trigger="turnEnd"]').checked,
           continuous: blockEl.querySelector('[data-trigger="continuous"]').checked,
-          traitUse: blockEl.querySelector('[data-trigger="traitUse"]').checked
+          traitUse: blockEl.querySelector('[data-trigger="traitUse"]').checked,
+          spellCast: blockEl.querySelector('[data-trigger="spellCast"]').checked
         },
         traitUse: {
           traits: [...new Set([...watchedTraits, ...customWatchedTraits])]
@@ -1793,9 +1798,15 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     const regionData = {
       name: cfg.name,
       color: lightenZoneColor(game.user.color),
-      visibility: cfg.visibility === "gm"
-        ? (CONST.REGION_VISIBILITY?.GAMEMASTER ?? 1)
+      visibility: cfg.visibility === "creator"
+        ? (CONST.REGION_VISIBILITY?.OBSERVER ?? 3)
         : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),
+      ownership: cfg.visibility === "creator"
+        ? {
+            default: CONST.DOCUMENT_OWNERSHIP_LEVELS?.NONE ?? 0,
+            [game.user.id]: CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2
+          }
+        : undefined,
       behaviors: [regionBehaviorData()],
       flags: { world: { pf2eZone: payload } }
     };
@@ -1828,6 +1839,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       zoneName: cfg.name,
       duration: durationResolution,
       visibility: cfg.visibility,
+      creatorUserId: game.user.id,
       actor: sourceActor,
       token: sourceToken.document
     });
@@ -2039,6 +2051,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (triggers.sourceTurnStart) labels.push("At source turn start");
     if (triggers.turnEnd) labels.push("At creature turn end");
     if (triggers.continuous) labels.push("While inside");
+    if (triggers.spellCast) labels.push("When a creature casts a spell");
     if (triggers.traitUse) {
       const watchedTraits = watchedTraitSlugs(block?.traitUse);
       labels.push(`When ${watchedTraits.length ? watchedTraits.map(titleCase).join(" or ") : "a selected trait"} is used`);
@@ -2077,7 +2090,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         <b>Zone:</b> ${esc(titleCase(cfg.mode))}, ${cfg.radius}-foot radius<br>
         <b>Targets:</b> ${esc(titleCase(cfg.targeting.affects))}${cfg.targeting.includeSelf ? ", including source" : ""}<br>
         <b>Traits:</b> ${cfg.traits.length ? cfg.traits.map(esc).join(", ") : "None"}<br>
-        <b>Visibility:</b> ${cfg.visibility === "gm" ? "GM only" : "Everyone"}<br>
+        <b>Visibility:</b> ${cfg.visibility === "creator" ? "Creator only" : "Everyone"}<br>
         <b>Duration:</b> ${esc(durationText)}<br>
         <b>Shared activation damage type:</b> ${cfg.activationChoices?.damageType?.enabled ? cfg.activationChoices.damageType.options.map(titleCase).join(", ") : "None"}</p>
         <h4>Effect Blocks</h4>
@@ -2184,7 +2197,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         return;
       }
 
-      if (target.matches('[data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+      if (target.matches('[data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
       refreshLiveValidation(root);

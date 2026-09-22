@@ -6,9 +6,9 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 
 - Create token-following emanations and fixed circular areas.
 - Configure one or more Effect Blocks for each zone.
-- Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, or when a watched trait is used.
+- Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, or when a watched trait is used.
 - Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
-- Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration at the zone's visibility: GM-only for **GM** visibility and public otherwise.
+- Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration to the creator for **Creator only** zones and publicly otherwise.
 - Save, share, load, update, and delete presets through the PF2e Zone Library.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 
@@ -47,7 +47,7 @@ A player can create a zone only from an Actor they own. An active GM must be con
 1. Give the zone a clear name. A name is required.
 2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
 3. Enter the radius in feet, choose who can be affected, and decide whether the source is included.
-4. Choose the zone's visibility and any applicable traits. Traits begin unchecked.
+4. Choose **Visible to everyone** or **Creator only**, then add any applicable traits. Creator-only zones and their module chat alerts are visible to the creator; Foundry GMs retain their normal access. Traits begin unchecked.
 5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. Use the dismissal checkbox when the source should be able to end the zone early.
 
 Use **Activation Choices** only when a zone needs one shared damage type selected at activation, such as Shadow Raid.
@@ -66,6 +66,7 @@ Choose one or more plain-language trigger choices:
 | **At the end of a creature's turn** | The effect belongs at the end of an affected creature's turn. |
 | **At the start of the source's turn** | The source's combat turn controls the effect, even when the source is outside a fixed area. |
 | **While a creature is inside** | The no-save result should be maintained for occupants, such as an ongoing Effect Item. Verify damage and healing carefully before using this trigger. |
+| **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself. |
 | **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
 
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).

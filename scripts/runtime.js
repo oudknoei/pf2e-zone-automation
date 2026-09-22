@@ -1730,6 +1730,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           }
 
+          // PF2e includes a spell's traits as unprefixed roll options on its
+          // cast card. This is especially important for spells such as Detect
+          // Magic, which have no defense and therefore no spell-cast context.
+          if (origin.type === "spell") {
+            for (const option of rollOptions) {
+              const trait = option.trim().toLowerCase();
+              if (/^[a-z][a-z0-9-]*$/.test(trait)) traits.add(trait);
+            }
+          }
+
           for (const trait of item?.system?.traits?.value ?? []) {
             const slug = String(trait ?? "").trim().toLowerCase();
             if (slug) traits.add(slug);
@@ -1746,6 +1756,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             token,
             itemName: String(item?.name ?? embeddedSpell?.name ?? "an ability"),
             itemUuid: origin.uuid ?? null,
+            isSpellCast,
             traits
           };
         },
@@ -1813,8 +1824,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!block.chatAlert?.enabled) return;
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const sourceName = sourceToken?.name ?? sourceActor?.name ?? region.name ?? "Zone source";
-          const watchedTrait = this.watchedTraitsForBlock(block)[0] ?? "";
-          const trait = String(eventContext?.trait ?? (block.triggers?.traitUse ? watchedTrait : "")).trim();
+          const trait = String(eventContext?.trait ?? "").trim();
           const trigger = String(eventContext?.trigger ?? "").trim();
           const count = Math.max(1, Number(eventContext?.count ?? 1) || 1);
           const creature = count === 1
@@ -1834,7 +1844,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             count
           });
 
-          await ChatMessage.create({
+          const messageData = {
             speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
             content: `<div class="pf2e-zone-chat-alert"><h4>${escHtml(payload.config.name)} — ${escHtml(block.name)}</h4><p>${escHtml(text)}</p><p style="opacity:.7;font-size:.9em">PF2e Zone Automation chat alert</p></div>`,
             flags: {
@@ -1849,22 +1859,33 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 }
               }
             }
-          });
+          };
+          const visibility = payload.config?.visibility;
+          const creatorUserId = String(payload.state?.createdBy?.userId ?? "").trim();
+          if (visibility === "creator" && creatorUserId) {
+            messageData.whisper = [creatorUserId];
+          } else if (visibility === "gm" && typeof ChatMessage.getWhisperRecipients === "function") {
+            messageData.whisper = Array.from(ChatMessage.getWhisperRecipients("GM") ?? [])
+              .map((user) => user?.id)
+              .filter(Boolean);
+          }
+
+          await ChatMessage.create(messageData);
         },
 
-        /** Reacts to selected PF2e traits only when the acting token is currently inside an active zone. */
+        /** Dispatches chat-card actions only to zones that observe the caster's location and the action that was actually used. */
         async handleTraitUseMessage(message) {
           if (!this.isAuthority()) return;
 
           const candidateZones = this.allZones().filter((region) => {
             const payload = this.readPayload(region);
             return payload && !payload.state?.deactivated
-              && (payload.config.effects ?? []).some((block) => block.triggers?.traitUse);
+              && (payload.config.effects ?? []).some((block) => block.triggers?.traitUse || block.triggers?.spellCast);
           });
           if (!candidateZones.length) return;
 
           const info = await this.traitUseInfoFromMessage(message);
-          if (!info?.token || !info.traits?.size) return;
+          if (!info?.token || (!info.traits?.size && !info.isSpellCast)) return;
 
           for (const region of candidateZones) {
             if (region.parent?.id !== info.token.parent?.id) continue;
@@ -1875,21 +1896,28 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (payload.state?.deactivated) return;
 
               for (const block of payload.config.effects ?? []) {
-                if (!block.triggers?.traitUse) continue;
-                const trait = this.watchedTraitsForBlock(block).find((candidate) => info.traits.has(candidate));
-                if (!trait) continue;
+                const trait = block.triggers?.traitUse
+                  ? this.watchedTraitsForBlock(block).find((candidate) => info.traits.has(candidate))
+                  : null;
+                const matchesTraitUse = Boolean(trait);
+                const matchesSpellCast = Boolean(block.triggers?.spellCast && info.isSpellCast);
+                if (!matchesTraitUse && !matchesSpellCast) continue;
 
+                // A spell can also have a watched trait. Treat one chat card as
+                // one event for each Effect Block so choosing both triggers does
+                // not apply the same result twice.
+                const trigger = matchesTraitUse ? "traitUse" : "spellCast";
                 await this.processBlock(
                   region,
                   payload,
                   block,
                   info.token,
-                  "traitUse",
-                  `traitUse:${message.id ?? randomId()}:${block.id}`,
+                  trigger,
+                  `${trigger}:${message.id ?? randomId()}:${block.id}`,
                   {
                     eventContext: {
-                      trigger: "traitUse",
-                      trait,
+                      trigger,
+                      ...(matchesTraitUse ? { trait } : {}),
                       itemName: info.itemName,
                       itemUuid: info.itemUuid,
                       sourceMessageId: message.id ?? null,

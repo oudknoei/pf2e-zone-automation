@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("a PF2e spell-cast chat message triggers a watched spell trait", async () => {
+test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events", async () => {
   const prior = Object.fromEntries([
     "Hooks",
     "PF2EZoneRuntime",
@@ -59,6 +59,47 @@ test("a PF2e spell-cast chat message triggers a watched spell trait", async () =
     assert.equal(info?.token, token);
     assert.equal(info?.itemName, "Heal");
     assert.ok(info?.traits.has("vitality"));
+
+    const detectMagicMessage = {
+      id: "detect-magic-message",
+      flags: {
+        pf2e: {
+          origin: {
+            type: "spell",
+            actor: "Actor.dragon",
+            uuid: "Actor.dragon.Item.detect-magic",
+            // PF2e puts spell traits directly in the cast card's roll options.
+            // Detect Magic has no defense, so the card has no spell-cast context.
+            rollOptions: ["action:cast-a-spell", "concentrate", "detection", "divination", "manipulate"]
+          }
+        }
+      },
+      speaker: { scene: "scene", token: "dragon-token" }
+    };
+    const detectMagicInfo = await runtime.traitUseInfoFromMessage(detectMagicMessage);
+
+    assert.equal(detectMagicInfo?.itemName, "an ability");
+    assert.equal(detectMagicInfo?.isSpellCast, true);
+    assert.ok(detectMagicInfo?.traits.has("manipulate"));
+    assert.ok(detectMagicInfo?.traits.has("concentrate"));
+
+    const spellCastBlock = { id: "spell-cast", triggers: { spellCast: true } };
+    const payload = { config: { effects: [spellCastBlock] }, state: {} };
+    const region = {
+      uuid: "Scene.scene.Region.reach",
+      parent: { id: "scene" },
+      getFlag: () => payload
+    };
+    const processed = [];
+    runtime.allZones = () => [region];
+    runtime.tokensInside = () => [token];
+    runtime.withState = async (_region, callback) => callback(payload);
+    runtime.processBlock = async (...args) => processed.push(args);
+
+    await runtime.handleTraitUseMessage(detectMagicMessage);
+    assert.equal(processed.length, 1);
+    assert.equal(processed[0][4], "spellCast");
+    assert.equal(processed[0][6].eventContext.itemName, "an ability");
     assert.deepEqual(
       runtime.watchedTraitsForBlock({ traitUse: { traits: ["void", "healing"] } }),
       ["void", "healing"]

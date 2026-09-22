@@ -13,6 +13,11 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /When the zone is created/);
   assert.match(builder, /When a creature enters after creation/);
   assert.match(builder, /At the start of a creature's turn/);
+  assert.match(builder, /When a creature casts a spell/);
+  assert.match(builder, /spellCast: false/);
+  assert.match(builder, /value="creator"/);
+  assert.match(builder, /REGION_VISIBILITY\?\.OBSERVER/);
+  assert.doesNotMatch(builder, />GM only<\/option>/);
   assert.match(builder, /data-block-summary/);
   assert.match(builder, /PF2e Zone Automation v\$\{game\.modules\.get\("pf2e-zone-automation"\)\?\.version/);
   assert.match(builder, /function blockSummary/);

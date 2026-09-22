@@ -9,7 +9,7 @@ function escapeHtml(value) {
 }
 
 /** Keeps a randomly determined zone lifetime visible to exactly the people allowed to see that zone. */
-export async function postFormulaDurationMessage({ zoneName, duration, visibility, actor = null, token = null } = {}) {
+export async function postFormulaDurationMessage({ zoneName, duration, visibility, creatorUserId = null, actor = null, token = null } = {}) {
   const formula = String(duration?.formula ?? "").trim();
   const rounds = Number(duration?.rounds);
   if (!formula || !Number.isSafeInteger(rounds) || rounds < 1) return null;
@@ -24,7 +24,10 @@ export async function postFormulaDurationMessage({ zoneName, duration, visibilit
       content: `<p><strong>PF2e Zone Duration</strong>: ${escapeHtml(zoneName || "Unnamed Zone")} will last <strong>${rounds} ${roundLabel}</strong> (rolled ${escapeHtml(formula)}).</p>`
     };
 
-    if (visibility === "gm") {
+    const creatorId = String(creatorUserId ?? "").trim();
+    if (visibility === "creator" && creatorId) {
+      message.whisper = [creatorId];
+    } else if (visibility === "gm") {
       if (typeof Chat.getWhisperRecipients !== "function") return null;
       const whisper = Array.from(Chat.getWhisperRecipients("GM") ?? [])
         .map((user) => user?.id)

@@ -73,7 +73,8 @@ export async function handleWorkerRequest(request) {
     if (!cfg || typeof cfg !== "object") throw new Error("Zone configuration is missing.");
     if (!String(cfg.name ?? "").trim()) throw new Error("Zone name is required.");
     if (!['emanation', 'area'].includes(cfg.mode)) throw new Error(`Unsupported zone mode '${cfg.mode}'.`);
-    cfg.visibility = ["all", "gm"].includes(cfg.visibility) ? cfg.visibility : "all";
+    const requestedVisibility = cfg.visibility === "gm" ? "creator" : cfg.visibility;
+    cfg.visibility = ["all", "creator"].includes(requestedVisibility) ? requestedVisibility : "all";
     cfg.radius = Number(cfg.radius);
     if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) throw new Error("Zone radius is invalid.");
     if (!Array.isArray(cfg.effects)) throw new Error("Zone effect blocks are missing.");
@@ -460,9 +461,15 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     const regionData = {
       name: cfg.name,
       color: lightenZoneColor(request.color ?? requester.color ?? game.user.color),
-      visibility: cfg.visibility === "gm"
-        ? (CONST.REGION_VISIBILITY?.GAMEMASTER ?? 1)
+      visibility: cfg.visibility === "creator"
+        ? (CONST.REGION_VISIBILITY?.OBSERVER ?? 3)
         : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),
+      ownership: cfg.visibility === "creator"
+        ? {
+            default: CONST.DOCUMENT_OWNERSHIP_LEVELS?.NONE ?? 0,
+            [requester.id]: CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2
+          }
+        : undefined,
       behaviors: [regionBehaviorData()],
       flags: { [FLAG_SCOPE]: { [FLAG_KEY]: payload } }
     };
@@ -502,6 +509,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       zoneName: cfg.name,
       duration: durationResolution,
       visibility: cfg.visibility,
+      creatorUserId: requester.id,
       actor: sourceActor,
       token: sourceToken
     });

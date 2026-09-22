@@ -35,6 +35,15 @@ test("formula duration chat messages match their zone visibility", async () => {
 
     created = null;
     await postFormulaDurationMessage({
+      zoneName: "Private Zone",
+      duration: { formula: "1d6", rounds: 4 },
+      visibility: "creator",
+      creatorUserId: "player-one"
+    });
+    assert.deepEqual(created.whisper, ["player-one"]);
+
+    created = null;
+    await postFormulaDurationMessage({
       zoneName: "Public Zone",
       duration: { formula: "1d4", rounds: 3 },
       visibility: "everyone"
