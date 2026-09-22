@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 8,
+  "name": "Stoke the Fervent - Urdefhan Tormentor",
+  "mode": "emanation",
+  "radius": 30,
+  "visibility": "all",
+  "targeting": {
+    "affects": "allies",
+    "includeSelf": true
+  },
+  "traits": [
+    "auditory",
+    "emotion",
+    "mental",
+    "divine"
+  ],
+  "duration": {
+    "type": "custom-rounds",
+    "rounds": "2d4",
+    "dismissible": false
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "KDUBrHd4",
+      "name": "Fanatical Frenzy",
+      "triggers": {
+        "activation": true,
+        "enter": false,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": false,
+        "continuous": false,
+        "traitUse": false
+      },
+      "traitUse": {
+        "trait": "vitality"
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "once-per-zone",
+      "save": {
+        "enabled": false,
+        "type": "will",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "custom",
+          "value": 10
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": ""
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": [
+            {
+              "uuid": "Compendium.pf2e.bestiary-effects.Item.eE3FEpjk2HdZDzSA",
+              "removal": "zone-end"
+            }
+          ]
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened"
+      }
+    }
+  ]
+}
