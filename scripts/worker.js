@@ -1,12 +1,8 @@
-import { durationRoundsError, resolveDurationRounds } from "./duration.js";
-import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
-import { combatDurationDeadline } from "./duration-clock.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
-import { hasTargetSelection } from "./targeting.js";
-import { pf2eFormulaError } from "./formula-validation.js";
 import { fixedAreaShape } from "./area-shape.js";
-/* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
+import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
+/* GM-only document operations and authorization for module socket requests. */
 
 let libraryOperationTail = Promise.resolve();
 
@@ -22,8 +18,6 @@ export async function handleWorkerRequest(request) {
   "use strict";
 
   const WORKER_VERSION = "0.5.16";
-  const RUNTIME_VERSION = "0.5.16";
-  const ZONE_COLOR_LIGHTEN = 0.1;
   const FLAG_SCOPE = "world";
   const FLAG_KEY = "pf2eZone";
   const LIBRARY_FLAG_KEY = "pf2eZoneLibrary";
@@ -40,20 +34,6 @@ export async function handleWorkerRequest(request) {
     if (globalThis.structuredClone) return structuredClone(obj);
     return JSON.parse(JSON.stringify(obj));
   };
-
-  /** Keeps a zone's border distinguishable from its fill without asking users for two colors. */
-  function lightenZoneColor(value, amount = ZONE_COLOR_LIGHTEN) {
-    const raw = String(value ?? "#999999").trim();
-    const short = raw.match(/^#?([0-9a-f]{3})$/i);
-    const full = raw.match(/^#?([0-9a-f]{6})$/i);
-    const hex = full?.[1] ?? (short ? short[1].split("").map((c) => `${c}${c}`).join("") : null);
-    if (!hex) return raw || "#999999";
-
-    const t = Math.clamp(Number(amount) || 0, 0, 1);
-    const channels = [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
-    const mixed = channels.map((channel) => Math.round(channel + (255 - channel) * t));
-    return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-  }
 
   /** Returns worker errors in one predictable shape so clients can present them safely. */
   const fail = (message) => ({ ok: false, workerVersion: WORKER_VERSION, error: String(message) });
@@ -79,52 +59,6 @@ export async function handleWorkerRequest(request) {
       throw new Error(`${requester.name} does not own the source Actor '${actor?.name ?? "Unknown"}'.`);
     }
   }
-
-  /** Stops malformed client configuration from reaching Foundry document creation. */
-  function normalizeConfig(raw) {
-    const cfg = clone(raw ?? {});
-    if (!cfg || typeof cfg !== "object") throw new Error("Zone configuration is missing.");
-    if (!String(cfg.name ?? "").trim()) throw new Error("Zone name is required.");
-    if (!['emanation', 'area'].includes(cfg.mode)) throw new Error(`Unsupported zone mode '${cfg.mode}'.`);
-    const requestedVisibility = cfg.visibility === "gm" ? "creator" : cfg.visibility;
-    cfg.visibility = ["all", "creator"].includes(requestedVisibility) ? requestedVisibility : "all";
-    const requestedDurationType = cfg.duration?.type === "until-dismissed" ? "unlimited" : cfg.duration?.type;
-    cfg.duration = {
-      ...(cfg.duration && typeof cfg.duration === "object" ? cfg.duration : {}),
-      type: ["custom-rounds", "1-minute", "10-minutes", "unlimited"].includes(requestedDurationType)
-        ? requestedDurationType
-        : "unlimited"
-    };
-    delete cfg.duration.dismissible;
-    if (cfg.duration.type === "custom-rounds") {
-      const durationError = durationRoundsError(cfg.duration.rounds);
-      if (durationError) throw new Error(durationError);
-    }
-    if (cfg.areaShape != null && !["circle", "square"].includes(cfg.areaShape)) throw new Error("Area shape is invalid.");
-    cfg.radius = Number(cfg.radius);
-    if (cfg.mode === "area" && cfg.areaShape === "square") {
-      cfg.sideLength = Number(cfg.sideLength);
-      if (!Number.isFinite(cfg.sideLength) || cfg.sideLength <= 0 || cfg.sideLength > 1000) throw new Error("Square side length is invalid.");
-    } else if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) {
-      throw new Error("Zone radius is invalid.");
-    }
-    if (!hasTargetSelection(cfg.targeting)) throw new Error("Select at least one target: Allies, Enemies, or Self (Source Actor).");
-    if (!Array.isArray(cfg.effects)) throw new Error("Zone effect blocks are missing.");
-    for (const [index, block] of cfg.effects.entries()) {
-      const name = String(block?.name ?? `Effect Block ${index + 1}`);
-      if (block?.damage?.enabled) {
-        const type = block.damage.typeMode === "activation-choice" ? "untyped" : (block.damage.type ?? "untyped");
-        const formulaError = pf2eFormulaError(block.damage.formula, type);
-        if (formulaError) throw new Error(`${name} damage: ${formulaError}`);
-      }
-      if (block?.healing?.enabled) {
-        const formulaError = pf2eFormulaError(block.healing.formula, "healing");
-        if (formulaError) throw new Error(`${name} healing: ${formulaError}`);
-      }
-    }
-    return cfg;
-  }
-
 
   /** Keeps saved preset names from changing the Library Journal page markup. */
   const escHtml = (value) => String(value ?? "")
@@ -318,8 +252,11 @@ export async function handleWorkerRequest(request) {
   /** Applies ownership and revision checks so one user cannot silently overwrite another user's work. */
   async function saveLibraryPreset() {
     const requester = getRequester();
+    const sourceActor = await fromUuid(request.sourceActorUuid ?? "");
+    if (!sourceActor?.uuid) throw new Error("Source Actor was not found.");
+    assertSourcePermission(sourceActor, requester);
+    const cfg = requireValidConfig(request.config, sourceActor);
     const { journal, data, page } = await ensureLibraryJournal();
-    const cfg = normalizeConfig(request.config);
     const requestedId = String(request.recordId ?? "").trim();
     const now = Date.now();
 
@@ -386,190 +323,41 @@ export async function handleWorkerRequest(request) {
     return succeed({ action: "library-delete", journalId: journal.id, recordId });
   }
 
-  /** Keeps Region behavior creation compatible with Foundry's changing internal type names. */
-  function executeScriptBehaviorType() {
-    const match = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
-      .find(([, cls]) => cls?.name === "ExecuteScriptRegionBehaviorType");
-    return match?.[0] ?? "executeScript";
-  }
-
-  /** Makes created Regions call the installed module runtime so published fixes apply to existing zones. */
-  function runtimeScriptSource() {
-    return `
-const api = game.modules.get("pf2e-zone-automation")?.api;
-if (!api?.handleRegionEvent) throw new Error("PF2e Zone Automation module is not active.");
-await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "undefined" ? scene : region?.parent });
-`;
-  }
-
-  /** Defines the small event surface the module needs instead of attaching unrelated Region hooks. */
-  function regionBehaviorData() {
-    return {
-      name: "PF2e Zone Runtime",
-      type: executeScriptBehaviorType(),
-      system: {
-        events: [
-          "behaviorActivated",
-          "behaviorDeactivated",
-          "behaviorViewed",
-          "tokenEnter",
-          "tokenExit",
-          "tokenTurnStart",
-          "tokenTurnEnd"
-        ],
-        source: runtimeScriptSource()
-      },
-      disabled: false,
-      flags: {}
-    };
-  }
-
-  /** Separates automatic end times from indefinite zones so cleanup is scheduled only when needed. */
-  function finiteDurationRounds(cfg) {
-    switch (cfg.duration?.type) {
-      case "1-round": return 1;
-      case "custom-rounds": {
-        const rounds = Number(cfg.duration?.rounds);
-        return Number.isSafeInteger(rounds) && rounds > 0 ? rounds : null;
-      }
-      case "1-minute": return 10;
-      case "10-minutes": return 100;
-      default: return null;
-    }
-  }
-
-  /** Captures authoritative source and duration facts at creation so later hooks need no client state. */
-  function initialRuntimeState(cfg, chosenDamageType, sourceActor, sourceToken, createdBy, durationResolution = null, savedPresetId = null) {
-    const combat = game.combat;
-    const sourceCombatant = sourceActor.combatant ?? null;
-    const rounds = durationResolution?.rounds ?? finiteDurationRounds(cfg);
-    const currentIsSource = Boolean(combat && sourceCombatant && combat.combatant?.id === sourceCombatant.id);
-    const currentTurnKey = currentIsSource
-      ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${sourceCombatant.id}`
-      : null;
-
-    return {
-      createdWorldTime: Number(game.time?.worldTime ?? 0),
-      createdBy: createdBy ? { userId: createdBy.id, name: createdBy.name } : { userId: game.user.id, name: game.user.name },
-      savedPresetId,
-      sourceActorUuid: sourceActor.uuid,
-      sourceTokenUuid: sourceToken.uuid,
-      activation: { damageType: chosenDamageType ?? null },
-      activationProcessed: false,
-      activationPending: true,
-      activationFinalizeScheduled: false,
-      activationTargets: {},
-      initialOccupants: {},
-      deactivated: false,
-      pendingSaves: {},
-      resolvedSaves: {},
-      repeat: {},
-      immunities: {},
-      applied: {},
-      damageRolls: {},
-      healingRolls: {},
-      recoveryWatchers: {},
-      turnStartEvents: {},
-      lastSourceTriggerTurnKey: currentTurnKey,
-      duration: rounds ? {
-        rounds,
-        formula: durationResolution?.formula ?? null,
-        worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
-        combatId: combat?.id ?? null,
-        sourceCombatantId: sourceCombatant?.id ?? null,
-        sourceTurnsElapsed: 0,
-        lastSourceTurnKey: currentTurnKey,
-        ...combatDurationDeadline(combat, sourceCombatant, rounds)
-      } : {}
-    };
-  }
-
-  /** Concentrates GM validation and document creation so player and GM workflows behave identically. */
+  /** Enforces source ownership before the shared creation path changes the Scene. */
   async function createZone() {
     const requester = getRequester();
     const scene = game.scenes.get(request.sceneId ?? "");
     if (!scene) throw new Error("Target Scene was not found.");
-
     const sourceToken = await fromUuid(request.sourceTokenUuid ?? "");
     if (!sourceToken || sourceToken.documentName !== "Token") throw new Error("Source Token was not found.");
     if (sourceToken.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
     const sourceActor = sourceToken.actor;
     if (!sourceActor) throw new Error("Source Token has no Actor.");
     assertSourcePermission(sourceActor, requester);
-
-    const cfg = normalizeConfig(request.config);
     const savedPresetId = String(request.savedPresetId ?? "").trim() || null;
     if (savedPresetId) {
       const { data } = await ensureLibraryJournal();
       if (!data.zones[savedPresetId]) throw new Error("The saved zone this configuration came from no longer exists.");
     }
-    const durationResolution = await resolveDurationRounds(cfg.duration);
-    const payload = {
-      runtimeVersion: RUNTIME_VERSION,
-      config: cfg,
-      state: initialRuntimeState(
-        cfg,
-        request.chosenDamageType ?? null,
-        sourceActor,
-        sourceToken,
-        requester,
-        durationResolution,
-        savedPresetId
-      )
-    };
-    const regionData = {
-      name: cfg.name,
-      color: lightenZoneColor(request.color ?? requester.color ?? game.user.color),
-      visibility: cfg.visibility === "creator"
-        ? (CONST.REGION_VISIBILITY?.OBSERVER ?? 3)
-        : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),
-      ownership: cfg.visibility === "creator"
-        ? {
-            default: CONST.DOCUMENT_OWNERSHIP_LEVELS?.NONE ?? 0,
-            [requester.id]: CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2
-          }
-        : undefined,
-      behaviors: [regionBehaviorData()],
-      flags: { [FLAG_SCOPE]: { [FLAG_KEY]: payload } }
-    };
-
-    let region = null;
-    if (cfg.mode === "emanation") {
-      const RegionDocument = CONFIG.Region.documentClass;
-      if (typeof RegionDocument?.createTokenEmanation !== "function") {
-        throw new Error("Foundry V14 RegionDocument.createTokenEmanation is unavailable.");
+    const { region, durationResolution } = await createZoneDocument({
+      rawConfig: request.config, scene, sourceActor, sourceToken, requester, savedPresetId,
+      chosenDamageType: request.chosenDamageType ?? null, color: request.color,
+      placeArea: async (regionData, config) => {
+        const center = request.areaCenter;
+        if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) {
+          throw new Error("Area center is missing or invalid.");
+        }
+        const distancePixels = Number(scene.dimensions?.distancePixels ?? (scene.grid?.size / scene.grid?.distance));
+        if (!Number.isFinite(distancePixels) || distancePixels <= 0) throw new Error("Scene distance scale is unavailable.");
+        const [created] = await scene.createEmbeddedDocuments("Region", [{
+          ...regionData, shapes: [fixedAreaShape(config, center, distancePixels)]
+        }]);
+        return created ?? null;
       }
-      region = await RegionDocument.createTokenEmanation(sourceToken, cfg.radius, regionData);
-    } else {
-      const center = request.areaCenter;
-      if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) {
-        throw new Error("Area center is missing or invalid.");
-      }
-      const distancePixels = Number(scene.dimensions?.distancePixels ?? (scene.grid?.size / scene.grid?.distance));
-      if (!Number.isFinite(distancePixels) || distancePixels <= 0) throw new Error("Scene distance scale is unavailable.");
-      const [created] = await scene.createEmbeddedDocuments("Region", [{
-        ...regionData,
-        shapes: [fixedAreaShape(cfg, center, distancePixels)]
-      }]);
-      region = created ?? null;
-    }
-
-    if (!region) throw new Error("Foundry did not create the Region.");
-    const runtime = await zoneRuntimeEntrypoint();
-    await runtime.activateRegion(region);
-    await postFormulaDurationMessage({
-      zoneName: cfg.name,
-      duration: durationResolution,
-      visibility: cfg.visibility,
-      creatorUserId: requester.id,
-      actor: sourceActor,
-      token: sourceToken
     });
+    if (!region) throw new Error("Foundry did not create the Region.");
     return succeed({
-      action: "create",
-      sceneId: scene.id,
-      regionId: region.id,
-      regionUuid: region.uuid,
+      action: "create", sceneId: scene.id, regionId: region.id, regionUuid: region.uuid,
       duration: durationResolution?.formula
         ? { formula: durationResolution.formula, rounds: durationResolution.rounds }
         : null

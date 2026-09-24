@@ -3,9 +3,12 @@ import test from "node:test";
 import { handleWorkerRequest } from "../scripts/worker.js";
 
 const gm = { id: "gm", name: "GM", active: true, isGM: true };
+const actor = { uuid: "Actor.source", name: "Source" };
+globalThis.fromUuid = async (uuid) => uuid === actor.uuid ? actor : null;
 const baseConfig = {
   mode: "emanation", radius: 5, targeting: { affects: "enemies", includeSelf: false },
-  visibility: "all", duration: { type: "unlimited", rounds: 1 }, effects: []
+  visibility: "all", duration: { type: "unlimited", rounds: 1 },
+  effects: [{ name: "Alert", triggers: { activation: true }, chatAlert: { enabled: true, text: "Alert" } }]
 };
 const record = (id, name) => ({
   id, name, createdBy: { userId: gm.id, name: gm.name }, revision: 1,
@@ -62,7 +65,7 @@ globalThis.game = {
 function save(recordId, expectedRevision, name) {
   return handleWorkerRequest({
     protocol: 1, action: "library-save", requesterUserId: gm.id,
-    recordId, expectedRevision, config: { ...baseConfig, name }
+    recordId, expectedRevision, sourceActorUuid: actor.uuid, config: { ...baseConfig, name }
   });
 }
 
@@ -142,4 +145,23 @@ test("a failed library write does not block the next save", async () => {
   const retry = await save("second", 2, "Recovered");
   assert.equal(retry.ok, true, retry.error);
   assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones.second.name, "Recovered");
+});
+
+test("a malformed preset cannot bypass builder validation through the GM worker", async () => {
+  const before = updateCalls;
+  const priorError = console.error;
+  let result;
+  try {
+    console.error = () => {};
+    result = await handleWorkerRequest({
+      protocol: 1, action: "library-save", requesterUserId: gm.id,
+      sourceActorUuid: actor.uuid, recordId: "second", expectedRevision: 3,
+      config: { ...baseConfig, name: "Invalid", effects: [{ name: "No Trigger" }] }
+    });
+  } finally {
+    console.error = priorError;
+  }
+  assert.equal(result.ok, false);
+  assert.match(result.error, /select at least one trigger/);
+  assert.equal(updateCalls, before);
 });

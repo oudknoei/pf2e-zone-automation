@@ -5,6 +5,8 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const builder = readFileSync(resolve(root, "scripts", "builder.js"), "utf8");
+const config = readFileSync(resolve(root, "scripts", "zone-config.js"), "utf8");
+const creation = readFileSync(resolve(root, "scripts", "zone-creation.js"), "utf8");
 const styles = readFileSync(resolve(root, "styles", "pf2e-zone.css"), "utf8");
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 
@@ -15,9 +17,9 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /When a creature enters after creation/);
   assert.match(builder, /At the start of a creature's turn/);
   assert.match(builder, /When a creature casts a spell/);
-  assert.match(builder, /spellCast: false/);
+  assert.match(config, /spellCast: false/);
   assert.match(builder, /value="creator"/);
-  assert.match(builder, /REGION_VISIBILITY\?\.OBSERVER/);
+  assert.match(creation, /REGION_VISIBILITY\?\.OBSERVER/);
   assert.doesNotMatch(builder, />GM only<\/option>/);
   assert.match(builder, /data-block-summary/);
   assert.match(builder, /PF2e Zone Automation v\$\{game\.modules\.get\("pf2e-zone-automation"\)\?\.version/);
@@ -30,7 +32,7 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /Source token changed/);
   assert.doesNotMatch(builder, /data-action="load-config"/);
   assert.match(builder, /data-action="end"/);
-  assert.match(builder, /savedPresetId: loadedPreset\?\.id \?\? null/);
+  assert.match(builder, /const savedPresetId = loadedPreset\?\.id \?\? null/);
   assert.match(builder, /loadedPreset = savedPreset \? clone\(savedPreset\) : null/);
   assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
   assert.match(builder, /class="zb-clear"/);
@@ -42,14 +44,14 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /function renderInlineValidation/);
   assert.match(builder, /function refreshLiveValidation/);
   assert.match(builder, /function refreshOperationStatus/);
-  assert.match(builder, /name: ""/);
-  assert.match(builder, /traits: \[\]/);
-  assert.match(builder, /enter: false/);
-  assert.match(builder, /repeat: "once-per-round"/);
-  assert.match(builder, /pf2eFormulaError\(block\.damage\.formula/);
-  assert.match(builder, /dc: \{ mode: "custom", value: "" \}/);
+  assert.match(config, /name: ""/);
+  assert.match(config, /traits: \[\]/);
+  assert.match(config, /enter: false/);
+  assert.match(config, /repeat: "once-per-round"/);
+  assert.match(config, /pf2eFormulaError\(block\.damage\.formula/);
+  assert.match(config, /dc: \{ mode: "custom", value: "" \}/);
   assert.match(builder, /data-zone="name" type="text" value="\$\{esc\(state\.name\)\}" required/);
-  assert.match(builder, /type: "unlimited"/);
+  assert.match(config, /type: "unlimited"/);
   assert.doesNotMatch(builder, /option value="until-dismissed"/);
   assert.doesNotMatch(builder, /data-zone="dismissible"/);
   assert.match(builder, /data-trait-use-trait/);
@@ -75,13 +77,13 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
 });
 
 test("builder validates current size and duration input before applying legacy defaults", () => {
-  assert.match(builder, /radius: editableZoneSize\(cfg\.radius, base\.radius\)/);
-  assert.match(builder, /sideLength: editableZoneSize\(cfg\.sideLength, base\.sideLength\)/);
-  assert.match(builder, /rounds: cfg\.duration\?\.type === "1-round"[\s\S]*editableDurationRounds\(cfg\.duration\?\.rounds, base\.duration\.rounds\)/);
+  assert.match(config, /radius: editableZoneSize\(cfg\.radius, base\.radius\)/);
+  assert.match(config, /sideLength: editableZoneSize\(cfg\.sideLength, base\.sideLength\)/);
+  assert.match(config, /rounds: cfg\.duration\?\.type === "1-round"[\s\S]*editableDurationRounds\(cfg\.duration\?\.rounds, base\.duration\.rounds\)/);
   assert.match(builder, /radius: editableZoneSize\(field\(root, '\[data-zone="radius"\]'\)\.value\)/);
   assert.match(builder, /sideLength: editableZoneSize\(field\(root, '\[data-zone="side-length"\]'\)\.value\)/);
-  assert.match(builder, /!Number\.isFinite\(cfg\.radius\)/);
-  assert.match(builder, /!Number\.isFinite\(cfg\.sideLength\)/);
+  assert.match(config, /!Number\.isFinite\(cfg\.radius\)/);
+  assert.match(config, /!Number\.isFinite\(cfg\.sideLength\)/);
 });
 
 test("README provides a complete How To and omits retired sections", () => {

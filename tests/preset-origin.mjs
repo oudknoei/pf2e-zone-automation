@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { handleWorkerRequest } from "../scripts/worker.js";
+import { normalizeConfig } from "../scripts/zone-config.js";
 
 test("player zones retain their saved preset link for later overwrite", async () => {
   const priorClamp = Math.clamp;
@@ -14,7 +15,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
     targeting: { affects: "enemies", includeSelf: false },
     visibility: "all",
     duration: { type: "unlimited", rounds: 1 },
-    effects: []
+    effects: [{ id: "alert-block", name: "Alert", triggers: { activation: true }, chatAlert: { enabled: true, text: "Alert" } }]
   };
   const record = {
     id: "saved-zone",
@@ -110,7 +111,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
     const created = await handleWorkerRequest(request);
     assert.equal(created.ok, true, created.error);
     assert.equal(createdData.flags.world.pf2eZone.state.savedPresetId, record.id);
-    assert.deepEqual(createdData.flags.world.pf2eZone.config, config);
+    assert.deepEqual(createdData.flags.world.pf2eZone.config, normalizeConfig(config, { strict: true }));
 
     const dismissed = await handleWorkerRequest({
       protocol: 1,
@@ -128,6 +129,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
       requesterUserId: player.id,
       recordId: createdData.flags.world.pf2eZone.state.savedPresetId,
       expectedRevision: record.revision,
+      sourceActorUuid: sourceActor.uuid,
       config: { ...config, name: "Revised Zone" }
     });
     assert.equal(saved.ok, true, saved.error);
@@ -174,6 +176,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
           ...config,
           effects: [{
             name: "Invalid Damage",
+            triggers: { activation: true },
             damage: { enabled: true, formula: "2d6+", typeMode: "fixed", type: "fire" }
           }]
         }
