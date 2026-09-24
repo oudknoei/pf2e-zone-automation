@@ -66,7 +66,7 @@ Choose one or more plain-language trigger choices:
 | **At the end of a creature's turn** | The effect belongs at the end of an affected creature's turn. |
 | **At the start of the source's turn** | The source's combat turn controls the effect, even when the source is outside a fixed area. |
 | **While a creature is inside** | The no-save result should be maintained for occupants, such as an ongoing Effect Item. Verify damage and healing carefully before using this trigger. |
-| **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself. |
+| **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself; later attack, damage, or healing roll cards from that cast do not trigger it again. |
 | **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
 
 For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), choose **Area - Square** with a 10-foot side length and two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.

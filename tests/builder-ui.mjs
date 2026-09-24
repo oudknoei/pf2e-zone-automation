@@ -74,6 +74,16 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(styles, /\.zb-source img \{ width:36px; height:36px;/);
 });
 
+test("builder validates current size and duration input before applying legacy defaults", () => {
+  assert.match(builder, /radius: editableZoneSize\(cfg\.radius, base\.radius\)/);
+  assert.match(builder, /sideLength: editableZoneSize\(cfg\.sideLength, base\.sideLength\)/);
+  assert.match(builder, /rounds: cfg\.duration\?\.type === "1-round"[\s\S]*editableDurationRounds\(cfg\.duration\?\.rounds, base\.duration\.rounds\)/);
+  assert.match(builder, /radius: editableZoneSize\(field\(root, '\[data-zone="radius"\]'\)\.value\)/);
+  assert.match(builder, /sideLength: editableZoneSize\(field\(root, '\[data-zone="side-length"\]'\)\.value\)/);
+  assert.match(builder, /!Number\.isFinite\(cfg\.radius\)/);
+  assert.match(builder, /!Number\.isFinite\(cfg\.sideLength\)/);
+});
+
 test("README provides a complete How To and omits retired sections", () => {
   assert.match(readme, /^## How To$/m);
   assert.match(readme, /^### Configure an Effect Block$/m);

@@ -116,6 +116,51 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
       processed.find((entry) => entry[4] === "traitUse")?.[6].eventContext.trait,
       "manipulate"
     );
+
+    // A spell's later damage card keeps its origin, but is not another cast or trait use.
+    const vitalityBlock = {
+      id: "vitality",
+      triggers: { traitUse: true },
+      traitUse: { traits: ["vitality"] }
+    };
+    payload.config.effects = [spellCastBlock, vitalityBlock];
+    processed.length = 0;
+    const healCastMessage = {
+      id: "heal-cast",
+      flags: { pf2e: {
+        origin: {
+          type: "spell", actor: actor.uuid, uuid: "Actor.dragon.Item.heal",
+          rollOptions: ["action:cast-a-spell"]
+        },
+        context: { type: "spell-cast", options: [] }
+      } },
+      speaker: { scene: "scene", token: "dragon-token" },
+      rolls: []
+    };
+    const healDamageMessage = {
+      id: "heal-damage",
+      flags: { pf2e: {
+        origin: { type: "spell", actor: actor.uuid, uuid: "Actor.dragon.Item.heal" },
+        context: { type: "damage-roll", options: ["item:trait:vitality"] }
+      } },
+      speaker: { scene: "scene", token: "dragon-token" },
+      rolls: [{ total: 12 }]
+    };
+    await runtime.handleTraitUseMessage(healCastMessage);
+    assert.deepEqual(processed.map((entry) => entry[4]).sort(), ["spellCast", "traitUse"]);
+    assert.equal(await runtime.traitUseInfoFromMessage(healDamageMessage), null);
+    await runtime.handleTraitUseMessage(healDamageMessage);
+    assert.equal(processed.length, 2, "damage does not count as another cast or vitality use");
+
+    const contextlessDamage = {
+      ...healDamageMessage,
+      id: "heal-damage-without-context",
+      flags: { pf2e: { origin: healDamageMessage.flags.pf2e.origin } }
+    };
+    assert.equal(await runtime.traitUseInfoFromMessage(contextlessDamage), null);
+    await runtime.handleTraitUseMessage(contextlessDamage);
+    assert.equal(processed.length, 2, "roll data still identifies a damage follow-up without context");
+
     assert.deepEqual(
       runtime.watchedTraitsForBlock({ traitUse: { traits: ["void", "healing"] } }),
       ["void", "healing"]

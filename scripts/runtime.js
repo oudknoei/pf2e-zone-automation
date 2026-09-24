@@ -1720,6 +1720,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const origin = pf2e.origin;
           if (!origin || typeof origin !== "object") return null;
 
+          // PF2e repeats a spell's origin on damage and other roll cards.
+          // Those cards are consequences of the cast, not another use of its traits.
+          const contextType = pf2e.context?.type;
+          if (origin.type === "spell" && (
+            (contextType && contextType !== "spell-cast")
+            || (Array.isArray(message.rolls) && message.rolls.length > 0)
+            || message.isRoll === true
+            || Boolean(pf2e.damageRoll)
+          )) return null;
+
           const rollOptions = [
             ...(Array.isArray(origin.rollOptions) ? origin.rollOptions : []),
             ...(Array.isArray(pf2e.context?.options) ? pf2e.context.options : [])

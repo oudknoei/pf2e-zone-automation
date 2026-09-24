@@ -1,5 +1,6 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
-import { durationRoundsError, normalizeDurationRounds, parseDurationRounds, resolveDurationRounds } from "./duration.js";
+import { durationRoundsError, parseDurationRounds, resolveDurationRounds } from "./duration.js";
+import { editableDurationRounds, editableZoneSize } from "./config-input.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { requestGMWorker } from "./transport.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
@@ -571,8 +572,8 @@ export async function openZoneBuilder() {
       name: String(cfg.name ?? base.name).trim(),
       mode: ["area", "emanation"].includes(cfg.mode) ? cfg.mode : base.mode,
       areaShape: cfg.areaShape === "square" ? "square" : "circle",
-      radius: Math.max(1, Number(cfg.radius) || base.radius),
-      sideLength: cfg.sideLength == null ? base.sideLength : Number(cfg.sideLength),
+      radius: editableZoneSize(cfg.radius, base.radius),
+      sideLength: editableZoneSize(cfg.sideLength, base.sideLength),
       visibility: ["all", "creator"].includes(importedVisibility) ? importedVisibility : base.visibility,
       targeting: {
         affects: ["enemies", "allies", "both", "none"].includes(cfg.targeting?.affects)
@@ -591,7 +592,7 @@ export async function openZoneBuilder() {
               : base.duration.type,
         rounds: cfg.duration?.type === "1-round"
           ? 1
-          : normalizeDurationRounds(cfg.duration?.rounds, 1)
+          : editableDurationRounds(cfg.duration?.rounds, base.duration.rounds)
       },
       activationChoices: {
         damageType: {
@@ -1220,8 +1221,8 @@ export async function openZoneBuilder() {
       schemaVersion: SCHEMA_VERSION,
       name: field(root, '[data-zone="name"]').value.trim(),
       ...zoneTypeFields(field(root, '[data-zone="mode"]').value),
-      radius: Number(field(root, '[data-zone="radius"]').value),
-      sideLength: Number(field(root, '[data-zone="side-length"]').value),
+      radius: editableZoneSize(field(root, '[data-zone="radius"]').value),
+      sideLength: editableZoneSize(field(root, '[data-zone="side-length"]').value),
       visibility: field(root, '[data-zone="visibility"]').value,
       targeting: storedTargeting({
         allies: field(root, '[data-zone="affects-allies"]').checked,
@@ -1337,9 +1338,9 @@ export async function openZoneBuilder() {
     }
     if (!cfg.name) error("Zone name is required.", { scope: "zone", field: "name" });
     if (cfg.mode !== "area" || cfg.areaShape === "circle") {
-      if (!(cfg.radius > 0)) error("Radius must be greater than 0.", { scope: "zone", field: "radius" });
-    } else if (!(cfg.sideLength > 0)) {
-      error("Side length must be greater than 0.", { scope: "zone", field: "side-length" });
+      if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) error("Radius must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "radius" });
+    } else if (!Number.isFinite(cfg.sideLength) || cfg.sideLength <= 0 || cfg.sideLength > 1000) {
+      error("Side length must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "side-length" });
     }
     if (!hasTargetSelection(cfg.targeting)) error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
     if (cfg.duration?.type === "custom-rounds") {

@@ -50,7 +50,7 @@ function previousTauntsFrom(guardian) {
   return prior;
 }
 
-/** Uses Foundry's scene measurement so Taunt range follows the current grid and distance rules. */
+/** Uses PF2e's token distance so Taunt range includes creature footprints and elevation. */
 function measureTauntRange(sourceToken, targetToken) {
   if (sourceToken.parent?.id !== targetToken.parent?.id) {
     throw new Error("The Guardian and target must be on the same Scene.");
@@ -58,10 +58,7 @@ function measureTauntRange(sourceToken, targetToken) {
   if (canvas?.scene?.id !== sourceToken.parent?.id || !sourceToken.object || !targetToken.object) {
     throw new Error("Shielding Taunt requires the active GM to have the encounter Scene open.");
   }
-  const distance = Number(canvas.grid?.measurePath?.([
-    sourceToken.object.center,
-    targetToken.object.center
-  ])?.distance);
+  const distance = sourceToken.object.distanceTo?.(targetToken.object);
   if (!Number.isFinite(distance)) throw new Error("The distance to the Taunt target could not be measured.");
   return distance;
 }
