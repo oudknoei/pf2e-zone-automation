@@ -1156,7 +1156,7 @@ export async function openZoneBuilder() {
           <div class="right">
             <button type="button" class="zb-close"><i class="fa-solid fa-xmark"></i> Close</button>
             <button type="button" class="zb-validate"><i class="fa-solid fa-list-check"></i> Validate</button>
-            <button type="button" class="zb-preview"><i class="fa-solid fa-message"></i> Post Preview to Chat</button>
+            <button type="button" class="zb-preview" title="Only you will see the preview message"><i class="fa-solid fa-message"></i> Post Preview to Chat</button>
             <button type="button" class="zb-create"><i class="fa-solid fa-circle-plus"></i> Create Zone</button>
           </div>
         </div>
@@ -2426,9 +2426,10 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken.document }),
-        content: previewHtml(cfg, validation)
+        content: previewHtml(cfg, validation),
+        whisper: [game.user.id]
       });
-      ui.notifications.info("Zone configuration is valid. Preview posted to chat and config written to console.");
+      ui.notifications.info("Zone configuration is valid. Private preview posted to chat.");
     });
 
     root.querySelector(".zb-create").addEventListener("click", async () => {

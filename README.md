@@ -96,7 +96,7 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 ### Review, create, and manage the zone
 
 1. Select **Validate** to check the configuration.
-2. Select **Post Preview to Chat** to validate and post a readable summary without creating a Region.
+2. Select **Post Preview to Chat** to validate and send a readable summary privately to yourself without creating a Region.
 3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center.
 4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place.
 
