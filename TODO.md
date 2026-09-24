@@ -1,4 +1,4 @@
-1. **High: simultaneous preset saves can lose changes.** Two saves can read the same library snapshot and then overwrite each other. I reproduced two successful saves to different presets where the first preset reverted to its previous contents. The stored revision number is incremented but never checked for conflicts. Serialize library changes, replace the flag atomically, and reject saves based on an outdated revision. [Library persistence](E:/git/pf2e-zone-automation/scripts/worker.js:241)
+1. **Resolved: simultaneous preset saves preserve both changes.** Shared-library operations now run in order on the active GM, the Journal flag is replaced in one update, and overwrites or deletions with an outdated revision are rejected. A concurrent-save regression test covers both presets and a failed-write retry.
 
 2. **Resolved: continuous effects return after re-entry.** Ongoing Conditions and Effect Items are restored while a creature is inside, including after re-entry in the same round. **Once each round** and **Once for this zone** still limit chat alerts, damage, healing, and saves.
 
@@ -18,14 +18,12 @@
 
 10. **Medium: Shielding Taunt measures between token centers.** This can reject a Large creature whose nearest occupied square is in range, and the supplied points omit elevation. Use PF2e’s token-distance calculation, which accounts for token size and elevation. [Taunt range](E:/git/pf2e-zone-automation/scripts/shielding-taunt-worker.js:54), [PF2e distance implementation](https://github.com/foundryvtt/pf2e/blob/v14-dev/src/module/canvas/token/object.ts)
 
-11. **Pending-save management.** Show unresolved saves in Manage Zones, with GM actions to repost or cancel them. Currently, an unanswered request can suppress future saves indefinitely.
+11. **Feature: Pending-save management.** Show unresolved saves in Manage Zones, with GM actions to repost or cancel them. Currently, an unanswered request can suppress future saves indefinitely.
 
-12. **Effect selection by drag and drop.** Display the resolved effect’s name and image, and reject missing UUIDs or documents that aren’t Effects before creation.
+12. **Feature: Effect selection by drag and drop.** Display the resolved effect’s name and image, and reject missing UUIDs or documents that aren’t Effects before creation.
 
-13. **One shared configuration and creation implementation.** The builder and GM worker duplicate normalization, Region creation, and initial state. Their validation already differs. Consolidating these paths would prevent player and GM behavior from drifting.
+13. **Feature: One shared configuration and creation implementation.** The builder and GM worker duplicate normalization, Region creation, and initial state. Their validation already differs. Consolidating these paths would prevent player and GM behavior from drifting.
 
-14. **Build compendia during releases.** The release workflow packages committed compendium databases without running `build:packs`. Automating that step would prevent source JSON changes from being omitted from releases. [Release workflow](E:/git/pf2e-zone-automation/.github/workflows/release.yml:23)
+14. **Feature: Build compendia during releases.** The release workflow packages committed compendium databases without running `build:packs`. Automating that step would prevent source JSON changes from being omitted from releases. [Release workflow](E:/git/pf2e-zone-automation/.github/workflows/release.yml:23)
 
-15. **Add behavioral regression coverage for these findings.** Prioritize enter–exit–re-enter, cast–damage sequences, concurrent saves, and combat transitions. Also bound stored roll history so unlimited zones don’t accumulate it indefinitely.
-
-16. **Support for Wall type areas** 
+15. **Feature: Support for Wall type areas**

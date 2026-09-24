@@ -15,9 +15,13 @@ export function registerZoneSocket() {
 
 /** Gives callers a bounded request-response path instead of leaving player actions pending indefinitely. */
 export async function requestGMWorker(request) {
-  if (game.user.isGM) return handleWorkerRequest(request);
-
   const gm = game.users.activeGM;
+  const libraryAction = ["library-list", "library-save", "library-delete"].includes(request?.action);
+  // Send every shared-library operation to one GM client so its write queue is authoritative.
+  if (game.user.isGM && (!libraryAction || !gm || gm.id === game.user.id)) {
+    return handleWorkerRequest(request);
+  }
+
   if (!gm) throw new Error("An active GM must be logged into the world for player PF2e Zone operations.");
   if (!game.socket?.connected || !listening) {
     throw new Error("The PF2e Zone module socket is not ready. Refresh Foundry and try again.");

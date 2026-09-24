@@ -7,6 +7,15 @@ import { pf2eFormulaError } from "./formula-validation.js";
 import { fixedAreaShape } from "./area-shape.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
 
+let libraryOperationTail = Promise.resolve();
+
+/** Keeps one GM client's library reads and writes in order so each mutation starts from the latest flag. */
+function serializeLibraryOperation(operation) {
+  const result = libraryOperationTail.then(operation, operation);
+  libraryOperationTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 /** Keeps privileged world changes behind one GM-only entry point so player requests remain constrained. */
 export async function handleWorkerRequest(request) {
   "use strict";
@@ -244,11 +253,11 @@ export async function handleWorkerRequest(request) {
     return { journal, data, page };
   }
 
-  /** Writes both flags and index content together so the shared library cannot drift out of sync. */
+  /** Replaces the shared flag in one document update before refreshing its readable index. */
   async function persistLibrary(journal, data, page = null) {
     const clean = normalizeLibrary(data);
-    await journal.unsetFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY);
-    await journal.setFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY, clean);
+    if (typeof globalThis._replace !== "function") throw new Error("Foundry v14's flag replacement operator is unavailable.");
+    await journal.update({ [`flags.${FLAG_SCOPE}.${LIBRARY_FLAG_KEY}`]: globalThis._replace(clean) });
 
     const indexPage = page
       ?? journal.pages.find((p) => p.getFlag(FLAG_SCOPE, LIBRARY_INDEX_FLAG_KEY))
@@ -320,6 +329,10 @@ export async function handleWorkerRequest(request) {
       if (!requester.isGM && existing.createdBy?.userId !== requester.id) {
         throw new Error(`Only ${existing.createdBy?.name ?? "the creator"} or a GM can overwrite this saved zone.`);
       }
+      const currentRevision = Math.max(1, Number(existing.revision ?? 1));
+      if (request.expectedRevision !== currentRevision) {
+        throw new Error("This saved zone changed since you opened it. Reopen it and reapply your edits, or use Save As.");
+      }
       record = {
         ...clone(existing),
         id: existing.id ?? requestedId,
@@ -328,7 +341,7 @@ export async function handleWorkerRequest(request) {
         createdAt: existing.createdAt ?? now,
         modifiedBy: { userId: requester.id, name: requester.name },
         modifiedAt: now,
-        revision: Math.max(1, Number(existing.revision ?? 1)) + 1,
+        revision: currentRevision + 1,
         config: cfg
       };
     } else {
@@ -363,6 +376,9 @@ export async function handleWorkerRequest(request) {
     if (!existing) throw new Error("That saved zone no longer exists.");
     if (!requester.isGM && existing.createdBy?.userId !== requester.id) {
       throw new Error(`Only ${existing.createdBy?.name ?? "the creator"} or a GM can delete this saved zone.`);
+    }
+    if (request.expectedRevision !== Math.max(1, Number(existing.revision ?? 1))) {
+      throw new Error("This saved zone changed since you opened the list. Reopen the list before deleting it.");
     }
     delete data.zones[recordId];
     await persistLibrary(journal, data, page);
@@ -593,9 +609,9 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         assertSourcePermission(sourceToken.actor, requester);
         return succeed(await executeShieldingTaunt(request));
       }
-      case "library-list": return await listLibrary();
-      case "library-save": return await saveLibraryPreset();
-      case "library-delete": return await deleteLibraryPreset();
+      case "library-list": return await serializeLibraryOperation(listLibrary);
+      case "library-save": return await serializeLibraryOperation(saveLibraryPreset);
+      case "library-delete": return await serializeLibraryOperation(deleteLibraryPreset);
       case "ping": return succeed({ action: "ping" });
       default: return fail(`Unsupported worker action '${request.action}'.`);
     }

@@ -1890,6 +1890,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
     const response = await callGMWorker("library-save", {
       recordId: asNew ? null : (loadedPreset?.id ?? null),
+      expectedRevision: asNew ? null : (loadedPreset?.revision ?? null),
       config: clone(cfg)
     });
     loadedPreset = clone(response.record);
@@ -1969,7 +1970,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
 
           button.disabled = true;
           try {
-            await callGMWorker("library-delete", { recordId: record.id });
+            await callGMWorker("library-delete", { recordId: record.id, expectedRevision: record.revision });
             row.remove();
             const index = records.findIndex((r) => r.id === record.id);
             if (index >= 0) records.splice(index, 1);

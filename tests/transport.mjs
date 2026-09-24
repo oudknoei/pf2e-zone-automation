@@ -46,6 +46,30 @@ test("player request reaches the module GM Worker without a world macro", async 
   assert.equal((await resultPromise).action, "ping");
 });
 
+test("a secondary GM routes shared-library requests to the active GM", async () => {
+  const otherGM = { id: "other-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  try {
+    game.user = otherGM;
+    const resultPromise = requestGMWorker({
+      protocol: 1, action: "library-list", requesterUserId: otherGM.id
+    });
+    const request = sent.shift();
+    assert.equal(request.kind, "request");
+    assert.equal(request.gmId, gm.id);
+    assert.equal(request.request.requesterUserId, otherGM.id);
+
+    await listener({
+      kind: "response", id: request.id, gmId: gm.id,
+      recipientUserId: otherGM.id, response: { ok: true, action: "library-list", records: [] }
+    }, gm.id);
+    assert.equal((await resultPromise).ok, true);
+  } finally {
+    users.delete(otherGM.id);
+    game.user = player;
+  }
+});
+
 test("GM rejects a forged requester id supplied in the socket payload", async () => {
   game.user = player;
   const resultPromise = requestGMWorker({ protocol: 1, action: "ping", requesterUserId: gm.id });

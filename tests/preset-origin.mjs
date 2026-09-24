@@ -35,8 +35,10 @@ test("player zones retain their saved preset link for later overwrite", async ()
     flags: { world: { pf2eZoneLibrary: { zones: { [record.id]: record } } } },
     pages: [page],
     getFlag(scope, key) { return this.flags?.[scope]?.[key]; },
-    async unsetFlag(scope, key) { delete this.flags[scope][key]; },
-    async setFlag(scope, key, value) { this.flags[scope][key] = value; }
+    async update(changes) {
+      const replacement = changes["flags.world.pf2eZoneLibrary"];
+      this.flags.world.pf2eZoneLibrary = structuredClone(replacement.value);
+    }
   };
   let createdData = null;
   let creations = 0;
@@ -62,6 +64,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
   try {
     Math.clamp = (value, min, max) => Math.min(max, Math.max(min, value));
     globalThis.foundry = { utils: {} };
+    globalThis._replace = (value) => ({ value });
     globalThis.CONST = { REGION_VISIBILITY: { ALWAYS: 2 } };
     globalThis.CONFIG = {
       Region: {
@@ -124,6 +127,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
       action: "library-save",
       requesterUserId: player.id,
       recordId: createdData.flags.world.pf2eZone.state.savedPresetId,
+      expectedRevision: record.revision,
       config: { ...config, name: "Revised Zone" }
     });
     assert.equal(saved.ok, true, saved.error);
