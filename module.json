@@ -8,7 +8,7 @@
                         "name":  "m.mestemaker"
                     }
                 ],
-    "version":  "0.1.16",
+    "version":  "0.1.17",
     "compatibility":  {
                           "minimum":  "14",
                           "verified":  "14"
@@ -54,7 +54,7 @@
                ],
     "url":  "https://github.com/oudknoei/pf2e-zone-automation",
     "manifest":  "https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module.json",
-    "download":  "https://github.com/oudknoei/pf2e-zone-automation/releases/download/v0.1.16/module.zip",
+    "download":  "https://github.com/oudknoei/pf2e-zone-automation/releases/download/v0.1.17/module.zip",
     "packs":  [
                   {
                       "name":  "zone-macros",

@@ -4,14 +4,15 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
+import { fixedAreaShape } from "./area-shape.js";
 /* GM-only actions adapted from PF2e Zone GM Worker v0.5.13. */
 
 /** Keeps privileged world changes behind one GM-only entry point so player requests remain constrained. */
 export async function handleWorkerRequest(request) {
   "use strict";
 
-  const WORKER_VERSION = "0.5.15";
-  const RUNTIME_VERSION = "0.5.15";
+  const WORKER_VERSION = "0.5.16";
+  const RUNTIME_VERSION = "0.5.16";
   const ZONE_COLOR_LIGHTEN = 0.1;
   const FLAG_SCOPE = "world";
   const FLAG_KEY = "pf2eZone";
@@ -89,8 +90,14 @@ export async function handleWorkerRequest(request) {
       const durationError = durationRoundsError(cfg.duration.rounds);
       if (durationError) throw new Error(durationError);
     }
+    if (cfg.areaShape != null && !["circle", "square"].includes(cfg.areaShape)) throw new Error("Area shape is invalid.");
     cfg.radius = Number(cfg.radius);
-    if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) throw new Error("Zone radius is invalid.");
+    if (cfg.mode === "area" && cfg.areaShape === "square") {
+      cfg.sideLength = Number(cfg.sideLength);
+      if (!Number.isFinite(cfg.sideLength) || cfg.sideLength <= 0 || cfg.sideLength > 1000) throw new Error("Square side length is invalid.");
+    } else if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) {
+      throw new Error("Zone radius is invalid.");
+    }
     if (!hasTargetSelection(cfg.targeting)) throw new Error("Select at least one target: Allies, Enemies, or Self (Source Actor).");
     if (!Array.isArray(cfg.effects)) throw new Error("Zone effect blocks are missing.");
     for (const [index, block] of cfg.effects.entries()) {
@@ -522,16 +529,9 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       }
       const distancePixels = Number(scene.dimensions?.distancePixels ?? (scene.grid?.size / scene.grid?.distance));
       if (!Number.isFinite(distancePixels) || distancePixels <= 0) throw new Error("Scene distance scale is unavailable.");
-      const radiusPixels = cfg.radius * distancePixels;
       const [created] = await scene.createEmbeddedDocuments("Region", [{
         ...regionData,
-        shapes: [{
-          type: "circle",
-          x: Number(center.x),
-          y: Number(center.y),
-          radius: radiusPixels,
-          gridBased: true
-        }]
+        shapes: [fixedAreaShape(cfg, center, distancePixels)]
       }]);
       region = created ?? null;
     }

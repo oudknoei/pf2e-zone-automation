@@ -89,7 +89,7 @@ test("player zones retain their saved preset link for later overwrite", async ()
       [sourceActor.uuid]: sourceActor
     })[uuid] ?? null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.15",
+      version: "0.5.16",
       installHooks() {},
       async activateRegion() {},
       async endZone(target) { endedRegion = target; }
@@ -197,6 +197,23 @@ test("player zones retain their saved preset link for later overwrite", async ()
     assert.equal(invalidDuration.ok, false);
     assert.match(invalidDuration.error, /Foundry does not recognize this duration formula/);
     assert.equal(creations, 1);
+
+    scene.dimensions = { distancePixels: 10 };
+    scene.createEmbeddedDocuments = async (_type, data) => {
+      createdData = data[0];
+      return [region];
+    };
+    const square = await handleWorkerRequest({
+      ...request,
+      savedPresetId: null,
+      config: { ...config, mode: "area", areaShape: "square", sideLength: 10 },
+      areaCenter: { x: 250, y: 350 }
+    });
+    assert.equal(square.ok, true, square.error);
+    assert.deepEqual(createdData.shapes, [{
+      type: "rectangle", x: 200, y: 300, width: 100, height: 100,
+      rotation: 0, gridBased: true
+    }]);
   } finally {
     if (priorClamp === undefined) delete Math.clamp;
     else Math.clamp = priorClamp;

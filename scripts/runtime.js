@@ -1,10 +1,11 @@
 import { highestClassOrSpellDc } from "./dc.js";
+import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.15";
+    const VERSION = "0.5.16";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -60,6 +61,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         deletingItems: new Set(),
         chatAlertBatches: new Set(),
         regionReconcileTimers: new Map(),
+        areaBoundaryBefore: new Map(),
+        areaBoundarySuppression: new Map(),
 
         /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
         isAuthority() {
@@ -969,8 +972,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Applies the complete configured result in one ordered path after a trigger or save is resolved. */
-        async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}) {
+        /** Applies results while letting continuous refreshes restore items without replaying limited rolls. */
+        async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}, { maintainedOnly = false } = {}) {
           const outcome = block.outcomes?.[outcomeKey];
           if (!outcome) return false;
           let affected = false;
@@ -981,10 +984,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const effect of outcome.effects ?? []) {
             affected = (await this.addEffectItem(region, payload, block, token, effect)) || affected;
           }
-          if (block.damage.enabled && Number(outcome.damageMultiplier) > 0) {
+          if (!maintainedOnly && block.damage.enabled && Number(outcome.damageMultiplier) > 0) {
             affected = (await this.postDamage(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
           }
-          if (block.healing?.enabled && Number(outcome.damageMultiplier) > 0) {
+          if (!maintainedOnly && block.healing?.enabled && Number(outcome.damageMultiplier) > 0) {
             affected = (await this.postHealing(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
           }
           // Chat alerts are emitted once per trigger event by processBlock(),
@@ -1039,9 +1042,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             return;
           }
           if (this.repeatBlocked(payload, token.uuid, block)) {
-            console.info("PF2e Zone trigger blocked: repeat policy", {
-              zone: payload.config.name, block: block.name, trigger, token: token.name, repeat: block.repeat
-            });
+            // Continuous effects still need to be restored after exit or manual
+            // removal. Repeat limits only gate new chat alerts, rolls, and saves.
+            if (continuous) {
+              await this.applyOutcome(region, payload, block, token, "noSave", batchId, resolvedEventContext, { maintainedOnly: true });
+            }
+            if (!continuous) {
+              console.info("PF2e Zone trigger blocked: repeat policy", {
+                zone: payload.config.name, block: block.name, trigger, token: token.name, repeat: block.repeat
+              });
+            }
             return;
           }
 
@@ -1246,6 +1256,46 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const token of eligibleTokens) {
             await this.processContinuousUnlocked(region, payload, token, batch, { count });
           }
+        },
+
+        /** Remembers the old footprint so a later Region update can find creatures crossed by a drag. */
+        captureAreaBoundary(region) {
+          if (this.readPayload(region)?.config?.mode !== "area") return;
+          this.areaBoundaryBefore.set(region.uuid, {
+            shapes: [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape)),
+            occupants: new Set(this.tokensInside(region).map((token) => token.uuid))
+          });
+        },
+
+        /** Prevents Foundry boundary events from applying a moved-area entry twice. */
+        suppressAreaBoundaryEntries(region, tokens) {
+          const prior = this.areaBoundarySuppression.get(region.uuid);
+          if (prior) clearTimeout(prior.timer);
+          const entry = { tokens: new Set([...(prior?.tokens ?? []), ...tokens.map((token) => token.uuid)]), timer: null };
+          entry.timer = setTimeout(() => {
+            if (this.areaBoundarySuppression.get(region.uuid) === entry) this.areaBoundarySuppression.delete(region.uuid);
+          }, 1000);
+          this.areaBoundarySuppression.set(region.uuid, entry);
+        },
+
+        /** Applies Entry to creatures reached anywhere along a fixed area drag. */
+        async processAreaBoundaryChange(region, before) {
+          if (!before || !this.isAuthority()) return;
+          const afterShapes = [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape));
+          const translation = translatedAreaShapes(before.shapes, afterShapes);
+          const affected = translation
+            ? [...(region.parent?.tokens ?? [])].filter((token) => sweptAreaIntersectsToken(translation, tokenBounds(token)))
+            : this.tokensInside(region).filter((token) => !before.occupants.has(token.uuid));
+          this.suppressAreaBoundaryEntries(region, affected);
+          if (!affected.length) return;
+          const batch = "areaMove:" + region.uuid + ":" + randomId();
+          await this.withState(region, async (payload) => {
+            if (payload.state.deactivated) return;
+            for (const token of affected) {
+              if (!(await this.eligible(payload, token))) continue;
+              await this.processTriggerUnlocked(region, payload, token, "enter", batch + ":" + token.uuid);
+            }
+          });
         },
 
         /** Coalesces rapid Foundry updates so occupancy reconciliation does not run repeatedly for one change. */
@@ -1958,6 +2008,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           for (const timer of this.regionReconcileTimers.values()) clearTimeout(timer);
           this.regionReconcileTimers.clear();
+          this.areaBoundaryBefore.clear();
+          for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);
+          this.areaBoundarySuppression.clear();
 
           if (registry.clickHandler) {
             document.removeEventListener("click", registry.clickHandler);
@@ -2044,18 +2097,34 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           });
 
+          on("preUpdateRegion", (region, changes) => {
+            if (!runtime.isAuthority()) return;
+            if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
+            runtime.captureAreaBoundary(region);
+          });
+
           on("updateRegion", (region, changes) => {
             if (!runtime.isAuthority()) return;
             if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
+            const before = runtime.areaBoundaryBefore.get(region.uuid);
+            runtime.areaBoundaryBefore.delete(region.uuid);
             if (!runtime.readPayload(region)) return;
 
-            // Dragging/resizing a fixed Area can emit transient tokenExit events
-            // before Foundry's Region membership has settled. Re-evaluate using
-            // current geometry after the document update completes.
+            // Foundry reports destination entry, but a dragged area can pass
+            // over a token that is outside again at the end of the move.
+            if (before) runtime.processAreaBoundaryChange(region, before)
+              .catch((e) => console.error("PF2e Zone area movement", e));
+
+            // Resizing can also emit transient exits. Reconcile maintained
+            // effects after membership has settled.
             runtime.scheduleRegionReconcile(region, 100);
           });
 
           on("deleteRegion", (region) => {
+            runtime.areaBoundaryBefore.delete(region.uuid);
+            const suppression = runtime.areaBoundarySuppression.get(region.uuid);
+            if (suppression) clearTimeout(suppression.timer);
+            runtime.areaBoundarySuppression.delete(region.uuid);
             if (!runtime.isAuthority() || runtime.endingZones.has(region.uuid)) return;
             const payload = runtime.readPayload(region);
             if (payload) {
@@ -2205,6 +2274,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               break;
             case "tokenEnter":
               if (!token) break;
+              // Boundary changes have no Token movement. The area-update sweep
+              // handles these entries once, including creatures along the path.
+              if (event?.data?.movement == null && (
+                this.areaBoundaryBefore.has(region.uuid) ||
+                this.areaBoundarySuppression.get(region.uuid)?.tokens.has(token.uuid)
+              )) break;
               await this.withState(region, async (payload) => {
                 if (!(await this.eligible(payload, token))) return;
                 const batch = `enter:${token.uuid}:${randomId()}`;

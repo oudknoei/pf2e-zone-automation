@@ -5,6 +5,7 @@ import { requestGMWorker } from "./transport.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
 import { hasTargetSelection, storedTargeting, targetLabels, targetingChoices } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
+import { fixedAreaShape } from "./area-shape.js";
 
 /*
  * PF2e Zone Automation - Player Builder / Runtime
@@ -20,9 +21,9 @@ import { pf2eFormulaError } from "./formula-validation.js";
 export async function openZoneBuilder() {
   "use strict";
 
-  const BUILDER_VERSION = "0.5.18";
-  const RUNTIME_VERSION = "0.5.15";
-  const SCHEMA_VERSION = 12;
+  const BUILDER_VERSION = "0.5.19";
+  const RUNTIME_VERSION = "0.5.16";
+  const SCHEMA_VERSION = 13;
   const ZONE_COLOR_LIGHTEN = 0.1;
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
@@ -210,12 +211,12 @@ export async function openZoneBuilder() {
   }
 
   /** Makes fixed-area placement explicit and safely restores canvas input after completion or cancellation. */
-  async function pickAreaCenter(name, radius) {
+  async function pickAreaCenter(name, description) {
     if (!canvas?.ready || !canvas.scene) throw new Error("An active Scene is required to place an area.");
     const canvasElement = canvas.app?.canvas ?? canvas.app?.view;
     if (!canvasElement) throw new Error("Foundry canvas element is unavailable.");
 
-    ui.notifications.info(`Click the center of the ${radius}-foot ${name} area. Press Escape to cancel.`);
+    ui.notifications.info(`Click the center of the ${description} ${name} area. Press Escape to cancel.`);
     const priorCursor = canvasElement.style.cursor;
     canvasElement.style.cursor = "crosshair";
 
@@ -498,7 +499,9 @@ export async function openZoneBuilder() {
       schemaVersion: SCHEMA_VERSION,
       name: "",
       mode: "emanation",
+      areaShape: "circle",
       radius: 15,
+      sideLength: 10,
       visibility: "all",
       targeting: {
         affects: "none",
@@ -567,7 +570,9 @@ export async function openZoneBuilder() {
       schemaVersion: SCHEMA_VERSION,
       name: String(cfg.name ?? base.name).trim(),
       mode: ["area", "emanation"].includes(cfg.mode) ? cfg.mode : base.mode,
+      areaShape: cfg.areaShape === "square" ? "square" : "circle",
       radius: Math.max(1, Number(cfg.radius) || base.radius),
+      sideLength: cfg.sideLength == null ? base.sideLength : Number(cfg.sideLength),
       visibility: ["all", "creator"].includes(importedVisibility) ? importedVisibility : base.visibility,
       targeting: {
         affects: ["enemies", "allies", "both", "none"].includes(cfg.targeting?.affects)
@@ -1077,11 +1082,20 @@ export async function openZoneBuilder() {
               <label>Zone type
                 <select data-zone="mode">
                   <option value="emanation" ${state.mode === "emanation" ? "selected" : ""}>Emanation — follows source token</option>
-                  <option value="area" ${state.mode === "area" ? "selected" : ""}>Area — fixed circular burst</option>
+                  <option value="area" ${state.mode === "area" ? "selected" : ""}>Area — placed on the Scene</option>
                 </select>
               </label>
-              <label>Radius (feet)
+              <label class="zb-area-shape">Area shape
+                <select data-zone="area-shape">
+                  <option value="circle" ${state.areaShape === "circle" ? "selected" : ""}>Circle</option>
+                  <option value="square" ${state.areaShape === "square" ? "selected" : ""}>Square</option>
+                </select>
+              </label>
+              <label class="zb-area-radius">Radius (feet)
                 <input data-zone="radius" type="number" min="1" step="5" value="${state.radius}">
+              </label>
+              <label class="zb-area-side-length">Side length (feet)
+                <input data-zone="side-length" type="number" min="1" step="5" value="${state.sideLength}">
               </label>
               <label>Visibility
                 <select data-zone="visibility">
@@ -1210,7 +1224,9 @@ export async function openZoneBuilder() {
       schemaVersion: SCHEMA_VERSION,
       name: field(root, '[data-zone="name"]').value.trim(),
       mode: field(root, '[data-zone="mode"]').value,
+      areaShape: field(root, '[data-zone="area-shape"]').value,
       radius: Number(field(root, '[data-zone="radius"]').value),
+      sideLength: Number(field(root, '[data-zone="side-length"]').value),
       visibility: field(root, '[data-zone="visibility"]').value,
       targeting: storedTargeting({
         allies: field(root, '[data-zone="affects-allies"]').checked,
@@ -1325,7 +1341,11 @@ export async function openZoneBuilder() {
       error("The controlled token has changed. Click 'Use Current Selection' before continuing.", { scope: "source" });
     }
     if (!cfg.name) error("Zone name is required.", { scope: "zone", field: "name" });
-    if (!(cfg.radius > 0)) error("Radius must be greater than 0.", { scope: "zone", field: "radius" });
+    if (cfg.mode !== "area" || cfg.areaShape === "circle") {
+      if (!(cfg.radius > 0)) error("Radius must be greater than 0.", { scope: "zone", field: "radius" });
+    } else if (!(cfg.sideLength > 0)) {
+      error("Side length must be greater than 0.", { scope: "zone", field: "side-length" });
+    }
     if (!hasTargetSelection(cfg.targeting)) error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
     if (cfg.duration?.type === "custom-rounds") {
       const durationError = durationRoundsError(cfg.duration.rounds);
@@ -1518,6 +1538,11 @@ export async function openZoneBuilder() {
 
   /** Hides controls that cannot affect the current configuration so the editor stays approachable. */
   function refreshVisibility(root) {
+    const mode = field(root, '[data-zone="mode"]').value;
+    const areaShape = field(root, '[data-zone="area-shape"]').value;
+    field(root, ".zb-area-shape").style.display = mode === "area" ? "flex" : "none";
+    field(root, ".zb-area-radius").style.display = mode !== "area" || areaShape === "circle" ? "flex" : "none";
+    field(root, ".zb-area-side-length").style.display = mode === "area" && areaShape === "square" ? "flex" : "none";
     const durationType = field(root, '[data-zone="duration-type"]').value;
     field(root, ".zb-duration-rounds").style.display = durationType === "custom-rounds" ? "flex" : "none";
 
@@ -1774,7 +1799,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
     if (!game.user.isGM) {
       let areaCenter = null;
       if (cfg.mode === "area") {
-        areaCenter = await pickAreaCenter(cfg.name, cfg.radius);
+        const dimensions = cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot circle`;
+        areaCenter = await pickAreaCenter(cfg.name, dimensions);
         if (!areaCenter) return null;
       }
 
@@ -1824,17 +1850,11 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       }
       region = await RegionDocument.createTokenEmanation(sourceToken.document, cfg.radius, regionData);
     } else {
-      ui.notifications.info(`Place the ${cfg.radius}-foot ${cfg.name} area on the Scene.`);
+      ui.notifications.info(`Place the ${cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot circle`} ${cfg.name} area on the Scene.`);
       region = await canvas.regions.placeRegion({
         ...regionData,
-        shapes: [{
-          type: "circle",
-          x: 0,
-          y: 0,
-          radius: cfg.radius * canvas.dimensions.distancePixels,
-          gridBased: true
-        }]
-      });
+        shapes: [fixedAreaShape(cfg, { x: 0, y: 0 }, canvas.dimensions.distancePixels)]
+      }, { allowRotation: false });
     }
 
     if (!region) return null;
@@ -1993,7 +2013,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       const cfg = payload?.config ?? {};
       const canEnd = await canCurrentUserDismiss(payload);
       zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
-        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(titleCase(cfg.mode))} · ${esc(cfg.radius)} ft · ${esc(titleCase(cfg.duration?.type))}</div></div>
+        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}</div></div>
         ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> Dismiss</button>` : `<span></span>`}
       </div>`);
     }
@@ -2101,7 +2121,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       <div class="pf2e-zone-preview">
         <h3>${esc(cfg.name)}</h3>
         <p><b>Source:</b> ${esc(sourceActor.name)} (${esc(sourceToken.name)})<br>
-        <b>Zone:</b> ${esc(titleCase(cfg.mode))}, ${cfg.radius}-foot radius<br>
+        <b>Zone:</b> ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot radius ${cfg.mode === "emanation" ? "emanation" : "circle"}`)}<br>
         <b>Targets:</b> ${esc(targetLabels(cfg.targeting).join(", "))}<br>
         <b>Traits:</b> ${cfg.traits.length ? cfg.traits.map(esc).join(", ") : "None"}<br>
         <b>Visibility:</b> ${cfg.visibility === "creator" ? "Creator only" : "Everyone"}<br>
@@ -2211,7 +2231,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         return;
       }
 
-      if (target.matches('[data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+      if (target.matches('[data-zone="mode"], [data-zone="area-shape"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
       refreshLiveValidation(root);

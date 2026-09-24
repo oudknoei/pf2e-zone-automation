@@ -1,10 +1,10 @@
 # PF2e Zone Automation
 
-PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition spells, hazards, and abilities with circular areas of effect. Build an emanation that follows its source token or a fixed circular area, then let the module manage the configured effects as creatures enter, leave, or remain in the zone.
+PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition spells, hazards, and abilities with areas of effect. Build an emanation that follows its source token or a fixed circular or square area, then let the module manage the configured effects as creatures enter, leave, or remain in the zone.
 
 ## Features
 
-- Create token-following emanations and fixed circular areas.
+- Create token-following emanations and fixed circular or square areas. Drag a fixed area to apply Entry effects to creatures it crosses, including those outside its final position.
 - Configure one or more Effect Blocks for each zone.
 - Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, or when a watched trait is used.
 - Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
@@ -45,8 +45,8 @@ A player can create a zone only from an Actor they own. An active GM must be con
 ### Set up the zone
 
 1. Give the zone a clear name. A name is required.
-2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle placed on the Scene after selecting **Create Zone**.
-3. Enter the radius in feet, then check any combination of **Allies**, **Enemies**, and **Self (Source Actor)**. Select at least one. Older saved zones open with the equivalent boxes checked.
+2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle or square placed on the Scene after selecting **Create Zone**. For an Area, choose its shape.
+3. Enter the radius for an emanation or circle, or the full side length for a square (for example, **10 feet** for a 10-foot square). Check any combination of **Allies**, **Enemies**, and **Self (Source Actor)**. Select at least one. Older saved zones still open as circles with the equivalent target boxes checked.
 4. Choose **Visible to everyone** or **Creator only**, then add any applicable traits. Creator-only zones and their module chat alerts are visible to the creator; Foundry GMs retain their normal access. Traits begin unchecked.
 5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`, or choose **Unlimited** for a zone that remains until ended. Foundry checks the formula syntax before creation. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. The source owner can always dismiss a zone early from **Manage Existing Zones**.
 
@@ -61,7 +61,7 @@ Choose one or more plain-language trigger choices:
 | Trigger | Use it when... |
 | --- | --- |
 | **When the zone is created** | Eligible creatures already inside should be affected immediately. |
-| **When a creature enters after creation** | A creature should be affected only when it crosses into the zone later. |
+| **When a creature enters after creation** | A creature should be affected when it moves into the zone, or when a manually moved fixed area crosses its space. Each moved area applies this trigger once per affected creature along that drag, subject to the chosen repeat setting. |
 | **At the start of a creature's turn** | The effect belongs at the beginning of an affected creature's turn. |
 | **At the end of a creature's turn** | The effect belongs at the end of an affected creature's turn. |
 | **At the start of the source's turn** | The source's combat turn controls the effect, even when the source is outside a fixed area. |
@@ -69,9 +69,11 @@ Choose one or more plain-language trigger choices:
 | **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself. |
 | **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
 
+For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), use a 10-foot **Square** with two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.
+
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
 
-Then choose how often each creature can be affected: every time the event happens, once each round, or once for the zone's lifetime. New Effect Blocks default to **Once each round**.
+Then choose how often the block can trigger: every time the event happens, once each round, or once for the zone's lifetime. New Effect Blocks default to **Once each round**. For **While a creature is inside**, ongoing Conditions and Effect Items are restored as needed after re-entry; this choice still limits new chat alerts, damage, and healing.
 
 ### Define the result
 
@@ -97,7 +99,7 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 
 1. Select **Validate** to check the configuration.
 2. Select **Post Preview to Chat** to validate and send a readable summary privately to yourself without creating a Region.
-3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center.
+3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center. A GM can later drag the Region; Entry effects apply along the straight path between its old and new positions. Resizing applies Entry only to newly covered creatures.
 4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place.
 
 As you edit, the footer shows **Ready to create** when the configuration has no blocking errors. It also reports **GM connected** for a GM, **Player creation available** when a player can reach an active GM, or **Source token changed** when you need to update the controlled source. Invalid fields receive an inline explanation; warnings remain visible in the validation and preview views but do not prevent creation.
