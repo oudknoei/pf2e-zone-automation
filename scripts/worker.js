@@ -1,6 +1,7 @@
 import { durationRoundsError, resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { combatDurationDeadline } from "./duration-clock.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
@@ -477,7 +478,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         combatId: combat?.id ?? null,
         sourceCombatantId: sourceCombatant?.id ?? null,
         sourceTurnsElapsed: 0,
-        lastSourceTurnKey: currentTurnKey
+        lastSourceTurnKey: currentTurnKey,
+        ...combatDurationDeadline(combat, sourceCombatant, rounds)
       } : {}
     };
   }

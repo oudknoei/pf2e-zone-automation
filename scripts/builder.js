@@ -1,4 +1,5 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { combatDurationDeadline } from "./duration-clock.js";
 import { durationRoundsError, parseDurationRounds, resolveDurationRounds } from "./duration.js";
 import { editableDurationRounds, editableZoneSize } from "./config-input.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
@@ -1740,7 +1741,8 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         combatId: combat?.id ?? null,
         sourceCombatantId: sourceCombatant?.id ?? null,
         sourceTurnsElapsed: 0,
-        lastSourceTurnKey: currentTurnKey
+        lastSourceTurnKey: currentTurnKey,
+        ...combatDurationDeadline(combat, sourceCombatant, rounds)
       } : {}
     };
   }

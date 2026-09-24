@@ -1,4 +1,5 @@
 import { highestClassOrSpellDc } from "./dc.js";
+import { combatDurationDeadline } from "./duration-clock.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
@@ -93,6 +94,24 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.state.duration ??= {};
           payload.state.lastSourceTriggerTurnKey ??= null;
           return payload;
+        },
+
+        /** Ignores disabled or hidden Region behaviors even if an older flag was never updated. */
+        isRuntimeBehaviorActive(region) {
+          if (region?.hidden) return false;
+          if (!region?.behaviors) return true;
+          const behaviors = Array.from(region.behaviors.contents ?? region.behaviors);
+          return behaviors.some((behavior) => {
+            const source = String(behavior?.system?.source ?? "");
+            const belongsToModule = behavior?.name === "PF2e Zone Runtime"
+              || (source.includes("pf2e-zone-automation") && source.includes("handleRegionEvent"));
+            return belongsToModule && !behavior.disabled;
+          });
+        },
+
+        /** Makes the persisted deactivation flag authoritative for every event source. */
+        isOperational(region, payload = this.readPayload(region)) {
+          return Boolean(payload && !payload.state?.deactivated && this.isRuntimeBehaviorActive(region));
         },
 
         /** Avoids persisting cleanup state to a Region that was deleted during an asynchronous action. */
@@ -198,8 +217,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Limits scans to Regions created by this module instead of inspecting unrelated Scene automation. */
         allZones() {
-          return game.scenes.contents.flatMap((scene) =>
-            [...scene.regions].filter((region) => Boolean(region.getFlag(FLAG_SCOPE, FLAG_KEY)))
+          const scenes = game.scenes?.contents ?? game.scenes ?? [];
+          return Array.from(scenes).flatMap((scene) =>
+            Array.from(scene.regions?.values?.() ?? scene.regions ?? [])
+              .filter((region) => Boolean(region?.getFlag?.(FLAG_SCOPE, FLAG_KEY)))
           );
         },
 
@@ -225,6 +246,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           }
           return inside;
+        },
+
+        /** Checks current geometry because a save may resolve after its target has left. */
+        isTokenInside(region, tokenUuid) {
+          return this.tokensInside(region).some((candidate) => candidate.uuid === tokenUuid);
         },
 
         /** Resolves the stored source only when needed so a deleted source does not invalidate unrelated cleanup. */
@@ -977,12 +1003,19 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const outcome = block.outcomes?.[outcomeKey];
           if (!outcome) return false;
           let affected = false;
+          let exitBoundAffected = false;
 
           for (const condition of outcome.conditions ?? []) {
-            affected = (await this.addCondition(region, payload, block, token, condition)) || affected;
+            if (condition.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
+            const applied = await this.addCondition(region, payload, block, token, condition);
+            if (condition.removal === "on-exit") exitBoundAffected = applied || exitBoundAffected;
+            else affected = applied || affected;
           }
           for (const effect of outcome.effects ?? []) {
-            affected = (await this.addEffectItem(region, payload, block, token, effect)) || affected;
+            if (effect.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
+            const applied = await this.addEffectItem(region, payload, block, token, effect);
+            if (effect.removal === "on-exit") exitBoundAffected = applied || exitBoundAffected;
+            else affected = applied || affected;
           }
           if (!maintainedOnly && block.damage.enabled && Number(outcome.damageMultiplier) > 0) {
             affected = (await this.postDamage(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
@@ -990,6 +1023,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!maintainedOnly && block.healing?.enabled && Number(outcome.damageMultiplier) > 0) {
             affected = (await this.postHealing(region, payload, block, token, outcomeKey, outcome.damageMultiplier, batchId)) || affected;
           }
+          // Item creation and rolls can await Foundry while the token moves.
+          // Exit-bound items no longer count as an effect if they are removed.
+          if (this.isTokenInside(region, token.uuid)) affected = exitBoundAffected || affected;
+          else await this.cleanupTokenOnExitUnlocked(payload, token.uuid);
           // Chat alerts are emitted once per trigger event by processBlock(),
           // independently of whether this outcome affects one or many targets.
           return affected;
@@ -1151,7 +1188,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!this.tokensInside(region).some((candidate) => candidate.uuid === token.uuid)) return;
 
           await this.withState(region, async (payload) => {
-            if (payload.state?.deactivated) return;
+            if (!this.isOperational(region, payload)) return;
             if (!(payload.config.effects ?? []).some((block) => block.triggers?.turnStart)) return;
             await this.processTurnStartUnlocked(region, payload, token, "combatTurnStart");
           });
@@ -1222,6 +1259,27 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.state.deactivated = true;
         },
 
+        /** Saves deactivation before deleting owned effects so later events see an inactive zone. */
+        async deactivateRegion(region) {
+          await this.withState(region, (payload) => {
+            payload.state.deactivated = true;
+            payload.state.pendingSaves = {};
+            payload.state.recoveryWatchers = {};
+          });
+          await this.withState(region, async (payload) => {
+            // A rapid reactivation may have queued between these writes.
+            if (payload.state.deactivated) await this.cleanupZoneUnlocked(payload);
+          });
+        },
+
+        /** Repairs disabled zones created before deactivation was persisted. */
+        async reconcileDisabledZones() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            if (!this.isRuntimeBehaviorActive(region)) await this.deactivateRegion(region);
+          }
+        },
+
         /** Finishes cleanup when Foundry deletes a Region outside the normal end-zone path. */
         async cleanupDeletedRegion(region, payload) {
           const records = Object.entries(payload?.state?.applied ?? {})
@@ -1260,7 +1318,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Remembers the old footprint so a later Region update can find creatures crossed by a drag. */
         captureAreaBoundary(region) {
-          if (this.readPayload(region)?.config?.mode !== "area") return;
+          const payload = this.readPayload(region);
+          if (!this.isOperational(region, payload) || payload.config?.mode !== "area") return;
           this.areaBoundaryBefore.set(region.uuid, {
             shapes: [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape)),
             occupants: new Set(this.tokensInside(region).map((token) => token.uuid))
@@ -1290,7 +1349,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!affected.length) return;
           const batch = "areaMove:" + region.uuid + ":" + randomId();
           await this.withState(region, async (payload) => {
-            if (payload.state.deactivated) return;
+            if (!this.isOperational(region, payload)) return;
             for (const token of affected) {
               if (!(await this.eligible(payload, token))) continue;
               await this.processTriggerUnlocked(region, payload, token, "enter", batch + ":" + token.uuid);
@@ -1314,7 +1373,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!liveRegion) return;
             try {
               await this.withState(liveRegion, async (payload) => {
-                if (payload.state?.deactivated) return;
+                if (!this.isOperational(liveRegion, payload)) return;
                 await this.reconcileContinuousUnlocked(liveRegion, payload);
               });
             } catch (error) {
@@ -1360,7 +1419,15 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Initializes a newly created Region before delayed hooks can process its occupants. */
         async activateRegion(region) {
-          if (!this.isAuthority()) return;
+          if (!this.isAuthority() || !this.isRuntimeBehaviorActive(region)) return;
+
+          // A behavior may be re-enabled after its old deadline passed. Check
+          // expiration before maintained effects are applied again.
+          if (this.readPayload(region)?.state?.deactivated) {
+            await this.withState(region, (payload) => { payload.state.deactivated = false; });
+            await this.checkSourceAndDuration(region);
+            if (!this.isLiveRegion(region)) return;
+          }
 
           // Foundry can finish Region membership asynchronously after the Region
           // document itself exists. Keep an activation grace window open so the
@@ -1405,7 +1472,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (!region?.parent || !this.isAuthority()) return;
               try {
                 await this.withState(region, async (payload) => {
-                  if (payload.state.activationProcessed) return;
+                  if (!this.isOperational(region, payload) || payload.state.activationProcessed) return;
 
                   // Final sweep after Region membership has had time to settle.
                   const batchSeed = randomId();
@@ -1425,11 +1492,23 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Ends a zone when its source disappears or its stored duration expires. */
+        /** Resolves the source against the current roster so a removed combatant cannot hold a stale turn clock. */
+        combatantForSource(combat, sourceToken, sourceActor, recordedId) {
+          const roster = Array.isArray(combat?.turns) && combat.turns.length
+            ? combat.turns
+            : Array.from(combat?.combatants?.contents ?? combat?.combatants ?? []);
+          return roster.find((entry) => entry.token?.uuid === sourceToken?.uuid)
+            ?? roster.find((entry) => entry.id === recordedId && (!sourceActor || entry.actor?.uuid === sourceActor.uuid))
+            ?? roster.find((entry) => entry.actor?.uuid === sourceActor?.uuid)
+            ?? null;
+        },
+
+        /** Ends a finite zone at its stored combat deadline even when intermediate turn hooks were missed. */
         async checkSourceAndDuration(region) {
           if (!this.isAuthority()) return;
           let shouldEnd = false;
           await this.withState(region, async (payload) => {
+            if (!this.isOperational(region, payload)) return;
             this.syncImmunityCombatClock(payload);
             const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
             if (payload.config.mode === "emanation" && (!sourceToken || !sourceActor)) {
@@ -1437,38 +1516,78 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               return;
             }
 
-            // Formula durations are resolved once when the Region is created.
-            // Use the persisted total so reconnects and other clients never reroll it.
+            // Formula durations are resolved once at creation and never rolled again.
             const rounds = this.durationRounds(payload.config, payload.state);
             if (!rounds) return;
             const d = payload.state.duration;
             d.rounds ??= rounds;
-            d.worldExpires ??= Number(payload.state.createdWorldTime ?? nowWorld()) + rounds * 6;
+            if (!Number.isFinite(d.worldExpires)) {
+              d.worldExpires = Number(payload.state.createdWorldTime ?? nowWorld()) + rounds * 6;
+            }
+            const worldExpired = nowWorld() >= d.worldExpires;
 
             const combat = game.combat;
-            if (combat) {
-              const sourceCombatant = sourceActor?.combatant ?? null;
-              if (sourceCombatant) {
-                d.combatId = combat.id;
-                d.sourceCombatantId = sourceCombatant.id;
+            if (!combat?.id) {
+              shouldEnd = worldExpired;
+              return;
+            }
+
+            const sourceCombatant = this.combatantForSource(combat, sourceToken, sourceActor, d.sourceCombatantId);
+            const currentRound = Number(combat.round ?? 0);
+
+            if (d.combatId !== combat.id) {
+              // A new encounter cannot reuse the old encounter's round number.
+              // Preserve the lesser of the remaining world time and the last
+              // observed combat progress rather than restarting the duration.
+              if (worldExpired) {
+                shouldEnd = true;
+                return;
+              }
+              const worldRemaining = Math.ceil((d.worldExpires - nowWorld()) / 6);
+              const combatRemaining = Number.isSafeInteger(d.combatExpiresAtRound)
+                && Number.isSafeInteger(d.lastObservedRound)
+                ? Math.max(0, d.combatExpiresAtRound - d.lastObservedRound)
+                : Math.max(0, rounds - Number(d.sourceTurnsElapsed ?? 0));
+              const remaining = Math.min(worldRemaining, combatRemaining);
+              if (remaining <= 0) {
+                shouldEnd = true;
+                return;
+              }
+              Object.assign(d, combatDurationDeadline(combat, sourceCombatant, remaining));
+            } else if (!Number.isSafeInteger(d.combatExpiresAtRound)) {
+              // Older zones have no deadline. Recover it from their last
+              // observed source turn when possible, then persist the result.
+              const turnKey = String(d.lastSourceTurnKey ?? "");
+              const parts = turnKey.startsWith(`${combat.id}:`) ? turnKey.split(":") : [];
+              const lastRound = Number(parts.at(-3));
+              const elapsed = Math.max(0, Number(d.sourceTurnsElapsed ?? 0));
+              if (parts.length >= 4 && Number.isSafeInteger(lastRound)) {
+                d.combatExpiresAtRound = lastRound + Math.max(0, rounds - elapsed);
+                d.lastObservedRound ??= lastRound;
+              } else {
+                Object.assign(d, combatDurationDeadline(combat, sourceCombatant, Math.max(1, rounds - elapsed)));
               }
             }
 
-            if (combat?.id && d.combatId === combat.id && d.sourceCombatantId) {
-              const active = combat.combatant;
-              if (active?.id === d.sourceCombatantId) {
-                const turnKey = `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`;
-                if (turnKey !== d.lastSourceTurnKey) {
-                  d.lastSourceTurnKey = turnKey;
-                  d.sourceTurnsElapsed = Number(d.sourceTurnsElapsed ?? 0) + 1;
-                }
-                if (Number(d.sourceTurnsElapsed ?? 0) >= rounds) shouldEnd = true;
-              }
-            } else if (nowWorld() >= Number(d.worldExpires ?? Infinity)) {
+            d.sourceCombatantId = sourceCombatant?.id ?? null;
+            d.lastObservedRound = Math.max(Number(d.lastObservedRound ?? currentRound), currentRound);
+            const deadline = d.combatExpiresAtRound;
+
+            if (currentRound > deadline) {
+              shouldEnd = true;
+            } else if (currentRound === deadline) {
+              const sourceTurn = Array.isArray(combat.turns)
+                ? combat.turns.findIndex((entry) => entry.id === sourceCombatant?.id)
+                : -1;
+              shouldEnd = !sourceCombatant
+                || (sourceTurn >= 0 && Number(combat.turn ?? -1) >= sourceTurn)
+                || combat.combatant?.id === sourceCombatant.id;
+            } else if (!sourceCombatant && worldExpired) {
+              // Without a source turn, either elapsed clock may end the zone.
               shouldEnd = true;
             }
           });
-          if (shouldEnd) await this.endZone(region, "duration/source");
+          if (shouldEnd && this.isOperational(region)) await this.endZone(region, "duration/source");
         },
 
         /** Lets world-time and combat changes reevaluate every active finite zone. */
@@ -1482,7 +1601,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!this.isAuthority() || !this.isLiveRegion(region)) return;
 
           await this.withState(region, async (payload) => {
-            if (payload.state?.deactivated) return;
+            if (!this.isOperational(region, payload)) return;
             if (!(payload.config.effects ?? []).some((block) => block.triggers?.sourceTurnStart)) return;
 
             const combat = game.combat;
@@ -1577,6 +1696,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               return;
             }
 
+            if (!this.isOperational(region, payload)) return;
             const pending = payload.state.pendingSaves[pendingId];
             if (!pending || pending.identifier !== identifier) return;
 
@@ -1700,6 +1820,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           for (const region of this.allZones()) {
             await this.withState(region, async (payload) => {
+              if (!this.isOperational(region, payload)) return;
               for (const [key, watcher] of Object.entries(payload.state.recoveryWatchers)) {
                 if (watcher.actorUuid !== actor.uuid) continue;
                 const remaining = actor.conditions?.bySlug?.(watcher.condition, { active: true }) ?? [];
@@ -1938,7 +2059,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           const candidateZones = this.allZones().filter((region) => {
             const payload = this.readPayload(region);
-            return payload && !payload.state?.deactivated
+            return this.isOperational(region, payload)
               && (payload.config.effects ?? []).some((block) => block.triggers?.traitUse || block.triggers?.spellCast);
           });
           if (!candidateZones.length) return;
@@ -1952,7 +2073,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!inside) continue;
 
             await this.withState(region, async (payload) => {
-              if (payload.state?.deactivated) return;
+              if (!this.isOperational(region, payload)) return;
 
               for (const block of payload.config.effects ?? []) {
                 const trait = block.triggers?.traitUse
@@ -1993,8 +2114,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async reconcileAllLinkedConditions() {
           if (!this.isAuthority()) return;
           const actors = new Set(game.actors.contents);
-          for (const scene of game.scenes) {
-            for (const token of scene.tokens) if (token.actor) actors.add(token.actor);
+          for (const scene of game.scenes?.contents ?? game.scenes ?? []) {
+            for (const token of scene.tokens ?? []) if (token.actor) actors.add(token.actor);
           }
           for (const actor of actors) {
             if (actor.items.some((i) => this.zoneItemFlag(i)?.removal === "condition-end")) {
@@ -2093,6 +2214,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               console.error("PF2e Zone combat hook", e);
             }
           });
+          // Combatant and encounter lifecycle changes can replace the source clock without an updateCombat hook.
+          for (const hookName of ["createCombatant", "updateCombatant", "deleteCombatant", "createCombat", "deleteCombat"]) {
+            on(hookName, () =>
+              runtime.checkAllDurations().catch((e) => console.error("PF2e Zone combat roster hook", e))
+            );
+          }
           on("updateWorldTime", () =>
             runtime.checkAllDurations().catch((e) => console.error("PF2e Zone world-time hook", e))
           );
@@ -2118,7 +2245,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
             const before = runtime.areaBoundaryBefore.get(region.uuid);
             runtime.areaBoundaryBefore.delete(region.uuid);
-            if (!runtime.readPayload(region)) return;
+            if (!runtime.isOperational(region)) return;
 
             // Foundry reports destination entry, but a dragged area can pass
             // over a token that is outside again at the end of the move.
@@ -2156,7 +2283,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const region = game.scenes.get(sceneId)?.regions.get(regionId);
             const payload = region ? runtime.readPayload(region) : null;
             const pending = payload?.state?.pendingSaves?.[pendingId];
-            if (!region || !payload || !pending) {
+            if (!region || !runtime.isOperational(region, payload) || !pending) {
               ui.notifications.warn("This PF2e Zone save request is no longer active.");
               return;
             }
@@ -2206,7 +2333,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                     const liveRegion = region.parent?.regions?.get?.(region.id);
                     const fresh = liveRegion ? runtime.readPayload(liveRegion) : null;
                     const stillPending = fresh?.state?.pendingSaves?.[pending.id];
-                    if (!stillPending || stillPending.identifier !== pending.identifier) return;
+                    if (!runtime.isOperational(liveRegion, fresh) || !stillPending || stillPending.identifier !== pending.identifier) return;
 
                     await runtime.resolvePendingSave(
                       liveRegion,
@@ -2243,6 +2370,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             this.reconcileAllLinkedConditions()
               .catch((e) => console.error("PF2e Zone initial condition reconcile", e)), 0
           );
+
+          // Recover disabled behavior state and overdue zones after a GM reconnect.
+          setTimeout(async () => {
+            try {
+              await this.reconcileDisabledZones();
+              await this.checkAllDurations();
+            } catch (error) {
+              console.error("PF2e Zone initial zone reconcile", error);
+            }
+          }, 0);
         },
 
         /** Receives Region behavior events through the module API so existing zones use updated runtime code. */
@@ -2250,6 +2387,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.installHooks();
           if (!this.isAuthority() || !region) return;
           const name = event?.name;
+          if (!["behaviorActivated", "behaviorViewed", "behaviorDeactivated"].includes(name)
+            && !this.isOperational(region)) return;
           const token = event?.data?.token ?? null;
 
           if (name === "tokenEnter" || name === "tokenExit") {
@@ -2277,10 +2416,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               // removing it. Do not write flags back into a Region whose
               // embedded behavior collection is already being torn down.
               if (this.endingZones.has(region.uuid)) break;
-              {
-                const payload = this.readPayload(region);
-                if (payload) await this.cleanupZoneUnlocked(payload);
-              }
+              await this.deactivateRegion(region);
               break;
             case "tokenEnter":
               if (!token) break;
@@ -2291,7 +2427,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 this.areaBoundarySuppression.get(region.uuid)?.tokens.has(token.uuid)
               )) break;
               await this.withState(region, async (payload) => {
-                if (!(await this.eligible(payload, token))) return;
+                if (!this.isOperational(region, payload) || !(await this.eligible(payload, token))) return;
                 const batch = `enter:${token.uuid}:${randomId()}`;
                 const initialKey = stateKey("initial", token.uuid);
                 const isInitialOccupant =
@@ -2330,13 +2466,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             case "tokenTurnStart":
               if (!token) break;
               await this.withState(region, async (payload) => {
+                if (!this.isOperational(region, payload)) return;
                 await this.processTurnStartUnlocked(region, payload, token, "regionTurnStart");
               });
               break;
             case "tokenTurnEnd":
               if (!token) break;
               await this.withState(region, async (payload) => {
-                if (!(await this.eligible(payload, token))) return;
+                if (!this.isOperational(region, payload) || !(await this.eligible(payload, token))) return;
                 await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp()}:${randomId()}`);
               });
               break;
