@@ -5,7 +5,7 @@ import { requestGMWorker } from "./transport.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
 import { hasTargetSelection, storedTargeting, targetLabels, targetingChoices } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
-import { fixedAreaShape } from "./area-shape.js";
+import { fixedAreaShape, zoneTypeChoice, zoneTypeFields } from "./area-shape.js";
 
 /*
  * PF2e Zone Automation - Player Builder / Runtime
@@ -1045,6 +1045,7 @@ export async function openZoneBuilder() {
     const commonSet = new Set(COMMON_TRAITS);
     const customTraits = state.traits.filter((t) => !commonSet.has(t)).join(", ");
     const targetChoices = targetingChoices(state.targeting);
+    const selectedZoneType = zoneTypeChoice(state);
     const selectionWarning = selectionStillMatchesSource()
       ? ""
       : `<div class="zb-warning"><i class="fa-solid fa-triangle-exclamation"></i> The controlled token has changed since this builder was opened. Click <b>Use Current Selection</b> before previewing or creating a zone.</div>`;
@@ -1081,14 +1082,9 @@ export async function openZoneBuilder() {
               </label>
               <label>Zone type
                 <select data-zone="mode">
-                  <option value="emanation" ${state.mode === "emanation" ? "selected" : ""}>Emanation — follows source token</option>
-                  <option value="area" ${state.mode === "area" ? "selected" : ""}>Area — placed on the Scene</option>
-                </select>
-              </label>
-              <label class="zb-area-shape">Area shape
-                <select data-zone="area-shape">
-                  <option value="circle" ${state.areaShape === "circle" ? "selected" : ""}>Circle</option>
-                  <option value="square" ${state.areaShape === "square" ? "selected" : ""}>Square</option>
+                  <option value="emanation" ${selectedZoneType === "emanation" ? "selected" : ""}>Emanation — follows source token</option>
+                  <option value="area-circle" ${selectedZoneType === "area-circle" ? "selected" : ""}>Area - Circle — placed on the Scene</option>
+                  <option value="area-square" ${selectedZoneType === "area-square" ? "selected" : ""}>Area - Square — placed on the Scene</option>
                 </select>
               </label>
               <label class="zb-area-radius">Radius (feet)
@@ -1223,8 +1219,7 @@ export async function openZoneBuilder() {
     const cfg = {
       schemaVersion: SCHEMA_VERSION,
       name: field(root, '[data-zone="name"]').value.trim(),
-      mode: field(root, '[data-zone="mode"]').value,
-      areaShape: field(root, '[data-zone="area-shape"]').value,
+      ...zoneTypeFields(field(root, '[data-zone="mode"]').value),
       radius: Number(field(root, '[data-zone="radius"]').value),
       sideLength: Number(field(root, '[data-zone="side-length"]').value),
       visibility: field(root, '[data-zone="visibility"]').value,
@@ -1538,9 +1533,7 @@ export async function openZoneBuilder() {
 
   /** Hides controls that cannot affect the current configuration so the editor stays approachable. */
   function refreshVisibility(root) {
-    const mode = field(root, '[data-zone="mode"]').value;
-    const areaShape = field(root, '[data-zone="area-shape"]').value;
-    field(root, ".zb-area-shape").style.display = mode === "area" ? "flex" : "none";
+    const { mode, areaShape } = zoneTypeFields(field(root, '[data-zone="mode"]').value);
     field(root, ".zb-area-radius").style.display = mode !== "area" || areaShape === "circle" ? "flex" : "none";
     field(root, ".zb-area-side-length").style.display = mode === "area" && areaShape === "square" ? "flex" : "none";
     const durationType = field(root, '[data-zone="duration-type"]').value;
@@ -2231,7 +2224,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         return;
       }
 
-      if (target.matches('[data-zone="mode"], [data-zone="area-shape"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+      if (target.matches('[data-zone="mode"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
       refreshLiveValidation(root);

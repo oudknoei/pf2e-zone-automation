@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixedAreaShape, sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "../scripts/area-shape.js";
+import { fixedAreaShape, sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes, zoneTypeChoice, zoneTypeFields } from "../scripts/area-shape.js";
+
+test("combined Zone Type choices preserve saved mode and shape", () => {
+  for (const config of [
+    { mode: "emanation", areaShape: "circle" },
+    { mode: "area", areaShape: "circle" },
+    { mode: "area", areaShape: "square" }
+  ]) {
+    assert.deepEqual(zoneTypeFields(zoneTypeChoice(config)), config);
+  }
+  assert.equal(zoneTypeChoice({ mode: "area" }), "area-circle", "older saved areas default to circles");
+  assert.throws(() => zoneTypeFields("invalid"), /Zone type is invalid/);
+});
 
 test("a 10-foot square is centered on the placement point", () => {
   assert.deepEqual(fixedAreaShape({ areaShape: "square", sideLength: 10 }, { x: 250, y: 350 }, 10), {
@@ -29,6 +41,22 @@ test("a dragged circle also reaches tokens along its path", () => {
   assert.equal(sweptAreaIntersectsToken(translation, { x: 90, y: 60, width: 20, height: 20 }), false);
 });
 
+test("a square drag ignores token spaces that only touch its edges", () => {
+  const before = { type: "rectangle", x: 0, y: 0, width: 100, height: 100, rotation: 0 };
+  const translation = translatedAreaShapes([before], [{ ...before, x: 300 }]);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 160, y: 100, width: 50, height: 50 }), false);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 400, y: 20, width: 50, height: 50 }), false);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 400, y: 100, width: 50, height: 50 }), false);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 160, y: 99.5, width: 50, height: 50 }), true);
+});
+
+test("a circle drag ignores tangent token spaces", () => {
+  const before = { type: "circle", x: 0, y: 0, radius: 40 };
+  const translation = translatedAreaShapes([before], [{ ...before, x: 200 }]);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 90, y: 40, width: 20, height: 20 }), false);
+  assert.equal(sweptAreaIntersectsToken(translation, { x: 90, y: 39, width: 20, height: 20 }), true);
+});
+
 test("moved-area Entry runs once for crossed and destination creatures", async () => {
   const handlers = new Map();
   globalThis.Hooks = {
@@ -50,7 +78,8 @@ test("moved-area Entry runs once for crossed and destination creatures", async (
   const crossed = makeToken("crossed", 160, 20);
   const destination = makeToken("destination", 310, 20);
   const offPath = makeToken("off-path", 310, 160);
-  const scene = { tokens: [crossed, destination, offPath], regions: new Map() };
+  const adjacent = makeToken("adjacent", 160, 100);
+  const scene = { tokens: [crossed, destination, offPath, adjacent], regions: new Map() };
   let shape = { type: "rectangle", x: 0, y: 0, width: 100, height: 100, rotation: 0 };
   const region = {
     id: "area", uuid: "Scene.test.Region.area", parent: scene,

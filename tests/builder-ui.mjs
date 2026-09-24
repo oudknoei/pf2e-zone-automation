@@ -65,6 +65,11 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(zoneMarkup, /data-zone="affects-self"/);
   assert.doesNotMatch(zoneMarkup, /<select data-zone="affects">/);
   assert.doesNotMatch(zoneMarkup, /Include source actor/);
+  assert.match(zoneMarkup, /option value="area-circle"/);
+  assert.match(zoneMarkup, /option value="area-square"/);
+  assert.doesNotMatch(zoneMarkup, /data-zone="area-shape"/);
+  assert.match(builder, /zoneTypeChoice\(state\)/);
+  assert.match(builder, /\.\.\.zoneTypeFields\(field\(root, '\[data-zone="mode"\]'\)\.value\)/);
   assert.doesNotMatch(builder, /<h3>Duration<\/h3>/);
   assert.match(styles, /\.zb-source img \{ width:36px; height:36px;/);
 });

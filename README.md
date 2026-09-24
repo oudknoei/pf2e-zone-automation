@@ -45,8 +45,8 @@ A player can create a zone only from an Actor they own. An active GM must be con
 ### Set up the zone
 
 1. Give the zone a clear name. A name is required.
-2. Choose **Emanation** for a circle that follows the source token, or **Area** for a fixed circle or square placed on the Scene after selecting **Create Zone**. For an Area, choose its shape.
-3. Enter the radius for an emanation or circle, or the full side length for a square (for example, **10 feet** for a 10-foot square). Check any combination of **Allies**, **Enemies**, and **Self (Source Actor)**. Select at least one. Older saved zones still open as circles with the equivalent target boxes checked.
+2. Choose **Emanation** for a circle that follows the source token, **Area - Circle** for a fixed circle, or **Area - Square** for a fixed square. Fixed areas are placed on the Scene after selecting **Create Zone**.
+3. Enter the radius for an emanation or circle, or the full side length for a square (for example, **10 feet** for a 10-foot square). Check any combination of **Allies**, **Enemies**, and **Self (Source Actor)**. Select at least one. Previously saved circles and squares reopen with the matching Zone Type and target boxes selected.
 4. Choose **Visible to everyone** or **Creator only**, then add any applicable traits. Creator-only zones and their module chat alerts are visible to the creator; Foundry GMs retain their normal access. Traits begin unchecked.
 5. Set the duration. Choose **X rounds** for a positive whole number such as `6` or a dice formula such as `2d4`, or choose **Unlimited** for a zone that remains until ended. Foundry checks the formula syntax before creation. A formula is rolled once when the zone is created, and its result is recorded in a chat message that matches the zone visibility. The source owner can always dismiss a zone early from **Manage Existing Zones**.
 
@@ -69,7 +69,7 @@ Choose one or more plain-language trigger choices:
 | **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself. |
 | **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
 
-For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), use a 10-foot **Square** with two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.
+For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), choose **Area - Square** with a 10-foot side length and two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.
 
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
 

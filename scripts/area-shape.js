@@ -1,3 +1,19 @@
+/** Presents stored zone mode and area shape as one builder choice without changing saved configurations. */
+export function zoneTypeChoice(config) {
+  if (config?.mode !== "area") return "emanation";
+  return config.areaShape === "square" ? "area-square" : "area-circle";
+}
+
+/** Restores the existing config fields when the combined builder choice is read. */
+export function zoneTypeFields(choice) {
+  switch (choice) {
+    case "emanation": return { mode: "emanation", areaShape: "circle" };
+    case "area-circle": return { mode: "area", areaShape: "circle" };
+    case "area-square": return { mode: "area", areaShape: "square" };
+    default: throw new Error("Zone type is invalid.");
+  }
+}
+
 /** Keeps fixed-area geometry identical for direct GM and player-requested creation. */
 export function fixedAreaShape(config, center, distancePixels) {
   const x = Number(center.x);
@@ -122,7 +138,8 @@ function polygonIntersectsBox(polygon, box) {
     const project = (point) => point.x * axis.x + point.y * axis.y;
     const p = polygon.map(project);
     const q = corners.map(project);
-    if (Math.max(...p) < Math.min(...q) || Math.max(...q) < Math.min(...p)) return false;
+    // Touching an edge has no shared area and must not count as Entry.
+    if (Math.max(...p) <= Math.min(...q) || Math.max(...q) <= Math.min(...p)) return false;
   }
   return true;
 }
@@ -147,5 +164,6 @@ export function sweptAreaIntersectsToken(translation, box) {
     pointRectDistanceSquared(a, box), pointRectDistanceSquared(b, box),
     ...corners.map((corner) => segmentPointDistanceSquared(a, b, corner))
   );
-  return distance <= radius * radius;
+  // A tangent circle only touches the token boundary; its space was never entered.
+  return distance < radius * radius;
 }
