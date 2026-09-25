@@ -24,6 +24,6 @@
 
 13. ~~**Resolved: one shared configuration and creation implementation.** Builder and GM worker use the same defaults, normalization, validation, Region payload, initial state, runtime activation, and duration announcement. Preset saves also use the shared validation and source ownership checks. Each creation path keeps its appropriate area-placement interaction. Regression tests compare both paths and reject invalid worker requests.~~
 
-14. **Feature: Build compendia during releases.** The release workflow packages committed compendium databases without running `build:packs`. Automating that step would prevent source JSON changes from being omitted from releases. [Release workflow](E:/git/pf2e-zone-automation/.github/workflows/release.yml:23)
+14. ~~**Resolved: release compendia are built from source JSON.** The release workflow rebuilds the Effect and Macro databases before tests and packaging, so the installable ZIP contains the current source Items and Macros even when generated databases were not committed.~~
 
 15. **Feature: Support for Wall type areas**
