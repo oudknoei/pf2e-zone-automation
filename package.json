@@ -7,6 +7,6 @@
   "type": "module",
   "scripts": {
     "build:packs": "node tools/build-packs.mjs",
-    "test": "node --test tests/module-smoke.mjs tests/builder-ui.mjs tests/config-input.mjs tests/function-comments.mjs tests/formula-validation.mjs tests/library-folder.mjs tests/library-concurrency.mjs tests/effects-pack.mjs tests/macro-pack.mjs tests/examples.mjs tests/duration.mjs tests/duration-chat.mjs tests/dc.mjs tests/runtime-duration.mjs tests/late-save-exit.mjs tests/continuous-reentry.mjs tests/area-movement.mjs tests/preset-origin.mjs tests/zone-creation.mjs tests/targeting.mjs tests/trait-use.mjs tests/shielding-taunt.mjs tests/transport.mjs"
+    "test": "node --test tests/module-smoke.mjs tests/builder-ui.mjs tests/config-input.mjs tests/function-comments.mjs tests/formula-validation.mjs tests/library-folder.mjs tests/library-concurrency.mjs tests/effects-pack.mjs tests/macro-pack.mjs tests/examples.mjs tests/duration.mjs tests/duration-chat.mjs tests/dc.mjs tests/runtime-duration.mjs tests/late-save-exit.mjs tests/save-result-authorization.mjs tests/continuous-reentry.mjs tests/area-movement.mjs tests/preset-origin.mjs tests/zone-creation.mjs tests/targeting.mjs tests/trait-use.mjs tests/shielding-taunt.mjs tests/transport.mjs"
   }
 }

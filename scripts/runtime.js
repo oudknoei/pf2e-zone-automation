@@ -509,28 +509,48 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           else if (policy === "once-per-round") payload.state.repeat[key].round = this.roundStamp();
         },
 
-        /** Translates PF2e roll degrees into the stored outcome keys used by zone configurations. */
+        /** Translates only actual PF2e roll degrees into stored outcome keys. */
         outcomeFromDegree(degree) {
-          return ["criticalFailure", "failure", "success", "criticalSuccess"][Number(degree)] ?? null;
+          if (!Number.isInteger(degree)) return null;
+          return ["criticalFailure", "failure", "success", "criticalSuccess"][degree] ?? null;
         },
 
-        /** Treats an already resolved pending save as final so duplicate chat handling cannot reapply it. */
-        completedOutcomeForPending(pending) {
+        /** Accepts only the target's PF2e save from a GM or an owner before trusting a chat outcome. */
+        saveResultFromMessage(message, pending, token) {
+          const actor = token?.actor;
+          const context = message?.flags?.pf2e?.context;
+          const authorId = message?.author?.id;
+          const author = authorId ? game.users?.get?.(authorId) : null;
+          if (!actor || !context || !author) return null;
+          if (!author.isGM && !actor.testUserPermission?.(author, "OWNER")) return null;
+          if (context.type !== "saving-throw" || context.identifier !== pending.identifier) return null;
+          if (pending.actorUuid && pending.actorUuid !== actor.uuid) return null;
+          if (message.actor?.uuid !== actor.uuid || context.actor !== actor.id) return null;
+          if (context.token != null && context.token !== token.id) return null;
+          if (message.token && message.token.uuid !== token.uuid) return null;
+          if (!Number.isFinite(Number(pending.dc)) || Number(context.dc?.value) !== Number(pending.dc)) return null;
+          if (!Array.isArray(context.domains) ||
+              !pending.saveTypes?.some((saveType) => context.domains.includes(saveType))) return null;
+
+          for (const roll of message.rolls ?? []) {
+            if (roll?.options?.type !== "saving-throw" || roll.options.identifier !== pending.identifier) continue;
+            const roller = game.users.get(roll.options.rollerId);
+            if (!roller || (!roller.isGM && !actor.testUserPermission?.(roller, "OWNER"))) continue;
+            const outcome = this.outcomeFromDegree(roll.degreeOfSuccess ?? roll.options.degreeOfSuccess);
+            if (!outcome || (context.outcome && context.outcome !== outcome)) continue;
+            return outcome;
+          }
+          return null;
+        },
+
+        /** Treats only an authorized completed save as final so forged chat cannot clear a pending request. */
+        async completedOutcomeForPending(pending) {
+          const token = await fromUuid(pending.tokenUuid);
+          if (!token?.actor) return null;
           const messages = [...game.messages.contents].reverse();
           for (const message of messages) {
-            const context = message.flags?.pf2e?.context;
-            if (context?.identifier !== pending.identifier) continue;
-
-            if (["criticalSuccess", "success", "failure", "criticalFailure"].includes(context?.outcome)) {
-              return context.outcome;
-            }
-
-            for (const roll of message.rolls ?? []) {
-              const identifier = roll?.options?.identifier;
-              if (identifier && identifier !== pending.identifier) continue;
-              const outcome = this.outcomeFromDegree(roll?.degreeOfSuccess);
-              if (outcome) return outcome;
-            }
+            const outcome = this.saveResultFromMessage(message, pending, token);
+            if (outcome) return outcome;
           }
           return null;
         },
@@ -553,7 +573,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               continue;
             }
 
-            const completedOutcome = this.completedOutcomeForPending(pending);
+            const completedOutcome = await this.completedOutcomeForPending(pending);
             if (completedOutcome) {
               delete payload.state.pendingSaves[pendingId];
               console.info("PF2e Zone cleared stale pending save", {
@@ -1685,7 +1705,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Accepts a save result once and applies its outcome only after authorization and state checks pass. */
-        async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null) {
+        async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
           if (!this.isAuthority()) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
 
@@ -1707,7 +1727,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               return;
             }
 
-            if (rollerActorUuid && rollerActorUuid !== token.actor.uuid) return;
+            if (rollerActorUuid !== token.actor.uuid) return;
+            if (pending.actorUuid && pending.actorUuid !== token.actor.uuid) return;
+            if (message && this.saveResultFromMessage(message, pending, token) !== outcome) return;
 
             // Delete before applying the result. Keep a small persistent
             // tombstone as well, so a duplicated resolver cannot apply the same
@@ -1783,13 +1805,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const region = game.scenes.get(sceneId)?.regions.get(regionId);
           if (!region) return;
 
-          let outcome = context?.outcome;
-          if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) {
-            const checkRoll = (message.rolls ?? []).find((roll) =>
-              roll?.options?.identifier === identifier || roll?.options?.identifier == null
-            );
-            outcome = this.outcomeFromDegree(checkRoll?.degreeOfSuccess);
-          }
+          const pending = this.readPayload(region)?.state?.pendingSaves?.[pendingId];
+          if (!pending || pending.identifier !== identifier) return;
+          const token = await fromUuid(pending.tokenUuid);
+          const outcome = this.saveResultFromMessage(message, pending, token);
           if (!outcome) return;
 
           await this.resolvePendingSave(
@@ -1797,7 +1816,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             pendingId,
             identifier,
             outcome,
-            message.actor?.uuid ?? null
+            token.actor.uuid,
+            message
           );
         },
 
@@ -2326,7 +2346,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               // it runs on the authoritative GM even when a player rolls.
               // The returned CheckRoll is retained only as a short fallback for
               // a GM-side roll in case a chat hook is missed.
-              const outcome = runtime.outcomeFromDegree(roll?.degreeOfSuccess);
+              const rollIsTargetSave = roll?.options?.type === "saving-throw"
+                && roll.options.identifier === pending.identifier
+                && roll.options.rollerId === game.user.id;
+              const outcome = rollIsTargetSave ? runtime.outcomeFromDegree(roll.degreeOfSuccess) : null;
               if (outcome && runtime.isAuthority()) {
                 setTimeout(async () => {
                   try {

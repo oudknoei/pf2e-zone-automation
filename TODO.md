@@ -4,7 +4,7 @@
 
 3. ~~**Resolved: spell damage cards no longer trigger another cast.** Spell-origin messages with roll data or follow-up roll context are ignored before spell-cast and trait-use matching. Cast cards, including no-defense spells such as Detect Magic, still trigger. Regression tests cover cast and damage cards.~~
 
-4. **High: save resolution does not enforce ownership on the GM.** The save button checks ownership, but the GM’s result handler accepts the identifier and outcome without checking the message author. I reproduced resolution using a message with no roll, no Actor, and an unrelated author. Require an appropriate save roll, matching Actor, and an author authorized to roll for that Actor. [Save-result handling](E:/git/pf2e-zone-automation/scripts/runtime.js:1604)
+4. ~~**Resolved: GM save resolution verifies the target and roller.** A result now needs a PF2e saving-throw roll for the pending identifier, DC, save type, and Actor. The chat author and roll creator must be a GM or own the target Actor; the same checks protect stale-save cleanup. Regression tests cover forged messages and valid owner/GM saves.~~
 
 5. ~~**Resolved: finite zones use a recoverable expiration deadline.** Both creation paths store a combat-round deadline. The runtime catches skipped rounds, uses combat or world time when the source leaves initiative, carries remaining time into a new encounter, and checks overdue zones after reconnect. Older zones recover a deadline from their last recorded source turn.~~
 
