@@ -853,8 +853,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (duplicate) return true;
 
           const template = await fromUuid(effect.uuid);
-          if (!template || template.documentName !== "Item") {
-            ui.notifications.error(`PF2e Zone: Effect Item not found: ${effect.uuid}`);
+          if (!template || template.documentName !== "Item" || template.type !== "effect") {
+            ui.notifications.error(`PF2e Zone: PF2e Effect Item not found: ${effect.uuid}`);
             return false;
           }
           const source = template.toObject();

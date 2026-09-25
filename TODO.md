@@ -20,7 +20,7 @@
 
 11. **Feature: Pending-save management.** Show unresolved saves in Manage Zones, with GM actions to repost or cancel them. Currently, an unanswered request can suppress future saves indefinitely.
 
-12. **Feature: Effect selection by drag and drop.** Display the resolved effect’s name and image, and reject missing UUIDs or documents that aren’t Effects before creation.
+12. ~~**Resolved: Effect selection by drag and drop.** Effect Items can be dropped from Actor sheets, Items, or compendia. The builder displays their name and image and validates pasted or dropped UUIDs; preset saves and creation reject missing or non-Effect Items.~~
 
 13. ~~**Resolved: one shared configuration and creation implementation.** Builder and GM worker use the same defaults, normalization, validation, Region payload, initial state, runtime activation, and duration announcement. Preset saves also use the shared validation and source ownership checks. Each creation path keeps its appropriate area-placement interaction. Regression tests compare both paths and reject invalid worker requests.~~
 

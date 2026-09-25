@@ -72,6 +72,7 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
   scene.tokens.push(token);
   const effectTemplate = {
     documentName: "Item",
+    type: "effect",
     toObject: () => ({ type: "effect", system: { duration: {} } })
   };
   const conditionTemplate = {

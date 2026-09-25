@@ -51,6 +51,7 @@ for (const policy of ["once-per-round", "once-per-zone", "every"]) {
     const token = { uuid: `Token.${policy}`, name: "Target", actor };
     const effect = {
       documentName: "Item",
+      type: "effect",
       toObject: () => ({ type: "effect", system: { duration: {} } })
     };
     const condition = {

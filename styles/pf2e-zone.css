@@ -60,6 +60,11 @@
 .pf2e-zone-builder .zb-subhead { font-weight:600; margin-bottom:4px; }
 .pf2e-zone-builder .zb-subrow { display:grid; grid-template-columns:minmax(150px,1.6fr) minmax(100px,.7fr) minmax(160px,1fr) 32px; gap:6px; align-items:end; margin:4px 0; }
 .pf2e-zone-builder .zb-effect-row { grid-template-columns:minmax(260px,2fr) minmax(180px,1fr) 32px; }
+.pf2e-zone-builder .zb-effect-list { min-height:34px; border:1px dashed rgba(127,127,127,.45); border-radius:5px; padding:4px; }
+.pf2e-zone-builder .zb-effect-row [data-field="effect-removal"] { grid-column:2; grid-row:1; }
+.pf2e-zone-builder .zb-effect-row > button.icon { grid-column:3; grid-row:1; }
+.pf2e-zone-builder .zb-effect-info { grid-column:1 / -1; grid-row:2; display:flex; align-items:center; gap:6px; min-height:26px; font-size:.88em; opacity:.85; overflow-wrap:anywhere; }
+.pf2e-zone-builder .zb-effect-info img { width:24px; height:24px; object-fit:cover; border-radius:3px; }
 .pf2e-zone-builder .zb-subrow button.icon { min-width:30px; height:30px; padding:0; }
 .pf2e-zone-builder .zb-empty { opacity:.6; font-style:italic; margin:3px 0; }
 .pf2e-zone-builder .zb-small { width:auto; padding:3px 8px; margin-top:3px; }
@@ -78,6 +83,7 @@
   .pf2e-zone-builder details.zb-block > summary { grid-template-columns:1fr; gap:3px; }
   .pf2e-zone-builder .zb-block-summary { text-align:left; }
   .pf2e-zone-builder .zb-subrow, .pf2e-zone-builder .zb-effect-row { grid-template-columns:1fr; }
+  .pf2e-zone-builder .zb-effect-row [data-field="effect-removal"], .pf2e-zone-builder .zb-effect-row > button.icon, .pf2e-zone-builder .zb-effect-info { grid-column:1; grid-row:auto; }
   .pf2e-zone-builder .zb-condition-link,
   .pf2e-zone-builder .zb-condition-row > button.icon {
     grid-column:1;

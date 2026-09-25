@@ -42,7 +42,8 @@ globalThis.game = {
   time: { worldTime: 100 }, combat: null,
   i18n: { localize: (key) => key }
 };
-globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : null;
+const effectDocuments = new Map();
+globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : effectDocuments.get(uuid) ?? null;
 globalThis.PF2EZoneRuntime = {
   version: "0.5.16", installHooks() {},
   async activateRegion(region) { activated.push(region); }
@@ -100,6 +101,38 @@ test("the worker rejects builder-invalid triggers and save DCs before creating a
     assert.equal(response.ok, false);
     assert.equal(created.length, before);
   }
+});
+
+test("direct and player creation reject missing and non-Effect Items before making a Region", async () => {
+  effectDocuments.set("Item.valid", { documentName: "Item", type: "effect", name: "Valid" });
+  effectDocuments.set("Item.action", { documentName: "Item", type: "action", name: "Wrong type" });
+  for (const uuid of ["Item.missing", "Item.action"]) {
+    const config = validConfig();
+    config.effects[0].outcomes.noSave.effects.push({ uuid, removal: "item-duration" });
+    const before = created.length;
+    await assert.rejects(createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    }), /Effect Item/);
+    const previous = console.error;
+    console.error = () => {};
+    try {
+      const response = await handleWorkerRequest({
+        protocol: 1, action: "create", requesterUserId: gm.id,
+        sceneId: scene.id, sourceTokenUuid: token.uuid, config
+      });
+      assert.equal(response.ok, false);
+      assert.match(response.error, /Effect Item/);
+    } finally {
+      console.error = previous;
+    }
+    assert.equal(created.length, before);
+  }
+  const config = validConfig();
+  config.effects[0].outcomes.noSave.effects.push({ uuid: "Item.valid", removal: "item-duration" });
+  const result = await createZoneDocument({
+    rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+  });
+  assert.ok(result.region);
 });
 
 test("both area placement adapters use the shared payload and state", async () => {

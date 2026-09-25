@@ -9,6 +9,8 @@ import { requestGMWorker } from "./transport.js";
 import { storedTargeting, targetLabels, targetingChoices } from "./targeting.js";
 import { fixedAreaShape, zoneTypeChoice, zoneTypeFields } from "./area-shape.js";
 import { createZoneDocument } from "./zone-creation.js";
+import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { inspectEffectItem, validateEffectItems } from "./effect-items.js";
 
 /*
  * PF2e Zone Automation - Zone Builder
@@ -420,7 +422,8 @@ export async function openZoneBuilder() {
   function renderEffectRow(effect, blockId, outcomeKey, index) {
     return `
       <div class="zb-subrow zb-effect-row" data-effect-index="${index}">
-        <input data-field="effect-uuid" type="text" value="${esc(effect.uuid)}" placeholder="Item UUID, e.g. Compendium.pf2e...Item...">
+        <input data-field="effect-uuid" type="text" value="${esc(effect.uuid)}" placeholder="Drop a PF2e Effect Item or paste its UUID">
+        <div class="zb-effect-info" aria-live="polite">Drop a PF2e Effect Item here or paste its UUID.</div>
         <select data-field="effect-removal" title="When should the Effect Item be removed?">
           <option value="item-duration" ${effect.removal === "item-duration" ? "selected" : ""}>Use Effect Item duration</option>
           <option value="on-exit" ${effect.removal === "on-exit" ? "selected" : ""}>Remove on exit</option>
@@ -458,7 +461,7 @@ export async function openZoneBuilder() {
 
         <div class="zb-outcome-group">
           <div class="zb-subhead">PF2e Effect Items</div>
-          <div class="zb-effect-list">
+          <div class="zb-effect-list" title="Drop a PF2e Effect Item here">
             ${outcome.effects.map((e, i) => renderEffectRow(e, block.id, key, i)).join("") || `<div class="zb-empty">No Effect Items</div>`}
           </div>
           <button type="button" class="zb-small zb-add-effect" data-block="${block.id}" data-outcome="${key}"><i class="fa-solid fa-plus"></i> Effect Item</button>
@@ -1001,10 +1004,72 @@ export async function openZoneBuilder() {
     }
   }
 
+  const effectLookupCache = new Map();
+
+  /** Reuses resolved Item details while keeping pending lookups from making creation appear ready. */
+  function lookupEffect(root, uuid) {
+    if (!effectLookupCache.has(uuid)) {
+      const entry = { status: "pending", result: null };
+      effectLookupCache.set(uuid, entry);
+      void inspectEffectItem(uuid).then((result) => {
+        entry.status = "done";
+        entry.result = result;
+        const visibleRoot = root.isConnected ? root : dialog?.window?.content?.querySelector(".pf2e-zone-builder");
+        if (visibleRoot?.isConnected) refreshLiveValidation(visibleRoot);
+      });
+    }
+    return effectLookupCache.get(uuid);
+  }
+
+  /** Gives a dragged or pasted UUID a recognizable label without adding display data to the saved config. */
+  function showEffectDetails(row, entry) {
+    const info = row?.querySelector(".zb-effect-info");
+    if (!info) return;
+    info.replaceChildren();
+    const result = entry?.result;
+    if (!entry) {
+      info.textContent = "Drop a PF2e Effect Item here or paste its UUID.";
+    } else if (entry.status === "pending") {
+      info.textContent = "Looking up Effect Item…";
+    } else if (result.error) {
+      info.textContent = result.error;
+    } else {
+      if (result.img) {
+        const image = document.createElement("img");
+        image.src = result.img;
+        image.alt = "";
+        info.append(image);
+      }
+      const name = document.createElement("span");
+      name.textContent = result.name;
+      info.append(name);
+    }
+  }
+
   /** Keeps readiness accurate as the user edits rather than waiting for a failed create attempt. */
   function refreshLiveValidation(root) {
     const cfg = readConfig(root);
     const validation = validateConfig(cfg, { requireCurrentSource: true });
+    let pendingCount = 0;
+    for (const [index, block] of cfg.effects.entries()) {
+      for (const [outcomeKey, outcome] of Object.entries(block.outcomes)) {
+        for (const [effectIndex, effect] of outcome.effects.entries()) {
+          const target = { scope: "block", index, field: "effect-uuid", outcomeKey, effectIndex };
+          const row = validationTarget(root, { target })?.closest(".zb-effect-row");
+          const uuid = String(effect.uuid ?? "").trim();
+          const entry = uuid ? lookupEffect(root, uuid) : null;
+          showEffectDetails(row, entry);
+          if (!entry) continue;
+          if (entry.status === "pending") {
+            pendingCount += 1;
+          } else if (entry.result.error) {
+            const message = (block.name || "Effect Block " + (index + 1)) + " " + outcomeKey + " Effect Item " + (effectIndex + 1) + ": " + entry.result.error;
+            validation.errors.push(message);
+            validation.issues.push({ message, target });
+          }
+        }
+      }
+    }
     renderInlineValidation(root, validation);
 
     const status = root.querySelector("[data-validation-status]");
@@ -1015,15 +1080,26 @@ export async function openZoneBuilder() {
     const warningCount = validation.warnings.length;
 
     if (status && statusContainer && icon) {
-      statusContainer.classList.toggle("is-ready", errorCount === 0);
+      statusContainer.classList.toggle("is-ready", errorCount === 0 && pendingCount === 0);
       statusContainer.classList.toggle("has-errors", errorCount > 0);
-      icon.className = `fa-solid ${errorCount ? "fa-triangle-exclamation" : "fa-circle-check"}`;
+      icon.className = "fa-solid " + (errorCount ? "fa-triangle-exclamation" : pendingCount ? "fa-spinner fa-spin" : "fa-circle-check");
       status.textContent = errorCount
-        ? `Fix ${errorCount} field${errorCount === 1 ? "" : "s"} to create`
-        : `Ready to create${warningCount ? ` · ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}`;
+        ? "Fix " + errorCount + " field" + (errorCount === 1 ? "" : "s") + " to create"
+        : pendingCount ? "Checking Effect Items…"
+        : "Ready to create" + (warningCount ? " · " + warningCount + " warning" + (warningCount === 1 ? "" : "s") : "");
     }
-    if (create) create.disabled = errorCount > 0;
+    if (create) create.disabled = errorCount > 0 || pendingCount > 0;
     refreshOperationStatus(root);
+    return validation;
+  }
+
+  /** Confirms the current UUIDs at action time, including when a lookup was still pending. */
+  async function validateForAction(root, cfg, { requireCurrentSource = false } = {}) {
+    const validation = validateConfig(cfg, { requireCurrentSource });
+    const effectValidation = await validateEffectItems(cfg);
+    validation.errors.push(...effectValidation.errors);
+    validation.issues.push(...effectValidation.issues);
+    renderInlineValidation(root, validation);
     return validation;
   }
 
@@ -1234,7 +1310,7 @@ export async function openZoneBuilder() {
   /** Preserves ownership and revision checks when users save a zone for later reuse. */
   async function saveCurrentPreset(root, { asNew = false } = {}) {
     const cfg = syncState(root);
-    const validation = validateConfig(cfg);
+    const validation = await validateForAction(root, cfg);
     if (validation.errors.length) {
       await showValidation(validation);
       return false;
@@ -1593,6 +1669,56 @@ export async function openZoneBuilder() {
       if (event.target instanceof HTMLElement) refreshLiveValidation(root);
     });
 
+    root.addEventListener("dragover", (event) => {
+      if (event.target instanceof HTMLElement && event.target.closest(".zb-effect-list")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      }
+    });
+
+    root.addEventListener("drop", async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const list = target.closest(".zb-effect-list");
+      if (!list) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const dragData = foundry.applications.ux.TextEditor.getDragEventData(event);
+        if (dragData?.type !== "Item" || !dragData.uuid) {
+          ui.notifications.warn("Drop a PF2e Effect Item with a UUID from a sheet, Items list, or compendium.");
+          return;
+        }
+        const details = await inspectEffectItem(dragData.uuid);
+        if (!list.isConnected) return;
+        if (details.error) {
+          ui.notifications.warn(details.error);
+          return;
+        }
+        let row = target.closest(".zb-effect-row") ?? [...list.querySelectorAll(".zb-effect-row")]
+          .find((candidate) => !candidate.querySelector('[data-field="effect-uuid"]').value.trim());
+        if (!row) {
+          const outcome = list.closest(".zb-outcome");
+          const block = list.closest(".zb-block");
+          const holder = document.createElement("div");
+          holder.innerHTML = renderEffectRow(
+            { uuid: "", removal: "item-duration" }, block.dataset.blockId, outcome.dataset.outcome,
+            list.querySelectorAll(".zb-effect-row").length
+          );
+          row = holder.firstElementChild;
+          list.querySelector(".zb-empty")?.remove();
+          list.append(row);
+        }
+        row.querySelector('[data-field="effect-uuid"]').value = details.uuid;
+        effectLookupCache.set(details.uuid, { status: "done", result: details });
+        refreshLiveValidation(root);
+      } catch (error) {
+        console.error("PF2e Zone Effect Item drop failed", error);
+        ui.notifications.error("Could not read that Effect Item drop.");
+      }
+    });
+
     root.querySelector(".zb-use-selection").addEventListener("click", () => {
       syncState(root);
       const current = selectedSourceToken();
@@ -1767,7 +1893,7 @@ export async function openZoneBuilder() {
 
     root.querySelector(".zb-export").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = validateConfig(cfg);
+      const validation = await validateForAction(root, cfg);
       if (validation.errors.length) {
         await showValidation(validation);
         return;
@@ -1779,14 +1905,14 @@ export async function openZoneBuilder() {
 
     root.querySelector(".zb-validate").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = refreshLiveValidation(root);
+      const validation = await validateForAction(root, cfg, { requireCurrentSource: true });
       console.log("PF2e Zone Builder validation", { cfg, validation });
       await showValidation(validation);
     });
 
     root.querySelector(".zb-preview").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = refreshLiveValidation(root);
+      const validation = await validateForAction(root, cfg, { requireCurrentSource: true });
       if (validation.errors.length) {
         await showValidation(validation);
         return;
@@ -1806,7 +1932,7 @@ export async function openZoneBuilder() {
 
     root.querySelector(".zb-create").addEventListener("click", async () => {
       const cfg = syncState(root);
-      const validation = refreshLiveValidation(root);
+      const validation = await validateForAction(root, cfg, { requireCurrentSource: true });
       if (validation.errors.length) {
         await showValidation(validation);
         return;

@@ -76,6 +76,21 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(styles, /\.zb-source img \{ width:36px; height:36px;/);
 });
 
+test("builder imports the runtime used during startup and zone management", () => {
+  assert.match(builder, /import \{ zoneRuntimeEntrypoint \} from "\.\/runtime\.js"/);
+  assert.match(builder, /await zoneRuntimeEntrypoint\(\)/);
+});
+
+test("builder accepts persistent Item drops and shows resolved effect details", () => {
+  assert.match(builder, /getDragEventData\(event\)/);
+  assert.match(builder, /inspectEffectItem\(dragData\.uuid\)/);
+  assert.match(builder, /class="zb-effect-info"/);
+  assert.match(builder, /image\.src = result\.img/);
+  assert.match(builder, /Checking Effect Items/);
+  assert.match(builder, /await validateForAction\(root, cfg\)/);
+  assert.match(styles, /\.zb-effect-info img/);
+});
+
 test("builder validates current size and duration input before applying legacy defaults", () => {
   assert.match(config, /radius: editableZoneSize\(cfg\.radius, base\.radius\)/);
   assert.match(config, /sideLength: editableZoneSize\(cfg\.sideLength, base\.sideLength\)/);

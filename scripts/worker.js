@@ -2,6 +2,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { fixedAreaShape } from "./area-shape.js";
 import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
+import { validateEffectItems } from "./effect-items.js";
 /* GM-only document operations and authorization for module socket requests. */
 
 let libraryOperationTail = Promise.resolve();
@@ -256,6 +257,8 @@ export async function handleWorkerRequest(request) {
     if (!sourceActor?.uuid) throw new Error("Source Actor was not found.");
     assertSourcePermission(sourceActor, requester);
     const cfg = requireValidConfig(request.config, sourceActor);
+    const effectValidation = await validateEffectItems(cfg);
+    if (effectValidation.errors.length) throw new Error(effectValidation.errors[0]);
     const { journal, data, page } = await ensureLibraryJournal();
     const requestedId = String(request.recordId ?? "").trim();
     const now = Date.now();

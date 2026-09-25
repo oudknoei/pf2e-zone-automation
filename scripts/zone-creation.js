@@ -3,6 +3,7 @@ import { resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { normalizeConfig, validateConfig } from "./zone-config.js";
+import { validateEffectItems } from "./effect-items.js";
 
 const RUNTIME_VERSION = "0.5.16";
 const FLAG_SCOPE = "world";
@@ -106,6 +107,8 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
 export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, chosenDamageType = null, color, placeArea }) {
   if (!scene || sourceToken?.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
   const config = requireValidConfig(rawConfig, sourceActor);
+  const effectValidation = await validateEffectItems(config);
+  if (effectValidation.errors.length) throw new Error(effectValidation.errors[0]);
   const choice = config.activationChoices?.damageType;
   if (choice?.enabled && !choice.options.includes(chosenDamageType)) {
     throw new Error("Choose an allowed shared damage type before creating this zone.");
