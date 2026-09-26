@@ -82,7 +82,7 @@ Within an Effect Block, enable only the result sections the ability needs:
 - **Chat Alert** posts a message when the block runs. It supports the listed placeholders such as `{creature}`, `{zone}`, and `{item}`.
 - **Saving Throw** requests the selected save against a custom DC or a statistic from the source Actor. A custom DC begins blank and is required only when the saving throw is enabled. Select **Basic save** for the normal 0 / half / full / double progression.
 - **Damage** and **Healing** post normal PF2e roll cards. Enabled formulas are checked with PF2e's damage-roll parser before the zone can be created.
-- **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled.
+- **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled. Each Condition has its own removal rule. **Normal PF2e handling** leaves it on the Actor after the zone ends; temporary rules remove only the Condition created by that zone. PF2e uses the strongest active value when multiple sources apply the same Condition.
 - **Temporary Immunity** prevents later applications for the chosen duration after the selected result.
 
 To apply an Effect Item, drag it from an Actor sheet, the Items list, or a compendium into the relevant result. The builder shows its name and image after resolving it. You can also paste its Item UUID. A missing UUID or an Item that is not a PF2e Effect is rejected before saving or creating a zone. Actor sheet references depend on that Actor remaining available, so use a compendium Effect when you want a reusable template. The supplied Effects are available in the **PF2e Zone Effects** compendium:

@@ -696,41 +696,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return outcome === "failure" || outcome === "criticalFailure";
         },
 
-        /** Uses PF2e condition APIs where possible so normal condition stacking rules still apply. */
-        async addNormalCondition(actor, condition) {
-          try {
-            const desired = condition.value == null ? null : Number(condition.value);
-            const existing = actor.conditions?.bySlug?.(condition.slug, { active: true }) ?? [];
-
-            // PF2e valued conditions do not add together unless an effect
-            // explicitly says to increase the value. "Become frightened 4"
-            // means the effective value is at least 4, not current + 4.
-            if (Number.isFinite(desired)) {
-              const activeValued = existing
-                .filter((c) => Number.isFinite(Number(c.value)))
-                .sort((a, b) => Number(b.value) - Number(a.value));
-              const current = activeValued[0] ?? null;
-
-              if (current && Number(current.value) >= desired) return current;
-
-              if (current) {
-                await game.pf2e.ConditionManager.updateConditionValue(current.id, actor, desired);
-                return actor.items.get(current.id) ?? current;
-              }
-
-              return await actor.increaseCondition(condition.slug, { value: desired });
-            }
-
-            // Unvalued conditions likewise do not need duplicate applications.
-            if (existing.length) return existing[0];
-            return await actor.increaseCondition(condition.slug);
-          } catch (error) {
-            console.error("PF2e Zone: failed to apply condition", condition, actor, error);
-            ui.notifications.error(`PF2e Zone: failed to apply ${condition.slug} to ${actor.name}.`);
-            return null;
-          }
-        },
-
         /** Identifies items created by a zone without relying on item names or compendium provenance. */
         zoneItemFlag(item) {
           return fu.getProperty(item, `flags.${FLAG_SCOPE}.${FLAG_KEY}`) ?? null;
@@ -766,7 +731,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Marks module-created conditions so only zone cleanup can remove its own temporary changes. */
+        /** Gives each zone result its own Condition Item so cleanup cannot affect another source. */
         async addOwnedCondition(region, payload, block, token, condition) {
           const actor = token.actor;
           if (!actor) return false;
@@ -818,26 +783,26 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             return false;
           }
           if (!created) return false;
-          const recordId = randomId();
-          payload.state.applied[recordId] = {
-            recordId,
-            kind: "condition",
-            actorUuid: actor.uuid,
-            tokenUuid: token.uuid,
-            itemId: created.id,
-            blockId: block.id,
-            removal: condition.removal,
-            linkedCondition: condition.removal === "condition-end" ? condition.condition : null
-          };
+          // Normal conditions persist independently after the zone ends; only
+          // temporary results need a Region cleanup record.
+          if (condition.removal !== "normal") {
+            const recordId = randomId();
+            payload.state.applied[recordId] = {
+              recordId,
+              kind: "condition",
+              actorUuid: actor.uuid,
+              tokenUuid: token.uuid,
+              itemId: created.id,
+              blockId: block.id,
+              removal: condition.removal,
+              linkedCondition: condition.removal === "condition-end" ? condition.condition : null
+            };
+          }
           return true;
         },
 
-        /** Routes every condition application through one ownership-aware path. */
+        /** Applies lasting and temporary conditions without sharing another source's Item. */
         async addCondition(region, payload, block, token, condition) {
-          if (condition.removal === "normal") {
-            const applied = await this.addNormalCondition(token.actor, condition);
-            return Boolean(applied);
-          }
           return this.addOwnedCondition(region, payload, block, token, condition);
         },
 
