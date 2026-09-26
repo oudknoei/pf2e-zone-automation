@@ -176,3 +176,114 @@ test("player request requires an active GM", async () => {
   );
   users.activeGM = gm;
 });
+
+test("player creates and dismisses a Region through the authenticated GM socket", async () => {
+  const previous = {
+    CONFIG: globalThis.CONFIG, CONST: globalThis.CONST,
+    runtime: globalThis.PF2EZoneRuntime, fromUuid: globalThis.fromUuid,
+    scenes: game.scenes, time: game.time, combat: game.combat,
+    clamp: Math.clamp
+  };
+  const regions = new Map();
+  const scene = { id: "player-scene", regions };
+  const actor = {
+    uuid: "Actor.player-source", name: "Player Source", combatant: null,
+    testUserPermission: (user, permission) => user.id === player.id && permission === "OWNER"
+  };
+  const token = {
+    uuid: "Scene.player-scene.Token.source", documentName: "Token",
+    parent: scene, actor
+  };
+  const activated = [];
+  const ended = [];
+  try {
+    Math.clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    globalThis.CONST = { REGION_VISIBILITY: { ALWAYS: 2 } };
+    globalThis.CONFIG = {
+      RegionBehavior: { dataModels: {} },
+      Region: {
+        documentClass: {
+          async createTokenEmanation(source, radius, data) {
+            assert.equal(source, token);
+            assert.equal(radius, 5);
+            const region = {
+              id: "created-zone", uuid: "Scene.player-scene.Region.created-zone",
+              parent: scene, name: data.name,
+              getFlag: (scope, key) => data.flags?.[scope]?.[key]
+            };
+            regions.set(region.id, region);
+            return region;
+          }
+        }
+      }
+    };
+    game.scenes = { get: (id) => id === scene.id ? scene : null };
+    game.time = { worldTime: 0 };
+    game.combat = null;
+    globalThis.fromUuid = async (uuid) =>
+      uuid === token.uuid ? token : uuid === actor.uuid ? actor : null;
+    globalThis.PF2EZoneRuntime = {
+      version: "0.5.16",
+      installHooks() {},
+      async activateRegion(region) { activated.push(region); },
+      async endZone(region) {
+        ended.push(region);
+        regions.delete(region.id);
+      }
+    };
+
+    const config = {
+      name: "Player-created zone", mode: "emanation", radius: 5,
+      targeting: { affects: "enemies", includeSelf: false },
+      visibility: "all", duration: { type: "unlimited", rounds: 1 },
+      effects: [{
+        id: "alert", name: "Alert", triggers: { activation: true },
+        chatAlert: { enabled: true, text: "A zone is active." }
+      }]
+    };
+
+    game.user = player;
+    const createPromise = requestGMWorker({
+      protocol: 1, action: "create", requesterUserId: player.id,
+      sceneId: scene.id, sourceTokenUuid: token.uuid, config
+    });
+    const createRequest = sent.shift();
+    assert.equal(createRequest.kind, "request");
+    game.user = gm;
+    await listener(createRequest, player.id);
+    const createReply = sent.shift();
+    game.user = player;
+    await listener(createReply, gm.id);
+    const created = await createPromise;
+    assert.equal(created.ok, true, created.error);
+    assert.equal(created.regionId, "created-zone");
+    const region = regions.get(created.regionId);
+    assert.equal(region.getFlag("world", "pf2eZone").state.createdBy.userId, player.id);
+    assert.deepEqual(activated, [region]);
+
+    const endPromise = requestGMWorker({
+      protocol: 1, action: "end", requesterUserId: player.id,
+      sceneId: scene.id, regionId: region.id
+    });
+    const endRequest = sent.shift();
+    game.user = gm;
+    await listener(endRequest, player.id);
+    const endReply = sent.shift();
+    game.user = player;
+    await listener(endReply, gm.id);
+    const dismissed = await endPromise;
+    assert.equal(dismissed.ok, true, dismissed.error);
+    assert.equal(regions.size, 0);
+    assert.deepEqual(ended, [region]);
+  } finally {
+    globalThis.CONFIG = previous.CONFIG;
+    globalThis.CONST = previous.CONST;
+    globalThis.PF2EZoneRuntime = previous.runtime;
+    globalThis.fromUuid = previous.fromUuid;
+    game.scenes = previous.scenes;
+    game.time = previous.time;
+    game.combat = previous.combat;
+    Math.clamp = previous.clamp;
+    game.user = player;
+  }
+});

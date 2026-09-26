@@ -24,7 +24,8 @@ jobs:
         run: pnpm run build:packs
       - name: Verify module
         run: |
-          node --test tests/*.mjs
+          pnpm run lint
+          pnpm test
           for file in scripts/*.js; do node --check "$file"; done
       - name: Package Foundry release
         run: python3 tools/package-release.py --tag "$GITHUB_REF_NAME"

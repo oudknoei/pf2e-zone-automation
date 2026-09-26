@@ -1,12 +1,16 @@
 {
   "devDependencies": {
-    "@foundryvtt/foundryvtt-cli": "3.0.4"
+    "@foundryvtt/foundryvtt-cli": "3.0.4",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "jsdom": "^26.1.0"
   },
   "name": "pf2e-zone-automation",
   "private": true,
   "type": "module",
   "scripts": {
     "build:packs": "node tools/build-packs.mjs",
-    "test": "node --test tests/module-smoke.mjs tests/builder-ui.mjs tests/config-input.mjs tests/function-comments.mjs tests/formula-validation.mjs tests/library-folder.mjs tests/library-concurrency.mjs tests/effects-pack.mjs tests/effect-items.mjs tests/macro-pack.mjs tests/examples.mjs tests/duration.mjs tests/duration-chat.mjs tests/dc.mjs tests/runtime-duration.mjs tests/late-save-exit.mjs tests/save-result-authorization.mjs tests/continuous-reentry.mjs tests/condition-sources.mjs tests/area-movement.mjs tests/preset-origin.mjs tests/zone-creation.mjs tests/targeting.mjs tests/trait-use.mjs tests/shielding-taunt.mjs tests/transport.mjs"
+    "test": "node --test tests/module-smoke.mjs tests/builder-ui.mjs tests/builder-workflow.mjs tests/config-input.mjs tests/function-comments.mjs tests/formula-validation.mjs tests/library-folder.mjs tests/library-concurrency.mjs tests/effects-pack.mjs tests/effect-items.mjs tests/macro-pack.mjs tests/examples.mjs tests/duration.mjs tests/duration-chat.mjs tests/dc.mjs tests/runtime-duration.mjs tests/late-save-exit.mjs tests/save-result-authorization.mjs tests/continuous-reentry.mjs tests/condition-sources.mjs tests/area-movement.mjs tests/preset-origin.mjs tests/zone-creation.mjs tests/targeting.mjs tests/trait-use.mjs tests/shielding-taunt.mjs tests/transport.mjs",
+    "lint": "eslint scripts tests tools"
   }
 }
