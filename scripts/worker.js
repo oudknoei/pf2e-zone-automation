@@ -344,6 +344,7 @@ export async function handleWorkerRequest(request) {
     }
     const { region, durationResolution } = await createZoneDocument({
       rawConfig: request.config, scene, sourceActor, sourceToken, requester, savedPresetId,
+      savedPresetRevision: request.savedPresetRevision ?? null,
       chosenDamageType: request.chosenDamageType ?? null, color: request.color,
       placeArea: async (regionData, config) => {
         const center = request.areaCenter;

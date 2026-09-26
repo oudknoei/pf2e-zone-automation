@@ -77,6 +77,16 @@ test("direct GM and worker creation persist identical normalized config and init
   assert.deepEqual(activated, created.map((entry) => entry.region));
 });
 
+test("direct GM creation retains the revision of its saved preset", async () => {
+  const result = await createZoneDocument({
+    rawConfig: validConfig(), scene, sourceActor: actor, sourceToken: token, requester: gm,
+    savedPresetId: "saved-zone", savedPresetRevision: 4
+  });
+  const state = result.region.getFlag("world", "pf2eZone").state;
+  assert.equal(state.savedPresetId, "saved-zone");
+  assert.equal(state.savedPresetRevision, 4);
+});
+
 test("the worker rejects builder-invalid triggers and save DCs before creating a Region", async () => {
   for (const invalid of [
     (config) => { config.effects[0].triggers.activation = false; },

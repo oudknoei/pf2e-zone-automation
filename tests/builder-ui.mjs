@@ -33,7 +33,7 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.doesNotMatch(builder, /data-action="load-config"/);
   assert.match(builder, /data-action="end"/);
   assert.match(builder, /const savedPresetId = loadedPreset\?\.id \?\? null/);
-  assert.match(builder, /loadedPreset = savedPreset \? clone\(savedPreset\) : null/);
+  assert.match(builder, /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/);
   assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
   assert.match(builder, /class="zb-clear"/);
   assert.match(builder, /Zone configuration cleared/);

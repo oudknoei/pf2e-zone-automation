@@ -58,8 +58,19 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
   };
 }
 
+/** Keeps the preset revision tied to the configuration a zone actually used. */
+function presetRevision(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/** Reopens a dismissed zone with its original revision so stale presets cannot be overwritten. */
+export function savedPresetFromZone(record, zoneState) {
+  if (!record) return null;
+  return { ...record, revision: presetRevision(zoneState?.savedPresetRevision) };
+}
+
 /** Gives finite zones the same duration metadata regardless of who created them. */
-function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, chosenDamageType, durationResolution }) {
+function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution }) {
   const combat = game.combat;
   const sourceCombatant = sourceActor.combatant ?? null;
   const rounds = durationResolution?.rounds ?? null;
@@ -71,6 +82,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
     createdWorldTime: Number(game.time?.worldTime ?? 0),
     createdBy: { userId: requester.id, name: requester.name },
     savedPresetId: savedPresetId ?? null,
+    savedPresetRevision: savedPresetId ? presetRevision(savedPresetRevision) : null,
     sourceActorUuid: sourceActor.uuid,
     sourceTokenUuid: sourceToken.uuid,
     activation: { damageType: chosenDamageType ?? null },
@@ -104,7 +116,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
 }
 
 /** Shares validation, payload, activation, and duration handling while allowing each client to place an area in its own UI. */
-export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, chosenDamageType = null, color, placeArea }) {
+export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea }) {
   if (!scene || sourceToken?.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
   const config = requireValidConfig(rawConfig, sourceActor);
   const effectValidation = await validateEffectItems(config);
@@ -117,7 +129,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   const payload = {
     runtimeVersion: RUNTIME_VERSION,
     config,
-    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, chosenDamageType, durationResolution })
+    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution })
   };
   const regionData = {
     name: config.name,

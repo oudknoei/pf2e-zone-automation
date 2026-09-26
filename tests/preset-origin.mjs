@@ -3,8 +3,9 @@ import test from "node:test";
 
 import { handleWorkerRequest } from "../scripts/worker.js";
 import { normalizeConfig } from "../scripts/zone-config.js";
+import { savedPresetFromZone } from "../scripts/zone-creation.js";
 
-test("player zones retain their saved preset link for later overwrite", async () => {
+test("player zones retain their saved preset revision and reject stale overwrites", async () => {
   const priorClamp = Math.clamp;
   const gm = { id: "gm", name: "GM", active: true, isGM: true, color: "#336699" };
   const player = { id: "player", name: "Player", active: true, isGM: false, color: "#336699" };
@@ -106,12 +107,30 @@ test("player zones retain their saved preset link for later overwrite", async ()
       sceneId: scene.id,
       sourceTokenUuid: sourceToken.uuid,
       config,
-      savedPresetId: record.id
+      savedPresetId: record.id,
+      savedPresetRevision: record.revision
     };
     const created = await handleWorkerRequest(request);
     assert.equal(created.ok, true, created.error);
     assert.equal(createdData.flags.world.pf2eZone.state.savedPresetId, record.id);
+    assert.equal(createdData.flags.world.pf2eZone.state.savedPresetRevision, 1);
     assert.deepEqual(createdData.flags.world.pf2eZone.config, normalizeConfig(config, { strict: true }));
+
+    const newer = await handleWorkerRequest({
+      protocol: 1, action: "library-save", requesterUserId: player.id,
+      recordId: record.id, expectedRevision: 1, sourceActorUuid: sourceActor.uuid,
+      config: { ...config, name: "Newer preset" }
+    });
+    assert.equal(newer.ok, true, newer.error);
+    assert.equal(newer.record.revision, 2);
+
+    const zoneState = createdData.flags.world.pf2eZone.state;
+    const reopened = savedPresetFromZone(newer.record, zoneState);
+    assert.equal(reopened.revision, 1, "the dismissed zone keeps its creation revision");
+    assert.equal(newer.record.revision, 2, "restoring the old revision does not mutate the library record");
+    assert.equal(savedPresetFromZone(newer.record, { savedPresetId: record.id }).revision, null,
+      "zones created before revision tracking must not inherit the current revision");
+    assert.equal(savedPresetFromZone(null, zoneState), null);
 
     const dismissed = await handleWorkerRequest({
       protocol: 1,
@@ -123,18 +142,34 @@ test("player zones retain their saved preset link for later overwrite", async ()
     assert.equal(dismissed.ok, true, dismissed.error);
     assert.equal(endedRegion, region);
 
+    const previousError = console.error;
+    let stale;
+    try {
+      console.error = () => {};
+      stale = await handleWorkerRequest({
+        protocol: 1, action: "library-save", requesterUserId: player.id,
+        recordId: reopened.id, expectedRevision: reopened.revision,
+        sourceActorUuid: sourceActor.uuid, config: { ...config, name: "Old zone edits" }
+      });
+    } finally {
+      console.error = previousError;
+    }
+    assert.equal(stale.ok, false);
+    assert.match(stale.error, /changed since you opened it/);
+    assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones[record.id].name, "Newer preset");
+
     const saved = await handleWorkerRequest({
       protocol: 1,
       action: "library-save",
       requesterUserId: player.id,
       recordId: createdData.flags.world.pf2eZone.state.savedPresetId,
-      expectedRevision: record.revision,
+      expectedRevision: newer.record.revision,
       sourceActorUuid: sourceActor.uuid,
       config: { ...config, name: "Revised Zone" }
     });
     assert.equal(saved.ok, true, saved.error);
     assert.equal(saved.record.id, record.id);
-    assert.equal(saved.record.revision, 2);
+    assert.equal(saved.record.revision, 3);
     assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones[record.id].name, "Revised Zone");
 
     const priorError = console.error;

@@ -8,7 +8,7 @@ import { editableZoneSize } from "./config-input.js";
 import { requestGMWorker } from "./transport.js";
 import { storedTargeting, targetLabels, targetingChoices } from "./targeting.js";
 import { fixedAreaShape, zoneTypeChoice, zoneTypeFields } from "./area-shape.js";
-import { createZoneDocument } from "./zone-creation.js";
+import { createZoneDocument, savedPresetFromZone } from "./zone-creation.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { inspectEffectItem, validateEffectItems } from "./effect-items.js";
 
@@ -1262,6 +1262,7 @@ export async function openZoneBuilder() {
   /** Sends player requests to the GM and uses the same creation logic for direct GM actions. */
   async function createZoneRegion(cfg, chosenDamageType) {
     const savedPresetId = loadedPreset?.id ?? null;
+    const savedPresetRevision = loadedPreset?.revision ?? null;
     if (savedPresetId && !(await fetchSavedZoneRecords()).some((record) => record.id === savedPresetId)) {
       throw new Error("The saved zone this configuration came from no longer exists. Use Save As to create a new preset.");
     }
@@ -1274,7 +1275,7 @@ export async function openZoneBuilder() {
       }
       const response = await callGMWorker("create", {
         sceneId: canvas.scene.id, sourceTokenUuid: sourceToken.document.uuid,
-        config: clone(cfg), savedPresetId, chosenDamageType: chosenDamageType ?? null,
+        config: clone(cfg), savedPresetId, savedPresetRevision, chosenDamageType: chosenDamageType ?? null,
         color: game.user.color, areaCenter
       });
       if (response.duration?.formula) {
@@ -1285,7 +1286,7 @@ export async function openZoneBuilder() {
 
     const { region, durationResolution } = await createZoneDocument({
       rawConfig: cfg, scene: canvas.scene, sourceActor, sourceToken: sourceToken.document,
-      requester: game.user, savedPresetId, chosenDamageType, color: game.user.color,
+      requester: game.user, savedPresetId, savedPresetRevision, chosenDamageType, color: game.user.color,
       placeArea: async (regionData, config) => {
         const dimensions = config.areaShape === "square" ? config.sideLength + "-foot square" : config.radius + "-foot circle";
         ui.notifications.info("Place the " + dimensions + " " + config.name + " area on the Scene.");
@@ -1486,12 +1487,14 @@ export async function openZoneBuilder() {
             await callGMWorker("end", { sceneId: canvas.scene.id, regionId: region.id });
           }
           state = zoneConfig;
-          loadedPreset = savedPreset ? clone(savedPreset) : null;
+          loadedPreset = savedPresetFromZone(savedPreset ? clone(savedPreset) : null, payload.state);
           await dlg.close();
           rerenderInsideDialog();
           ui.notifications.info(`Dismissed '${region.name}' and opened its configuration. Source actor was not changed.`);
           if (savedPresetId && !savedPreset) {
             ui.notifications.warn("The zone's saved preset no longer exists. Save will create a new preset.");
+          } else if (savedPreset && loadedPreset.revision !== savedPreset.revision) {
+            ui.notifications.warn("This zone's saved preset has changed or its original revision is unknown. Use Save As to keep this configuration, or Open the current saved version.");
           }
         } catch (error) {
           console.error("PF2e Zone dismissal failed", error);
