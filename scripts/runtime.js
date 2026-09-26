@@ -60,6 +60,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         hooksInstalled: false,
         endingZones: new Set(),
         deletingItems: new Set(),
+        itemDeletePromises: new Map(),
+        endZonePromises: new Map(),
         chatAlertBatches: new Set(),
         regionReconcileTimers: new Map(),
         areaBoundaryBefore: new Map(),
@@ -706,28 +708,39 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return `${item?.parent?.uuid ?? "Actor"}::${item?.id ?? "Item"}`;
         },
 
-        /** Serializes item deletion so linked cleanup does not create Foundry collection errors. */
+        /** Shares an in-flight delete and reports failures so cleanup records remain retryable. */
         async deleteOwnedItem(item, context = "zone cleanup") {
-          if (!item?.parent) return;
+          if (!item?.parent) return true;
           const key = this.itemDeleteKey(item);
-          if (this.deletingItems.has(key)) return;
+          const pending = this.itemDeletePromises.get(key);
+          if (pending) return pending;
 
+          // Keep condition hooks suppressed while Foundry removes the Item.
           this.deletingItems.add(key);
-          try {
-            // Re-resolve from the actor collection so a stale Item document
-            // cannot issue a second embedded delete after another cleanup path
-            // already removed it.
+          const deletion = (async () => {
             const live = item.parent?.items?.get?.(item.id);
-            if (live) await live.delete();
-          } catch (error) {
-            if (!/does not exist|undefined id/i.test(String(error?.message ?? error))) {
-              console.warn(`PF2e Zone: ${context} failed`, item, error);
+            if (!live) return true;
+            try {
+              await live.delete();
+            } catch (error) {
+              // A concurrent deletion may have completed while this request was in flight.
+              if (!item.parent?.items?.get?.(item.id)) return true;
+              throw new Error(`PF2e Zone: ${context} failed for Item '${item.name ?? item.id}': ${error?.message ?? error}`, { cause: error });
             }
+            if (item.parent?.items?.get?.(item.id)) {
+              throw new Error(`PF2e Zone: ${context} did not remove Item '${item.name ?? item.id}'.`);
+            }
+            return true;
+          })();
+          this.itemDeletePromises.set(key, deletion);
+          try {
+            return await deletion;
           } finally {
-            // deleteItem hooks run during the document operation. Keep the
-            // suppression key alive through the next task so those hooks do not
-            // immediately recurse into dependency reconciliation.
-            setTimeout(() => this.deletingItems.delete(key), 50);
+            this.itemDeletePromises.delete(key);
+            // Item hooks can finish just after the document promise settles.
+            setTimeout(() => {
+              if (!this.itemDeletePromises.has(key)) this.deletingItems.delete(key);
+            }, 50);
           }
         },
 
@@ -1220,13 +1233,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Removes the stored cleanup reference only after its item or condition is no longer relevant. */
+        /** Retains the cleanup record until its Actor is available and its Item is gone. */
         async deleteAppliedRecord(payload, recordId) {
           const record = payload.state.applied[recordId];
           if (!record) return;
           const { actor } = await this.resolveTarget(record);
-          const item = actor?.items?.get(record.itemId);
-          if (item) await this.deleteOwnedItem(item, "failed to delete owned item");
+          if (!actor?.items?.get) {
+            throw new Error(`PF2e Zone: target Actor for Item '${record.itemId}' is unavailable; cleanup can be retried.`);
+          }
+          const item = actor.items.get(record.itemId);
+          if (item) await this.deleteOwnedItem(item, "zone-owned Item cleanup");
           delete payload.state.applied[recordId];
         },
 
@@ -1241,10 +1257,17 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async cleanupZoneUnlocked(payload) {
           const records = Object.entries(payload.state.applied)
             .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
-          for (const [recordId] of records) await this.deleteAppliedRecord(payload, recordId);
+          const failures = [];
+          for (const [recordId] of records) {
+            try { await this.deleteAppliedRecord(payload, recordId); }
+            catch (error) { failures.push(error); }
+          }
           payload.state.pendingSaves = {};
           payload.state.recoveryWatchers = {};
           payload.state.deactivated = true;
+          if (failures.length) {
+            throw new AggregateError(failures, `PF2e Zone: ${failures.length} owned Item cleanup(s) failed: ${failures[0].message}`);
+          }
         },
 
         /** Saves deactivation before deleting owned effects so later events see an inactive zone. */
@@ -1268,21 +1291,58 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Retries dismissals whose Region and cleanup records survived an earlier failure. */
+        async reconcileUnfinishedZoneEnds() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            if (!this.readPayload(region)?.state?.endRequested) continue;
+            try {
+              await this.endZone(region, "retry unfinished cleanup");
+            } catch (_error) {
+              // endZone retains the Region and reports the failure; another GM
+              // startup or a manual dismissal can try again later.
+            }
+          }
+        },
+
+        /** Retries exit-bound Item removal after a missed or failed movement cleanup. */
+        async reconcileUnfinishedExitCleanup() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            const snapshot = this.readPayload(region);
+            if (!this.isOperational(region, snapshot)) continue;
+            if (!Object.values(snapshot.state.applied).some((record) => record.removal === "on-exit")) continue;
+            try {
+              await this.withState(region, async (payload) => {
+                if (this.isOperational(region, payload)) await this.cleanupExitedItemsUnlocked(region, payload);
+              });
+            } catch (error) {
+              console.error("PF2e Zone: exit cleanup retry failed", region, error);
+              ui.notifications.error(`PF2e Zone: failed to remove an exited effect from '${region.name}'. See console.`);
+            }
+          }
+        },
+
         /** Finishes cleanup when Foundry deletes a Region outside the normal end-zone path. */
         async cleanupDeletedRegion(region, payload) {
           const records = Object.entries(payload?.state?.applied ?? {})
             .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
+          const failures = [];
           for (const [, record] of records) {
-            const { actor } = await this.resolveTarget(record);
-            const item = actor?.items?.get(record.itemId);
-            if (item) await this.deleteOwnedItem(item, "cleanup after Region deletion");
+            try {
+              const { actor } = await this.resolveTarget(record);
+              const item = actor?.items?.get(record.itemId);
+              if (item) await this.deleteOwnedItem(item, "cleanup after Region deletion");
+            } catch (error) { failures.push(error); }
+          }
+          if (failures.length) {
+            throw new AggregateError(failures, `PF2e Zone: ${failures.length} owned Item cleanup(s) failed after Region deletion.`);
           }
         },
 
-        /** Aligns maintained effects with current occupants after missed or reordered Region events. */
-        async reconcileContinuousUnlocked(region, payload) {
-          const insideTokens = this.tokensInside(region);
-          const inside = new Set(insideTokens.map((t) => t.uuid));
+        /** Removes temporary Items whose creature is no longer eligible or inside. */
+        async cleanupExitedItemsUnlocked(region, payload, insideTokens = this.tokensInside(region)) {
+          const inside = new Set(insideTokens.map((token) => token.uuid));
 
           // Remove on-exit zone-owned data from tokens that are no longer both
           // inside and eligible. This also catches alliance changes on a later reconcile.
@@ -1292,6 +1352,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const eligible = token && inside.has(record.tokenUuid) && await this.eligible(payload, token);
             if (!eligible) await this.deleteAppliedRecord(payload, recordId);
           }
+        },
+
+        /** Aligns maintained effects with current occupants after missed or reordered Region events. */
+        async reconcileContinuousUnlocked(region, payload) {
+          const insideTokens = this.tokensInside(region);
+          await this.cleanupExitedItemsUnlocked(region, payload, insideTokens);
 
           const eligibleTokens = [];
           for (const token of insideTokens) {
@@ -1623,51 +1689,75 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const region of this.allZones()) await this.processSourceTurnStart(region);
         },
 
-        /** Uses one orderly end path so Region deletion always cleans linked conditions and Effect Items. */
+        /** Leaves a retryable Region when owned Items or Region deletion fails. */
         async endZone(region, reason = "ended") {
           const scene = region?.parent;
           const regionId = region?.id;
           if (!scene || !regionId) return;
 
-          // Always resolve the currently embedded Region document. A stale
-          // Region object may retain its parent after another hook has already
-          // deleted it from the Scene collection.
+          // A stale document is already gone; simultaneous requests share one result.
           const liveRegion = scene.regions?.get?.(regionId);
           if (!liveRegion) return;
-
           const key = liveRegion.uuid;
-          if (this.endingZones.has(key)) return;
-          this.endingZones.add(key);
+          const pendingEnd = this.endZonePromises.get(key);
+          if (pendingEnd) return pendingEnd;
 
+          this.endingZones.add(key);
           const reconcileTimer = this.regionReconcileTimers.get(key);
           if (reconcileTimer) clearTimeout(reconcileTimer);
           this.regionReconcileTimers.delete(key);
 
+          const ending = (async () => {
+            let cleanupPayload = null;
+            let cleanupComplete = false;
+            try {
+              // Drain accepted work before marking the Region inactive. While
+              // endingZones holds the key, no new state work can start.
+              const pendingState = this.locks.get(key);
+              if (pendingState) await pendingState.catch(() => undefined);
+
+              const current = scene.regions?.get?.(regionId);
+              if (!current) return;
+              cleanupPayload = this.readPayload(current);
+              if (cleanupPayload) {
+                cleanupPayload.state.deactivated = true;
+                cleanupPayload.state.endRequested = true;
+                cleanupPayload.state.pendingSaves = {};
+                cleanupPayload.state.recoveryWatchers = {};
+                // Persist the retry marker before any Item deletion. If cleanup
+                // stops halfway, the Region stays quiet and startup can retry.
+                await this.writePayload(current, cleanupPayload);
+                await this.cleanupZoneUnlocked(cleanupPayload);
+              }
+              cleanupComplete = true;
+
+              const stillLive = scene.regions?.get?.(regionId);
+              if (stillLive) await stillLive.delete();
+              if (scene.regions?.get?.(regionId)) {
+                throw new Error(`PF2e Zone: Region '${liveRegion.name}' was not deleted.`);
+              }
+            } catch (error) {
+              const remaining = scene.regions?.get?.(regionId);
+              if (!remaining && cleanupComplete) return;
+              if (remaining && cleanupPayload) {
+                try {
+                  // Persist completed deletions; records for failed deletions
+                  // remain, and the endRequested marker survives a reconnect.
+                  await this.writePayload(remaining, cleanupPayload);
+                } catch (persistError) {
+                  console.error("PF2e Zone: failed to save unfinished cleanup", remaining, persistError);
+                }
+              }
+              console.error(`PF2e Zone: failed to end zone (${reason})`, liveRegion, error);
+              ui.notifications.error(`PF2e Zone: failed to end '${liveRegion.name}'. See console.`);
+              throw error;
+            }
+          })();
+          this.endZonePromises.set(key, ending);
           try {
-            // Allow already accepted state work to commit before deleting the
-            // Region. New work is rejected by withState while endingZones holds
-            // this key, so no late update can target the deleted document.
-            const pending = this.locks.get(key);
-            if (pending) await pending.catch(() => undefined);
-
-            // The Region is about to be deleted, so cleanup only needs to remove
-            // owned effects and pending workflows. Writing the modified payload
-            // back first creates an unnecessary embedded-document update race.
-            const regionForCleanup = scene.regions?.get?.(regionId);
-            const payload = regionForCleanup ? this.readPayload(regionForCleanup) : null;
-            if (payload) await this.cleanupZoneUnlocked(payload);
-
-            // Re-resolve after cleanup in case another concurrent lifecycle
-            // event removed the Region while cleanup awaited embedded updates.
-            const stillLive = scene.regions?.get?.(regionId);
-            if (stillLive) await stillLive.delete();
-          } catch (error) {
-            // Deletion is intentionally idempotent. If Foundry reports that a
-            // concurrent caller already removed it, there is nothing left to do.
-            if (/does not exist/i.test(String(error?.message ?? error))) return;
-            console.error(`PF2e Zone: failed to end zone (${reason})`, liveRegion, error);
-            ui.notifications.error(`PF2e Zone: failed to end '${liveRegion.name}'. See console.`);
+            return await ending;
           } finally {
+            this.endZonePromises.delete(key);
             this.endingZones.delete(key);
           }
         },
@@ -2112,6 +2202,31 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Repairs temporary owned Items after an externally deleted Region lost its cleanup record. */
+        async reconcileOrphanedZoneItems() {
+          if (!this.isAuthority()) return;
+          const actors = new Set(game.actors?.contents ?? []);
+          for (const scene of game.scenes?.contents ?? game.scenes ?? []) {
+            for (const token of scene.tokens?.values?.() ?? scene.tokens ?? []) {
+              if (token.actor) actors.add(token.actor);
+            }
+          }
+          for (const actor of actors) {
+            for (const item of [...(actor.items?.values?.() ?? actor.items ?? [])]) {
+              const flag = this.zoneItemFlag(item);
+              if (!flag?.zoneUuid || !["on-exit", "zone-end"].includes(flag.removal)) continue;
+              try {
+                const region = await fromUuid(flag.zoneUuid);
+                if (region?.parent?.regions?.get?.(region.id)) continue;
+                await this.deleteOwnedItem(item, "orphaned zone Item cleanup");
+              } catch (error) {
+                console.error("PF2e Zone: orphaned Item cleanup failed", item, error);
+                ui.notifications.error(`PF2e Zone: failed to remove an orphaned effect from ${actor.name}. See console.`);
+              }
+            }
+          }
+        },
+
         /** Releases hooks and timers so a replaced runtime cannot process events twice. */
         teardownHooks() {
           const registry = globalThis.PF2EZoneRuntimeHookRegistry;
@@ -2365,7 +2480,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Recover disabled behavior state and overdue zones after a GM reconnect.
           setTimeout(async () => {
             try {
+              await this.reconcileOrphanedZoneItems();
+              await this.reconcileUnfinishedZoneEnds();
               await this.reconcileDisabledZones();
+              await this.reconcileUnfinishedExitCleanup();
               await this.checkAllDurations();
             } catch (error) {
               console.error("PF2e Zone initial zone reconcile", error);

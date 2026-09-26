@@ -102,7 +102,7 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 1. Select **Validate** to check the configuration.
 2. Select **Post Preview to Chat** to validate and send a readable summary privately to yourself without creating a Region.
 3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center. A GM can later drag the Region; Entry effects apply along the straight path between its old and new positions. Resizing applies Entry only to newly covered creatures.
-4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place.
+4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place. If cleanup fails, the zone stays inactive and shows **Cleanup pending**; select **Retry Dismiss** after the underlying problem is resolved. The GM runtime also retries unfinished cleanup after reconnecting.
 
 As you edit, the footer shows **Ready to create** when the configuration has no blocking errors. It also reports **GM connected** for a GM, **Player creation available** when a player can reach an active GM, or **Source token changed** when you need to update the controlled source. Invalid fields receive an inline explanation; warnings remain visible in the validation and preview views but do not prevent creation.
 

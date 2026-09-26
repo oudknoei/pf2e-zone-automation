@@ -1441,9 +1441,10 @@ export async function openZoneBuilder() {
       const payload = region.getFlag("world", "pf2eZone");
       const cfg = payload?.config ?? {};
       const canEnd = await canCurrentUserDismiss(payload);
+      const cleanupPending = Boolean(payload?.state?.endRequested);
       zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
-        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}</div></div>
-        ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> Dismiss</button>` : `<span></span>`}
+        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}${cleanupPending ? " · Cleanup pending" : ""}</div></div>
+        ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> ${cleanupPending ? "Retry Dismiss" : "Dismiss"}</button>` : `<span></span>`}
       </div>`);
     }
 

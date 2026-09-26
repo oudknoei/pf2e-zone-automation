@@ -72,9 +72,211 @@ test("zone cleanup serializes accepted state work before deleting the Region", a
   releaseStateWork();
   await Promise.all([acceptedStateWork, ending]);
 
-  assert.deepEqual(events, ["update", "delete"]);
+  assert.deepEqual(events, ["update", "update", "delete"]);
+  assert.equal(storedPayload.state.deactivated, true);
+  assert.equal(storedPayload.state.endRequested, true);
   assert.equal(regions.has(region.id), false);
   delete globalThis._replace;
+});
+
+test("failed Item cleanup retains records and retries after reconnect", async () => {
+  await withFiniteZoneFixture(async ({ scene, region, sourceActor }) => {
+    const priorUi = globalThis.ui;
+    const priorConsoleError = console.error;
+    const notices = [];
+    globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
+    console.error = () => {};
+    try {
+      let failFirst = true;
+      const first = {
+        id: "first", name: "First", parent: sourceActor,
+        async delete() {
+          if (failFirst) throw new Error("temporary Item deletion failure");
+          sourceActor.items.delete(this.id);
+        }
+      };
+      const second = {
+        id: "second", name: "Second", parent: sourceActor,
+        async delete() { sourceActor.items.delete(this.id); }
+      };
+      sourceActor.items = new Map([[first.id, first], [second.id, second]]);
+      region.getFlag().state.applied = {
+        first: { actorUuid: sourceActor.uuid, itemId: first.id, removal: "zone-end" },
+        second: { actorUuid: sourceActor.uuid, itemId: second.id, removal: "zone-end" }
+      };
+
+      await assert.rejects(runtime.endZone(region, "manual"), /temporary Item deletion failure/);
+      assert.equal(scene.regions.has(region.id), true, "failed dismissal keeps the Region for retry");
+      assert.equal(region.getFlag().state.deactivated, true);
+      assert.equal(region.getFlag().state.endRequested, true);
+      assert.deepEqual(Object.keys(region.getFlag().state.applied), ["first"]);
+      assert.deepEqual([...sourceActor.items.keys()], ["first"], "another Item still cleans up after the first failure");
+      assert.equal(notices.length, 1, "dismissal failure is visible to the GM");
+
+      failFirst = false;
+      await runtime.reconcileUnfinishedZoneEnds();
+      assert.equal(scene.regions.has(region.id), false);
+      assert.equal(sourceActor.items.size, 0);
+    } finally {
+      console.error = priorConsoleError;
+      if (priorUi === undefined) delete globalThis.ui;
+      else globalThis.ui = priorUi;
+    }
+  });
+});
+
+test("failed Region deletion rejects dismissal and remains retryable", async () => {
+  await withFiniteZoneFixture(async ({ scene, region }) => {
+    const priorUi = globalThis.ui;
+    const priorConsoleError = console.error;
+    globalThis.ui = { notifications: { error: () => {} } };
+    console.error = () => {};
+    try {
+      const originalDelete = region.delete;
+      let failDelete = true;
+      region.delete = async function () {
+        if (failDelete) throw new Error("temporary Region deletion failure");
+        return originalDelete.call(this);
+      };
+
+      await assert.rejects(runtime.endZone(region, "manual"), /temporary Region deletion failure/);
+      assert.equal(scene.regions.has(region.id), true);
+      assert.equal(region.getFlag().state.endRequested, true);
+      assert.equal(region.getFlag().state.deactivated, true);
+
+      failDelete = false;
+      await runtime.reconcileUnfinishedZoneEnds();
+      assert.equal(scene.regions.has(region.id), false);
+    } finally {
+      console.error = priorConsoleError;
+      if (priorUi === undefined) delete globalThis.ui;
+      else globalThis.ui = priorUi;
+    }
+  });
+});
+
+test("simultaneous dismissal requests share a failed Region deletion", async () => {
+  await withFiniteZoneFixture(async ({ scene, region }) => {
+    const priorUi = globalThis.ui;
+    const priorConsoleError = console.error;
+    globalThis.ui = { notifications: { error: () => {} } };
+    console.error = () => {};
+    try {
+      let signalStarted;
+      const started = new Promise((resolve) => { signalStarted = resolve; });
+      let releaseDelete;
+      const released = new Promise((resolve) => { releaseDelete = resolve; });
+      region.delete = async () => {
+        signalStarted();
+        await released;
+        throw new Error("simultaneous Region deletion failure");
+      };
+      const first = runtime.endZone(region, "first request");
+      await started;
+      const second = runtime.endZone(region, "second request");
+      releaseDelete();
+      const results = await Promise.allSettled([first, second]);
+      assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
+      assert.match(results[1].reason.message, /simultaneous Region deletion failure/);
+      assert.equal(scene.regions.has(region.id), true);
+    } finally {
+      console.error = priorConsoleError;
+      if (priorUi === undefined) delete globalThis.ui;
+      else globalThis.ui = priorUi;
+    }
+  });
+});
+
+test("orphaned zone Items can be retried after an external Region deletion", async () => {
+  await withFiniteZoneFixture(async ({ scene, region, sourceActor }) => {
+    const priorUi = globalThis.ui;
+    const priorConsoleError = console.error;
+    const priorGetProperty = foundry.utils.getProperty;
+    const priorActors = game.actors.contents;
+    const notices = [];
+    globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
+    console.error = () => {};
+    foundry.utils.getProperty = (object, path) => path.split(".").reduce((value, key) => value?.[key], object);
+    try {
+      let failDeletion = true;
+      const item = {
+        id: "orphaned", name: "Orphaned effect", parent: sourceActor,
+        flags: { world: { pf2eZone: { zoneUuid: region.uuid, removal: "zone-end" } } },
+        async delete() {
+          if (failDeletion) throw new Error("temporary orphan cleanup failure");
+          sourceActor.items.delete(this.id);
+        }
+      };
+      sourceActor.items = new Map([[item.id, item]]);
+      game.actors.contents = [sourceActor];
+      scene.regions.delete(region.id);
+
+      await runtime.reconcileOrphanedZoneItems();
+      assert.equal(sourceActor.items.has(item.id), true);
+      assert.equal(notices.length, 1);
+      failDeletion = false;
+      await runtime.reconcileOrphanedZoneItems();
+      assert.equal(sourceActor.items.has(item.id), false);
+    } finally {
+      game.actors.contents = priorActors;
+      foundry.utils.getProperty = priorGetProperty;
+      console.error = priorConsoleError;
+      if (priorUi === undefined) delete globalThis.ui;
+      else globalThis.ui = priorUi;
+    }
+  });
+});
+
+test("a stale Item deletion error is harmless once the Item is gone", async () => {
+  const actor = { uuid: "Actor.stale", items: new Map() };
+  const item = {
+    id: "stale", parent: actor,
+    async delete() {
+      actor.items.delete(this.id);
+      throw new Error("undefined id [stale] does not exist in the EmbeddedCollection collection");
+    }
+  };
+  actor.items.set(item.id, item);
+  assert.equal(await runtime.deleteOwnedItem(item), true);
+  assert.equal(actor.items.has(item.id), false);
+});
+
+test("failed on-exit cleanup retries at startup without replaying continuous effects", async () => {
+  await withFiniteZoneFixture(async ({ region, sourceActor, sourceToken }) => {
+    let failDeletion = true;
+    const item = {
+      id: "exited", parent: sourceActor,
+      async delete() {
+        if (failDeletion) throw new Error("temporary exit cleanup failure");
+        sourceActor.items.delete(this.id);
+      }
+    };
+    sourceActor.items = new Map([[item.id, item]]);
+    region.getFlag().state.applied = {
+      exited: {
+        actorUuid: sourceActor.uuid, tokenUuid: sourceToken.uuid,
+        itemId: item.id, removal: "on-exit"
+      }
+    };
+
+    await assert.rejects(
+      runtime.withState(region, (payload) => runtime.cleanupExitedItemsUnlocked(region, payload)),
+      /temporary exit cleanup failure/
+    );
+    assert.equal(sourceActor.items.has(item.id), true);
+    assert.ok(region.getFlag().state.applied.exited);
+
+    failDeletion = false;
+    const previousContinuous = runtime.processContinuousUnlocked;
+    runtime.processContinuousUnlocked = () => assert.fail("startup retry must not replay continuous effects");
+    try {
+      await runtime.reconcileUnfinishedExitCleanup();
+    } finally {
+      runtime.processContinuousUnlocked = previousContinuous;
+    }
+    assert.equal(sourceActor.items.has(item.id), false);
+    assert.deepEqual(region.getFlag().state.applied, {});
+  });
 });
 
 test("self-only and legacy both targeting remain compatible", async () => {

@@ -172,6 +172,32 @@ test("direct and player creation reject missing and non-Effect Items before maki
   assert.ok(result.region);
 });
 
+test("GM worker reports a failed dismissal instead of claiming success", async () => {
+  const previousRegions = scene.regions;
+  const originalEndZone = globalThis.PF2EZoneRuntime.endZone;
+  const previousConsoleError = console.error;
+  const region = { id: "failed-dismissal", getFlag: () => ({ state: {} }) };
+  scene.regions = new Map([[region.id, region]]);
+  globalThis.PF2EZoneRuntime.endZone = async () => {
+    throw new Error("Region deletion failed");
+  };
+  console.error = () => {};
+  try {
+    const response = await handleWorkerRequest({
+      protocol: 1, action: "end", requesterUserId: gm.id,
+      sceneId: scene.id, regionId: region.id
+    });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /Region deletion failed/);
+    assert.equal(scene.regions.has(region.id), true);
+  } finally {
+    console.error = previousConsoleError;
+    globalThis.PF2EZoneRuntime.endZone = originalEndZone;
+    if (previousRegions === undefined) delete scene.regions;
+    else scene.regions = previousRegions;
+  }
+});
+
 test("both area placement adapters use the shared payload and state", async () => {
   const config = validConfig();
   config.mode = "area";

@@ -58,6 +58,7 @@ const tokenDocument = {
 const token = { actor, name: "Source", document: tokenDocument };
 const gm = { id: "gm", name: "GM", isGM: true, color: "#336699" };
 const runtimeCalls = { activated: [], ended: [] };
+let failDismissal = false;
 
 globalThis.foundry = {
   utils: {
@@ -122,6 +123,7 @@ globalThis.PF2EZoneRuntime = {
   installHooks() {},
   async activateRegion(region) { runtimeCalls.activated.push(region); },
   async endZone(region) {
+    if (failDismissal) throw new Error("Region deletion failed");
     runtimeCalls.ended.push(region);
     regions.delete(region.id);
   }
@@ -181,6 +183,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.noSave.effects[0].uuid, effectUuid);
     assert.deepEqual(runtimeCalls.activated, [region]);
     await until(() => !builderDialog.element.isConnected);
+    region.getFlag("world", "pf2eZone").state.endRequested = true;
 
     await openZoneBuilder();
     const reopenedDialog = dialogs.at(-1);
@@ -189,15 +192,35 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     await until(() => dialogs.at(-1).title === "Manage PF2e Zones");
     const manageDialog = dialogs.at(-1);
     assert.match(manageDialog.window.content.textContent, /Smoke Zone/);
+    assert.match(manageDialog.window.content.textContent, /Cleanup pending/);
+    assert.match(manageDialog.window.content.querySelector('[data-action="end"]').textContent, /Retry Dismiss/);
 
-    manageDialog.window.content.querySelector('[data-action="end"]').click();
+    const dismissButton = manageDialog.window.content.querySelector('[data-action="end"]');
+    failDismissal = true;
+    const priorConsoleError = console.error;
+    try {
+      console.error = () => {};
+      dismissButton.click();
+      await until(() => notices.some((notice) => notice.level === "error"));
+    } finally {
+      console.error = priorConsoleError;
+    }
+    assert.equal(regions.size, 1, "failed dismissal leaves the Region intact");
+    assert.equal(manageDialog.element.isConnected, true);
+    assert.equal(dismissButton.disabled, false, "failed dismissal can be retried");
+    assert.equal(notices.some((notice) => notice.level === "info" && notice.message.startsWith("Dismissed")), false);
+
+    failDismissal = false;
+    dismissButton.click();
     await until(() => regions.size === 0);
     await until(() => !manageDialog.element.isConnected);
     assert.deepEqual(runtimeCalls.ended, [region]);
     root = reopenedDialog.window.content.querySelector(".pf2e-zone-builder");
     assert.equal(root.querySelector('[data-zone="name"]').value, "Smoke Zone");
     assert.equal(root.querySelector('[data-outcome="noSave"] [data-field="effect-uuid"]').value, effectUuid);
-    assert.deepEqual(notices.filter((notice) => notice.level === "error"), []);
+    assert.deepEqual(notices.filter((notice) => notice.level === "error").map((notice) => notice.message), [
+      "PF2e Zone dismissal failed: Region deletion failed"
+    ]);
   } finally {
     for (const dialog of dialogs) if (dialog.element.isConnected) await dialog.close();
     dom.window.close();
