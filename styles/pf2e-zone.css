@@ -9,7 +9,6 @@
   --zb-button-hover: #f3efe6;
   --zb-border: #85837d;
   --zb-control-border: #72716d;
-  --zb-check-border: #64635f;
   --zb-focus: #805523;
   --zb-error: #a11e1e;
   --zb-error-ring: rgba(161, 30, 30, .24);
@@ -23,7 +22,8 @@
   font-size:14px; position:relative; max-height:calc(100vh - 180px); min-height:320px; overflow-y:auto; overflow-x:hidden; padding-right:6px; overscroll-behavior:contain; scrollbar-gutter:stable;
   scrollbar-color: var(--zb-border) transparent;
 }
-/* The application, rather than the operating system, chooses Foundry's active theme. */
+/* Foundry can apply the theme to the page or directly to an application. */
+body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .application.theme-dark .pf2e-zone-builder {
   --zb-text: #f0ede6;
   --zb-muted: #bdb8b0;
@@ -35,7 +35,6 @@
   --zb-button-hover: #474b53;
   --zb-border: #686b72;
   --zb-control-border: #777b84;
-  --zb-check-border: #9a9da3;
   --zb-focus: #e3b16b;
   --zb-error: #ff8585;
   --zb-error-ring: rgba(255, 133, 133, .32);
@@ -48,9 +47,10 @@
 }
 .pf2e-zone-builder * { box-sizing: border-box; }
 .pf2e-zone-builder .zb-scroll { overflow:visible; padding-right:0; }
-.pf2e-zone-builder .zb-source { position:sticky; top:0; z-index:5; display:flex; gap:8px; align-items:center; padding:5px 8px; border:1px solid var(--zb-border); border-radius:6px; margin-bottom:4px; background:var(--zb-raised); color:var(--zb-text); box-shadow:0 2px 5px rgba(0,0,0,.18); }
+.pf2e-zone-builder .zb-source { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:5px 8px; border:1px solid var(--zb-border); border-radius:6px; margin-bottom:4px; background:var(--zb-raised); color:var(--zb-text); box-shadow:0 2px 5px rgba(0,0,0,.18); }
 .pf2e-zone-builder .zb-source img { width:36px; height:36px; object-fit:cover; border:0; border-radius:4px; }
-.pf2e-zone-builder .zb-source-main { flex:1; min-width:0; }
+.pf2e-zone-builder .zb-source-main { flex:1 1 220px; min-width:0; }
+.pf2e-zone-builder .zb-source > button { flex:0 0 auto; white-space:nowrap; }
 .pf2e-zone-builder .zb-source-name { font-size:1.05em; font-weight:700; }
 .pf2e-zone-builder :is(h3, label, legend, summary) { color:var(--zb-text); }
 .pf2e-zone-builder :is(input[type=text], input[type=number], select, textarea) {
@@ -68,16 +68,16 @@
   outline-offset:2px;
 }
 .pf2e-zone-builder input[type=checkbox] {
-  background:var(--zb-control);
-  border:1px solid var(--zb-check-border);
-  color:var(--zb-text);
+  appearance:auto;
+  width:18px;
+  height:18px;
+  margin:0;
+  border:0;
+  background:none;
   accent-color:var(--zb-primary);
 }
-.pf2e-zone-builder input[type=checkbox]:checked {
-  background:var(--zb-primary);
-  border-color:var(--zb-primary);
-  color:var(--zb-primary-text);
-}
+.pf2e-zone-builder input[type=checkbox]::before,
+.pf2e-zone-builder input[type=checkbox]::after { content:none; display:none; }
 .pf2e-zone-builder button {
   background:var(--zb-button);
   color:var(--zb-text);
