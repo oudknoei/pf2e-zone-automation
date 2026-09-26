@@ -1047,6 +1047,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Coordinates eligibility, frequency, saves, and results so every trigger follows the same safeguards. */
         async processBlock(region, payload, block, token, trigger, batchId, { continuous = false, eventContext = {}, skipEligibility = false } = {}) {
           const resolvedEventContext = { trigger, ...(eventContext ?? {}) };
+          // Older saved zones may contain a combination now rejected by the builder.
+          // Never apply its No Save result or spend its repeat limit before a save trigger runs.
+          if (continuous && block.save?.enabled) return;
           if (!skipEligibility && !(await this.eligible(payload, token))) {
             console.info("PF2e Zone trigger blocked: ineligible target", {
               zone: payload.config.name, block: block.name, trigger, token: token?.name

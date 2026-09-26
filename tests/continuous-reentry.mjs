@@ -29,6 +29,39 @@ globalThis.game = {
 const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
 
+test("legacy continuous-plus-save blocks leave the repeat limit for Entry saves", async () => {
+  const block = {
+    id: "legacy", name: "Legacy combined block", repeat: "once-per-round",
+    triggers: { continuous: true, enter: true },
+    save: { enabled: true }, chatAlert: { enabled: false }
+  };
+  const payload = { config: { name: "Legacy zone", effects: [block] }, state: { repeat: {} } };
+  const token = { uuid: "Token.legacy", name: "Target", actor: {} };
+  const region = { uuid: "Region.legacy" };
+  const requested = [];
+  const previous = {
+    eligible: runtime.eligible, isImmune: runtime.isImmune,
+    applyOutcome: runtime.applyOutcome, requestSave: runtime.requestSave
+  };
+  try {
+    runtime.eligible = async () => true;
+    runtime.isImmune = () => false;
+    runtime.applyOutcome = async () => { throw new Error("No Save result must not run"); };
+    runtime.requestSave = async (_region, state, savingBlock, target, trigger) => {
+      requested.push({ target, trigger });
+      runtime.markRepeat(state, target.uuid, savingBlock);
+    };
+
+    await runtime.processContinuousUnlocked(region, payload, token, "continuous");
+    assert.deepEqual(payload.state.repeat, {}, "maintenance does not consume the save repeat limit");
+    await runtime.processTriggerUnlocked(region, payload, token, "enter", "entry");
+    assert.deepEqual(requested, [{ target: token, trigger: "enter" }]);
+    assert.equal(runtime.repeatBlocked(payload, token.uuid, block), true);
+  } finally {
+    Object.assign(runtime, previous);
+  }
+});
+
 for (const policy of ["once-per-round", "once-per-zone", "every"]) {
   test(`continuous condition and effect return after same-round re-entry with ${policy} repeat`, async () => {
     const items = new Map();

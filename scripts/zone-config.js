@@ -445,6 +445,10 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       error(`${prefix} Chat Alert is enabled but no alert text was entered.`, blockTarget(index, "chat-alert-text"));
     }
 
+    if (block.save.enabled && block.triggers.continuous) {
+      error(`${prefix} "While a creature is inside" cannot require a saving throw. Use a separate Effect Block for ongoing No Save effects and another for save triggers.`, blockTarget(index, "save-enabled"));
+    }
+
     if (block.save.enabled) {
       if (block.save.type === "choice" && block.save.choices.length < 2) {
         error(`${prefix} target-choice save requires at least two allowed saves.`, blockTarget(index, "save-choices"));

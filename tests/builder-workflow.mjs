@@ -156,6 +156,13 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     change(root.querySelector('[data-zone="name"]'), "Smoke Zone", "input");
     change(root.querySelector('[data-zone="affects-enemies"]'), true);
     change(root.querySelector('[data-trigger="activation"]'), true);
+    change(root.querySelector('[data-trigger="continuous"]'), true);
+    change(root.querySelector('[data-field="save-enabled"]'), true);
+    change(root.querySelector('[data-field="custom-dc"]'), "20", "input");
+    assert.match(root.querySelector('[data-field="save-enabled"]').closest("label").textContent, /separate Effect Block/);
+    assert.equal(root.querySelector(".zb-create").disabled, true);
+    change(root.querySelector('[data-field="save-enabled"]'), false);
+    change(root.querySelector('[data-trigger="continuous"]'), false);
 
     const dropTarget = root.querySelector('[data-outcome="noSave"] .zb-effect-list');
     const drop = new window.Event("drop", { bubbles: true, cancelable: true });

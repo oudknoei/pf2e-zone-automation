@@ -87,10 +87,11 @@ test("direct GM creation retains the revision of its saved preset", async () => 
   assert.equal(state.savedPresetRevision, 4);
 });
 
-test("the worker rejects builder-invalid triggers and save DCs before creating a Region", async () => {
+test("the worker rejects invalid triggers and saving-throw setups before creating a Region", async () => {
   for (const invalid of [
     (config) => { config.effects[0].triggers.activation = false; },
-    (config) => { config.effects[0].save.enabled = true; config.effects[0].save.dc.value = ""; }
+    (config) => { config.effects[0].save.enabled = true; config.effects[0].save.dc.value = ""; },
+    (config) => { config.effects[0].triggers.continuous = true; config.effects[0].save.enabled = true; config.effects[0].save.dc.value = 20; }
   ]) {
     const config = validConfig();
     invalid(config);
@@ -111,6 +112,32 @@ test("the worker rejects builder-invalid triggers and save DCs before creating a
     assert.equal(response.ok, false);
     assert.equal(created.length, before);
   }
+});
+
+test("continuous maintenance and saving throws must use separate Effect Blocks", () => {
+  const config = validConfig();
+  const block = config.effects[0];
+  block.triggers.continuous = true;
+  block.save.enabled = true;
+  block.save.dc.value = 20;
+  const validation = validateConfig(config, { sourceActor: actor });
+  assert.match(validation.errors.join(" "), /While a creature is inside.*separate Effect Block/);
+  assert.deepEqual(validation.issues.find((issue) => issue.target?.field === "save-enabled")?.target, {
+    scope: "block", index: 0, field: "save-enabled"
+  });
+
+  block.triggers.continuous = false;
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, [], "save-only blocks remain valid");
+  block.triggers.continuous = true;
+  block.save.enabled = false;
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, [], "continuous No Save blocks remain valid");
+
+  const saveBlock = structuredClone(block);
+  saveBlock.id = "separate-save";
+  saveBlock.triggers = { ...saveBlock.triggers, activation: false, continuous: false, enter: true };
+  saveBlock.save.enabled = true;
+  config.effects.push(saveBlock);
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, [], "separate maintenance and save blocks remain valid");
 });
 
 test("direct and player creation reject missing and non-Effect Items before making a Region", async () => {
