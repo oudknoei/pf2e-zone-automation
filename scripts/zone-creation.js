@@ -5,7 +5,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
 
-const RUNTIME_VERSION = "0.5.18";
+const RUNTIME_VERSION = "0.5.19";
 const FLAG_SCOPE = "world";
 const FLAG_KEY = "pf2eZone";
 
@@ -88,7 +88,6 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
     activation: { damageType: chosenDamageType ?? null },
     activationProcessed: false,
     activationPending: true,
-    activationFinalizeScheduled: false,
     activationTargets: {},
     initialOccupants: {},
     deactivated: false,

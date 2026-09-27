@@ -40,7 +40,7 @@ async function withPendingSave(run) {
   const block = { id: "block", name: "Save" };
   let stored = {
     config: { name: "Zone", effects: [block] },
-    state: { pendingSaves: { pending } }
+    state: { activationProcessed: true, pendingSaves: { pending } }
   };
   const region = {
     id: "zone", uuid: "Scene.scene.Region.zone", name: "Zone", parent: scene,

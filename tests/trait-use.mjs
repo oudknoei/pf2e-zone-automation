@@ -96,7 +96,7 @@ test("PF2e spell-cast chat messages provide trait-use and spell-cast zone events
       triggers: { traitUse: true },
       traitUse: { traits: ["manipulate"] }
     };
-    const payload = { config: { effects: [spellCastBlock, manipulateBlock] }, state: {} };
+    const payload = { config: { effects: [spellCastBlock, manipulateBlock] }, state: { activationProcessed: true } };
     const region = {
       uuid: "Scene.scene.Region.reach",
       parent: { id: "scene" },

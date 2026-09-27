@@ -548,6 +548,77 @@ test("startup reconciliation cleans a previously disabled behavior with a stale 
   });
 });
 
+test("a legacy scheduled flag cannot prevent activation recovery", async () => {
+  await withFiniteZoneFixture(async ({ region }) => {
+    region.tokens = new Set();
+    region.getFlag().state.activationFinalizeScheduled = true;
+    try {
+      await runtime.reconcileUnfinishedActivations();
+      const state = region.getFlag().state;
+      assert.equal(state.activationPending, true);
+      assert.ok(Number.isFinite(state.activationFinalizeAt));
+      assert.equal(Object.hasOwn(state, "activationFinalizeScheduled"), false);
+      assert.ok(runtime.activationFinalizeTimers.has(region.uuid));
+    } finally {
+      const timer = runtime.activationFinalizeTimers.get(region.uuid);
+      if (timer) clearTimeout(timer);
+      runtime.activationFinalizeTimers.delete(region.uuid);
+    }
+  });
+});
+
+test("activation resumes from its saved deadline after a GM reload", async () => {
+  await withFiniteZoneFixture(async ({ region, sourceToken }) => {
+    region.tokens = new Set();
+    const originalEligible = runtime.eligible;
+    const originalTrigger = runtime.processTriggerUnlocked;
+    let entries = 0;
+    try {
+      runtime.eligible = async () => true;
+      runtime.processTriggerUnlocked = async (_region, _payload, _token, trigger) => {
+        if (trigger === "enter") entries++;
+      };
+
+      await runtime.activateRegion(region);
+      const state = region.getFlag().state;
+      assert.equal(state.activationPending, true);
+      assert.ok(state.activationFinalizeAt >= Date.now());
+      assert.ok(runtime.activationFinalizeTimers.has(region.uuid));
+      assert.equal(Object.hasOwn(state, "activationFinalizeScheduled"), false);
+
+      // Simulate a browser refresh: its timer vanishes, while Region flags survive.
+      clearTimeout(runtime.activationFinalizeTimers.get(region.uuid));
+      runtime.activationFinalizeTimers.delete(region.uuid);
+      state.activationFinalizeScheduled = true; // persisted by older module versions
+      state.activationFinalizeAt = Date.now() - 1;
+      state.initialOccupants.initial__Scene_scene_Token_source = true;
+
+      const enter = { event: { name: "tokenEnter", data: { token: sourceToken, movement: {} } }, region };
+      await runtime.handleRegionEvent(enter);
+      assert.equal(entries, 0, "the original occupant is ignored until activation finalizes");
+
+      await runtime.reconcileUnfinishedActivations();
+      for (let attempt = 0; attempt < 25 && !region.getFlag().state.activationProcessed; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      assert.equal(region.getFlag().state.activationProcessed, true);
+      assert.equal(region.getFlag().state.activationPending, false);
+      assert.deepEqual(region.getFlag().state.initialOccupants, {});
+      assert.equal(Object.hasOwn(region.getFlag().state, "activationFinalizeScheduled"), false);
+      assert.equal(Object.hasOwn(region.getFlag().state, "activationFinalizeAt"), false);
+      await runtime.handleRegionEvent(enter);
+      assert.equal(entries, 1, "later re-entry must be processed normally");
+    } finally {
+      const timer = runtime.activationFinalizeTimers.get(region.uuid);
+      if (timer) clearTimeout(timer);
+      runtime.activationFinalizeTimers.delete(region.uuid);
+      runtime.eligible = originalEligible;
+      runtime.processTriggerUnlocked = originalTrigger;
+    }
+  });
+});
+
 test("reactivating an overdue zone ends it before maintained effects return", async () => {
   await withFiniteZoneFixture(async ({ scene, region, combat }) => {
     region.getFlag().state.deactivated = true;

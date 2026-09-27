@@ -119,7 +119,7 @@ globalThis.fromUuid = async (uuid) => ({
   [effectUuid]: effect, [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.18",
+  version: "0.5.19",
   installHooks() {},
   async activateRegion(region) { runtimeCalls.activated.push(region); },
   async endZone(region) {

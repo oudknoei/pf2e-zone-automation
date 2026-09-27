@@ -7,7 +7,7 @@ import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.18";
+    const VERSION = "0.5.19";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -65,6 +65,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         endZonePromises: new Map(),
         chatAlertBatches: new Set(),
         regionReconcileTimers: new Map(),
+        activationFinalizeTimers: new Map(),
         areaBoundaryBefore: new Map(),
         areaBoundarySuppression: new Map(),
 
@@ -94,7 +95,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.state.activationTargets ??= {};
           payload.state.initialOccupants ??= {};
           payload.state.activationPending ??= !payload.state.activationProcessed;
-          payload.state.activationFinalizeScheduled ??= false;
+          // Older Regions stored a timer flag that cannot survive a GM refresh.
+          delete payload.state.activationFinalizeScheduled;
           payload.state.duration ??= {};
           payload.state.lastSourceTriggerTurnKey ??= null;
           return payload;
@@ -1282,6 +1284,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Saves deactivation before deleting owned effects so later events see an inactive zone. */
         async deactivateRegion(region) {
+          const timer = this.activationFinalizeTimers.get(region.uuid);
+          if (timer) clearTimeout(timer);
+          this.activationFinalizeTimers.delete(region.uuid);
           await this.withState(region, (payload) => {
             payload.state.deactivated = true;
             payload.state.pendingSaves = {};
@@ -1483,6 +1488,45 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Lets a new authoritative GM finish an activation at its original wall-clock deadline. */
+        scheduleActivationFinalization(region, deadline) {
+          if (!this.isAuthority() || !this.isLiveRegion(region) || this.activationFinalizeTimers.has(region.uuid)) return;
+          const delay = Math.max(0, Number(deadline) - Date.now());
+          const timer = setTimeout(async () => {
+            this.activationFinalizeTimers.delete(region.uuid);
+            if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+            try {
+              await this.withState(region, async (payload) => {
+                if (!this.isOperational(region, payload) || payload.state.activationProcessed) return;
+
+                // Final sweep after Region membership has had time to settle.
+                const batchSeed = randomId();
+                for (const token of this.tokensInside(region)) {
+                  await this.processActivationTokenUnlocked(region, payload, token, batchSeed);
+                }
+
+                payload.state.activationProcessed = true;
+                payload.state.activationPending = false;
+                delete payload.state.activationFinalizeAt;
+                payload.state.initialOccupants = {};
+              });
+            } catch (error) {
+              console.error("PF2e Zone: activation finalization failed", error);
+            }
+          }, Number.isFinite(delay) ? delay : 0);
+          this.activationFinalizeTimers.set(region.uuid, timer);
+        },
+
+        /** Rebuilds lost activation timers after startup or a change of authoritative GM. */
+        async reconcileUnfinishedActivations() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            const payload = this.readPayload(region);
+            if (!this.isOperational(region, payload) || payload.state.activationProcessed) continue;
+            await this.activateRegion(region);
+          }
+        },
+
         /** Initializes a newly created Region before delayed hooks can process its occupants. */
         async activateRegion(region) {
           if (!this.isAuthority() || !this.isRuntimeBehaviorActive(region)) return;
@@ -1498,9 +1542,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Foundry can finish Region membership asynchronously after the Region
           // document itself exists. Keep an activation grace window open so the
           // initial tokenEnter events can still count as "inside on activation."
-          let scheduleFinalize = false;
-
-          await this.withState(region, async (payload) => {
+          const finalizationAt = await this.withState(region, async (payload) => {
             this.reconcileHpBaselinesUnlocked(region, payload);
             if (!payload.state.activationProcessed) {
               payload.state.activationPending = true;
@@ -1524,39 +1566,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 await this.processActivationTokenUnlocked(region, payload, token, batchSeed);
               }
 
-              if (!payload.state.activationFinalizeScheduled) {
-                payload.state.activationFinalizeScheduled = true;
-                scheduleFinalize = true;
+              // Persist the deadline, while timer ownership stays in this client.
+              // A reconnect resumes the remaining wait instead of opening a
+              // fresh grace window or trusting a stale "scheduled" flag.
+              if (!Number.isFinite(payload.state.activationFinalizeAt)) {
+                payload.state.activationFinalizeAt = Date.now() + 1000;
               }
             }
 
             payload.state.deactivated = false;
             await this.reconcileContinuousUnlocked(region, payload);
+            return payload.state.activationProcessed ? null : payload.state.activationFinalizeAt;
           });
 
-          if (scheduleFinalize) {
-            setTimeout(async () => {
-              if (!region?.parent || !this.isAuthority()) return;
-              try {
-                await this.withState(region, async (payload) => {
-                  if (!this.isOperational(region, payload) || payload.state.activationProcessed) return;
-
-                  // Final sweep after Region membership has had time to settle.
-                  const batchSeed = randomId();
-                  for (const token of region.tokens) {
-                    await this.processActivationTokenUnlocked(region, payload, token, batchSeed);
-                  }
-
-                  payload.state.activationProcessed = true;
-                  payload.state.activationPending = false;
-                  payload.state.activationFinalizeScheduled = false;
-                  payload.state.initialOccupants = {};
-                });
-              } catch (error) {
-                console.error("PF2e Zone: activation finalization failed", error);
-              }
-            }, 1000);
-          }
+          if (finalizationAt != null) this.scheduleActivationFinalization(region, finalizationAt);
         },
 
         /** Resolves the source against the current roster so a removed combatant cannot hold a stale turn clock. */
@@ -1719,6 +1742,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const reconcileTimer = this.regionReconcileTimers.get(key);
           if (reconcileTimer) clearTimeout(reconcileTimer);
           this.regionReconcileTimers.delete(key);
+          const activationTimer = this.activationFinalizeTimers.get(key);
+          if (activationTimer) clearTimeout(activationTimer);
+          this.activationFinalizeTimers.delete(key);
 
           const ending = (async () => {
             let cleanupPayload = null;
@@ -2345,6 +2371,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           for (const timer of this.regionReconcileTimers.values()) clearTimeout(timer);
           this.regionReconcileTimers.clear();
+          for (const timer of this.activationFinalizeTimers.values()) clearTimeout(timer);
+          this.activationFinalizeTimers.clear();
           this.areaBoundaryBefore.clear();
           for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);
           this.areaBoundarySuppression.clear();
@@ -2435,6 +2463,15 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             runtime.checkAllDurations().catch((e) => console.error("PF2e Zone world-time hook", e))
           );
 
+          // A different connected GM can become authoritative without loading a
+          // new module instance. Resume any timer abandoned by the former GM.
+          on("userConnected", () => setTimeout(() =>
+            runtime.reconcileUnfinishedActivations()
+              .catch((e) => console.error("PF2e Zone GM handoff activation", e)), 0));
+          on("updateUser", () => setTimeout(() =>
+            runtime.reconcileUnfinishedActivations()
+              .catch((e) => console.error("PF2e Zone GM handoff activation", e)), 0));
+
           on("deleteToken", (token) => {
             if (!runtime.isAuthority()) return;
             for (const region of runtime.allZones()) {
@@ -2469,6 +2506,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
 
           on("deleteRegion", (region) => {
+            const activationTimer = runtime.activationFinalizeTimers.get(region.uuid);
+            if (activationTimer) clearTimeout(activationTimer);
+            runtime.activationFinalizeTimers.delete(region.uuid);
             runtime.areaBoundaryBefore.delete(region.uuid);
             const suppression = runtime.areaBoundarySuppression.get(region.uuid);
             if (suppression) clearTimeout(suppression.timer);
@@ -2594,6 +2634,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.reconcileUnfinishedExitCleanup();
               await this.reconcileCompletedSaves();
               await this.checkAllDurations();
+              await this.reconcileUnfinishedActivations();
               for (const region of this.allZones()) {
                 if (!this.isOperational(region)) continue;
                 await this.withState(region, (payload) => this.reconcileHpBaselinesUnlocked(region, payload, { replace: true }));
