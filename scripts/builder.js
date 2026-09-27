@@ -1017,6 +1017,17 @@ export async function openZoneBuilder() {
 
   const effectLookupCache = new Map();
 
+  /** Rechecks visible rows when a source Item changes or the user asks to retry its UUID. */
+  function invalidateEffectLookups(uuids) {
+    let invalidated = false;
+    for (const uuid of uuids) {
+      if (effectLookupCache.delete(String(uuid ?? "").trim())) invalidated = true;
+    }
+    if (!invalidated) return;
+    const root = dialog?.window?.content?.querySelector(".pf2e-zone-builder");
+    if (root?.isConnected) refreshLiveValidation(root);
+  }
+
   /** Reuses resolved Item details while keeping pending lookups from making creation appear ready. */
   function lookupEffect(root, uuid) {
     if (!effectLookupCache.has(uuid)) {
@@ -1054,6 +1065,13 @@ export async function openZoneBuilder() {
       const name = document.createElement("span");
       name.textContent = result.name;
       info.append(name);
+    }
+    if (entry?.status === "done") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "zb-small zb-retry-effect";
+      retry.textContent = result.error ? "Retry lookup" : "Refresh details";
+      info.append(retry);
     }
   }
 
@@ -1111,6 +1129,10 @@ export async function openZoneBuilder() {
     const effectValidation = await validateEffectItems(cfg);
     validation.errors.push(...effectValidation.errors);
     validation.issues.push(...effectValidation.issues);
+    for (const [uuid, result] of effectValidation.resolved) {
+      effectLookupCache.set(uuid, { status: "done", result });
+    }
+    refreshLiveValidation(root);
     renderInlineValidation(root, validation);
     return validation;
   }
@@ -1804,6 +1826,12 @@ export async function openZoneBuilder() {
       const button = event.target.closest("button");
       if (!button || !root.contains(button)) return;
 
+      if (button.matches(".zb-retry-effect")) {
+        const uuid = button.closest(".zb-effect-row")?.querySelector('[data-field="effect-uuid"]')?.value;
+        invalidateEffectLookups([uuid]);
+        return;
+      }
+
       if (button.matches(".zb-add-condition")) {
         const outcomeEl = button.closest(".zb-outcome");
         const list = outcomeEl?.querySelector(".zb-condition-list");
@@ -2039,7 +2067,20 @@ export async function openZoneBuilder() {
     ]
   });
 
-  dialog.addEventListener("close", () => stopOperationStatusPolling(), { once: true });
+  const effectItemHooks = [];
+  for (const name of ["createItem", "updateItem", "deleteItem"]) {
+    effectItemHooks.push([name, Hooks.on(name, (item) => invalidateEffectLookups([item?.uuid]))]);
+  }
+  effectItemHooks.push(["updateCompendium", Hooks.on("updateCompendium", (pack) => {
+    if (!pack?.collection) return;
+    const prefix = `Compendium.${pack.collection}.Item.`;
+    invalidateEffectLookups([...effectLookupCache.keys()].filter((uuid) => uuid.startsWith(prefix)));
+  })]);
+
+  dialog.addEventListener("close", () => {
+    stopOperationStatusPolling();
+    for (const [name, hookId] of effectItemHooks) Hooks.off(name, hookId);
+  }, { once: true });
 
   dialog.addEventListener("render", () => {
     // Do not override DialogV2's internal form/layout. The builder itself is the

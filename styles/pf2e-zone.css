@@ -153,6 +153,7 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pf2e-zone-builder .zb-effect-row > button.icon { grid-column:3; grid-row:1; }
 .pf2e-zone-builder .zb-effect-info { grid-column:1 / -1; grid-row:2; display:flex; align-items:center; gap:6px; min-height:26px; font-size:.88em; opacity:.85; overflow-wrap:anywhere; }
 .pf2e-zone-builder .zb-effect-info img { width:24px; height:24px; object-fit:cover; border-radius:3px; }
+.pf2e-zone-builder .zb-effect-info .zb-retry-effect { flex:0 0 auto; margin-left:auto; }
 .pf2e-zone-builder .zb-subrow button.icon { min-width:30px; height:30px; padding:0; }
 .pf2e-zone-builder .zb-empty { opacity:.6; font-style:italic; margin:3px 0; }
 .pf2e-zone-builder .zb-small { width:auto; padding:3px 8px; margin-top:3px; }

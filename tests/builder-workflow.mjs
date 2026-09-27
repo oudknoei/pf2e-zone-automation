@@ -33,6 +33,8 @@ class TestDialog extends window.EventTarget {
     this.element.remove();
     this.dispatchEvent(new window.Event("close"));
   }
+
+  static async prompt() { return null; }
 }
 
 let nextId = 0;
@@ -41,6 +43,21 @@ const effectUuid = "Item.builder-smoke-effect";
 const effect = {
   documentName: "Item", type: "effect", uuid: effectUuid,
   name: "Builder smoke effect", img: "icons/smoke.webp"
+};
+const effectDocuments = new Map([[effectUuid, effect]]);
+const hookCallbacks = new Map();
+let nextHookId = 0;
+globalThis.Hooks = {
+  on(name, callback) {
+    const id = ++nextHookId;
+    if (!hookCallbacks.has(name)) hookCallbacks.set(name, new Map());
+    hookCallbacks.get(name).set(id, callback);
+    return id;
+  },
+  off(name, id) { hookCallbacks.get(name)?.delete(id); },
+  call(name, ...args) {
+    for (const callback of hookCallbacks.get(name)?.values() ?? []) callback(...args);
+  }
 };
 const actor = {
   uuid: "Actor.source", name: "Source", img: "icons/source.webp",
@@ -115,8 +132,8 @@ globalThis.ui = {
     error: (message) => notices.push({ level: "error", message })
   }
 };
-globalThis.fromUuid = async (uuid) => ({
-  [effectUuid]: effect, [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
+globalThis.fromUuid = async (uuid) => effectDocuments.get(uuid) ?? ({
+  [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
 globalThis.PF2EZoneRuntime = {
   version: "0.5.19",
@@ -190,6 +207,54 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.match(root.querySelector('[data-outcome="noSave"] .zb-effect-info').textContent, /Builder smoke effect/);
     assert.match(root.querySelector("[data-validation-status]").textContent, /Ready to create/);
 
+    const retryUuid = "Item.builder-retry-effect";
+    root.querySelector('[data-outcome="noSave"] .zb-add-effect').click();
+    const retryRow = [...root.querySelectorAll('[data-outcome="noSave"] .zb-effect-row')].at(-1);
+    change(retryRow.querySelector('[data-field="effect-uuid"]'), retryUuid, "input");
+    await until(() => /could not be found/.test(retryRow.querySelector(".zb-effect-info").textContent));
+    assert.equal(root.querySelector(".zb-create").disabled, true);
+    const retryEffect = {
+      documentName: "Item", type: "effect", uuid: retryUuid,
+      name: "Retry effect", img: "icons/retry.webp"
+    };
+    effectDocuments.set(retryUuid, retryEffect);
+    retryRow.querySelector(".zb-retry-effect").click();
+    await until(() => /Retry effect/.test(retryRow.querySelector(".zb-effect-info").textContent));
+    assert.equal(root.querySelector(".zb-create").disabled, false);
+
+    retryEffect.name = "Updated effect";
+    Hooks.call("updateItem", retryEffect);
+    await until(() => /Updated effect/.test(retryRow.querySelector(".zb-effect-info").textContent));
+
+    effectDocuments.delete(retryUuid);
+    Hooks.call("deleteItem", retryEffect);
+    await until(() => /could not be found/.test(retryRow.querySelector(".zb-effect-info").textContent));
+    effectDocuments.set(retryUuid, retryEffect);
+    root.querySelector(".zb-validate").click();
+    await until(() => /Updated effect/.test(retryRow.querySelector(".zb-effect-info").textContent));
+    assert.equal(root.querySelector(".zb-create").disabled, false, "action-time validation replaces a cached failure");
+
+    effectDocuments.delete(retryUuid);
+    Hooks.call("deleteItem", retryEffect);
+    await until(() => root.querySelector(".zb-create").disabled);
+    effectDocuments.set(retryUuid, retryEffect);
+    Hooks.call("createItem", retryEffect);
+    await until(() => !root.querySelector(".zb-create").disabled);
+
+    const compendiumUuid = "Compendium.test.effects.Item.cached";
+    const compendiumEffect = {
+      documentName: "Item", type: "effect", uuid: compendiumUuid,
+      name: "Compendium effect", img: "icons/pack.webp"
+    };
+    effectDocuments.set(compendiumUuid, compendiumEffect);
+    root.querySelector('[data-outcome="noSave"] .zb-add-effect').click();
+    const compendiumRow = [...root.querySelectorAll('[data-outcome="noSave"] .zb-effect-row')].at(-1);
+    change(compendiumRow.querySelector('[data-field="effect-uuid"]'), compendiumUuid, "input");
+    await until(() => /Compendium effect/.test(compendiumRow.querySelector(".zb-effect-info").textContent));
+    compendiumEffect.name = "Updated compendium effect";
+    Hooks.call("updateCompendium", { collection: "test.effects" }, [compendiumEffect]);
+    await until(() => /Updated compendium effect/.test(compendiumRow.querySelector(".zb-effect-info").textContent));
+
     root.querySelector('[data-outcome="failure"] .zb-add-effect').click();
     const hiddenEffect = root.querySelector('[data-outcome="failure"] [data-field="effect-uuid"]');
     change(hiddenEffect, "Item.deleted", "input");
@@ -208,6 +273,8 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.failure.effects[0].uuid, "Item.deleted");
     assert.deepEqual(runtimeCalls.activated, [region]);
     await until(() => !builderDialog.element.isConnected);
+    assert.equal(hookCallbacks.get("updateItem")?.size, 0, "the closed builder removes its Item watches");
+    assert.equal(hookCallbacks.get("updateCompendium")?.size, 0, "the closed builder removes its pack watch");
     region.getFlag("world", "pf2eZone").state.endRequested = true;
 
     await openZoneBuilder();

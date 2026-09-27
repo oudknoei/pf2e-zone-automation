@@ -42,5 +42,5 @@ export async function validateEffectItems(config, resolver = globalThis.fromUuid
       }
     }
   }
-  return { errors, issues };
+  return { errors, issues, resolved };
 }
