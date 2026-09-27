@@ -140,6 +140,38 @@ test("GM and worker reject a saved spell DC that the source Actor does not have"
   assert.equal(created.length, before);
 });
 
+test("GM and worker reject unknown imported durations and condition slugs", async () => {
+  const invalid = [
+    [(config) => { config.duration.type = "1-hour"; }, /Duration type.*1-hour/],
+    [(config) => {
+      config.effects[0].outcomes.noSave.conditions.push({
+        slug: "not-a-condition", value: 1, removal: "normal", condition: null
+      });
+    }, /not-a-condition.*unavailable/]
+  ];
+  for (const [mutate, message] of invalid) {
+    const config = validConfig();
+    mutate(config);
+    const before = created.length;
+    await assert.rejects(createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    }), message);
+    const previous = console.error;
+    console.error = () => {};
+    try {
+      const response = await handleWorkerRequest({
+        protocol: 1, action: "create", requesterUserId: gm.id,
+        sceneId: scene.id, sourceTokenUuid: token.uuid, config
+      });
+      assert.equal(response.ok, false);
+      assert.match(response.error, message);
+    } finally {
+      console.error = previous;
+    }
+    assert.equal(created.length, before);
+  }
+});
+
 test("continuous maintenance and saving throws must use separate Effect Blocks", () => {
   const config = validConfig();
   const block = config.effects[0];

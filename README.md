@@ -117,7 +117,7 @@ Select **Save** to store the current configuration in the shared **PF2e Zone Lib
 
 Eight ready-to-import configurations are included in [`examples/zone-configurations/`](examples/zone-configurations/): Shadow Raid, Frightful Presence, Ghonatine Stench, Courageous Anthem, Focusing Hum, Toxic Cloud, Soul Cutter - Soothe Souls, and Stoke the Fervent.
 
-To use an example, open its JSON file, copy its contents, select a source token, open the builder, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Export JSON** to copy a portable configuration for reuse.
+To use an example, open its JSON file, copy its contents, select a source token, open the builder, select **Import JSON**, paste the configuration, and select **Import**. Adjust the imported values for the selected Actor and encounter before creating the zone. Use **Export JSON** to copy a portable configuration for reuse. Unknown durations and conditions remain visible with validation errors until you choose supported values. Other unsupported choices stop the import with an explanation instead of silently changing it. Older one-round and until-dismissed durations are converted to their current equivalents.
 
 ## Included Macros
 

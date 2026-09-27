@@ -13,6 +13,7 @@ Math.clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const moduleVersion = JSON.parse(readFileSync(new URL("../module.json", import.meta.url), "utf8")).version;
 const dialogs = [];
+let importResponse = null;
 class TestDialog extends window.EventTarget {
   constructor(options) {
     super();
@@ -35,6 +36,12 @@ class TestDialog extends window.EventTarget {
   }
 
   static async prompt() { return null; }
+
+  static async input() {
+    const response = importResponse;
+    importResponse = null;
+    return response;
+  }
 }
 
 let nextId = 0;
@@ -177,6 +184,42 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
       "an Actor without prepared DCs offers no DC 0 choices"
     );
 
+    const { defaultConfig } = await import("../scripts/zone-config.js");
+    const invalidImport = defaultConfig();
+    invalidImport.name = "Imported with unavailable choices";
+    invalidImport.targeting.affects = "enemies";
+    invalidImport.duration.type = "until-next-moon";
+    invalidImport.effects[0].triggers.activation = true;
+    invalidImport.effects[0].chatAlert.enabled = true;
+    invalidImport.effects[0].outcomes.noSave.conditions.push({
+      slug: "mystery-condition", value: 2, removal: "condition-end", condition: "missing-link"
+    });
+    importResponse = { json: JSON.stringify(invalidImport) };
+    root.querySelector(".zb-import").click();
+    await until(() => builderDialog.window.content.querySelector('[data-zone="name"]')?.value === invalidImport.name);
+    root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+    const durationChoice = root.querySelector('[data-zone="duration-type"]');
+    const conditionRow = root.querySelector('[data-outcome="noSave"] .zb-condition-row');
+    assert.equal(durationChoice.value, "until-next-moon");
+    assert.match(durationChoice.selectedOptions[0].textContent, /Unavailable duration/);
+    assert.equal(conditionRow.querySelector('[data-field="condition-slug"]').value, "mystery-condition");
+    assert.match(conditionRow.querySelector('[data-field="condition-slug"]').selectedOptions[0].textContent, /Unavailable condition/);
+    assert.equal(conditionRow.querySelector('[data-field="condition-link"]').value, "missing-link");
+    assert.equal(root.querySelector(".zb-create").disabled, true);
+    change(durationChoice, "unlimited");
+    change(conditionRow.querySelector('[data-field="condition-slug"]'), "frightened");
+    change(conditionRow.querySelector('[data-field="condition-link"]'), "sickened");
+    assert.match(root.querySelector("[data-validation-status]").textContent, /Ready to create/);
+    invalidImport.effects[0].repeat = "occasionally";
+    importResponse = { json: JSON.stringify(invalidImport) };
+    const importNoticeCount = notices.length;
+    root.querySelector(".zb-import").click();
+    await until(() => notices.slice(importNoticeCount).some((notice) => notice.level === "error"));
+    assert.match(notices.at(-1).message, /repeat setting.*occasionally/);
+    assert.equal(root.querySelector('[data-zone="duration-type"]').value, "unlimited", "rejected import keeps the current editor");
+    root.querySelector(".zb-clear").click();
+    root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     change(root.querySelector('[data-zone="name"]'), "Smoke Zone", "input");
     change(root.querySelector('[data-zone="affects-enemies"]'), true);
     change(root.querySelector('[data-trigger="activation"]'), true);
@@ -293,12 +336,13 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.match(manageDialog.window.content.querySelector('[data-action="end"]').textContent, /Retry Dismiss/);
 
     const dismissButton = manageDialog.window.content.querySelector('[data-action="end"]');
+    const dismissalNoticeStart = notices.length;
     failDismissal = true;
     const priorConsoleError = console.error;
     try {
       console.error = () => {};
       dismissButton.click();
-      await until(() => notices.some((notice) => notice.level === "error"));
+      await until(() => notices.slice(dismissalNoticeStart).some((notice) => notice.level === "error"));
     } finally {
       console.error = priorConsoleError;
     }
@@ -315,7 +359,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     root = reopenedDialog.window.content.querySelector(".pf2e-zone-builder");
     assert.equal(root.querySelector('[data-zone="name"]').value, "Smoke Zone");
     assert.equal(root.querySelector('[data-outcome="noSave"] [data-field="effect-uuid"]').value, effectUuid);
-    assert.deepEqual(notices.filter((notice) => notice.level === "error").map((notice) => notice.message), [
+    assert.deepEqual(notices.slice(dismissalNoticeStart).filter((notice) => notice.level === "error").map((notice) => notice.message), [
       "PF2e Zone dismissal failed: Region deletion failed"
     ]);
 

@@ -1,6 +1,6 @@
 import {
   SCHEMA_VERSION, OUTCOMES, BASIC_MULTIPLIERS, newId, normalizeTraitSlugs,
-  watchedTraitSlugs, isValuedCondition, getDcChoices, emptyOutcome, newBlock,
+  watchedTraitSlugs, isValuedCondition, conditionSlugs, getDcChoices, emptyOutcome, newBlock,
   defaultConfig, normalizeConfig, validateConfig as validateZoneConfig
 } from "./zone-config.js";
 import { parseDurationRounds } from "./duration.js";
@@ -283,21 +283,10 @@ export async function openZoneBuilder() {
     "void"
   ];
 
-  const FALLBACK_CONDITIONS = [
-    "blinded", "clumsy", "concealed", "confused", "controlled", "dazzled",
-    "deafened", "doomed", "drained", "dying", "encumbered", "enfeebled",
-    "fascinated", "fatigued", "fleeing", "frightened", "grabbed", "hidden",
-    "immobilized", "invisible", "off-guard", "paralyzed", "petrified", "prone",
-    "quickened", "restrained", "sickened", "slowed", "stunned", "stupefied",
-    "unconscious", "undetected", "wounded"
-  ];
-
   /** Uses the installed PF2e condition catalog so the builder follows the active system version. */
   function getConditionChoices() {
     const config = CONFIG.PF2E?.conditionTypes ?? {};
-    const keys = new Set([...FALLBACK_CONDITIONS, ...Object.keys(config)]);
-    return [...keys]
-      .filter((k) => !["persistent-damage"].includes(k))
+    return conditionSlugs()
       .map((slug) => {
         const raw = config[slug];
         let label = titleCase(slug);
@@ -373,8 +362,13 @@ export async function openZoneBuilder() {
 
   /** Keeps condition dropdowns consistent with the current PF2e catalog. */
   function conditionOptions(selected) {
-    return getConditionChoices().map(({ slug, label }) =>
-      `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
+    const slug = String(selected ?? "");
+    const choices = getConditionChoices();
+    const unavailable = choices.some((choice) => choice.slug === slug)
+      ? ""
+      : `<option value="${esc(slug)}" selected>${slug ? `Unavailable condition: ${esc(slug)}` : "Choose a condition"}</option>`;
+    return unavailable + choices.map(({ slug: choiceSlug, label }) =>
+      `<option value="${esc(choiceSlug)}" ${choiceSlug === slug ? "selected" : ""}>${esc(label)}</option>`
     ).join("");
   }
 
@@ -387,14 +381,14 @@ export async function openZoneBuilder() {
 
   /** Keeps condition controls and their removal choices together so outcomes remain legible. */
   function renderConditionRow(condition, blockId, outcomeKey, index) {
-    const valued = isValuedCondition(condition.slug);
+    const valued = isValuedCondition(condition.slug) || (!conditionSlugs().includes(condition.slug) && condition.value != null);
     const value = valued ? (condition.value ?? 1) : "";
-    const linkedCondition = String(condition.condition ?? "sickened");
+    const linkedCondition = String(condition.condition ?? "");
     return `
       <div class="zb-subrow zb-condition-row" data-condition-index="${index}">
         <select data-field="condition-slug">${conditionOptions(condition.slug)}</select>
         <label class="zb-inline">Value
-          <input data-field="condition-value" type="number" min="1" step="1" value="${value}" placeholder="${valued ? "1" : "—"}" ${valued ? "" : "disabled"}>
+          <input data-field="condition-value" type="number" min="1" step="1" value="${esc(value)}" placeholder="${valued ? "1" : "—"}" ${valued ? "" : "disabled"}>
         </label>
         <select data-field="condition-removal" title="When should the condition be removed?">
           <option value="normal" ${condition.removal === "normal" ? "selected" : ""}>Normal PF2e handling</option>
@@ -746,6 +740,9 @@ export async function openZoneBuilder() {
               </label>
               <label>Duration
                 <select data-zone="duration-type">
+                  ${!["custom-rounds", "1-minute", "10-minutes", "unlimited"].includes(state.duration.type)
+                    ? `<option value="${esc(state.duration.type)}" selected>Unavailable duration: ${esc(state.duration.type)}</option>`
+                    : ""}
                   <option value="custom-rounds" ${state.duration.type === "custom-rounds" ? "selected" : ""}>X rounds</option>
                   <option value="1-minute" ${state.duration.type === "1-minute" ? "selected" : ""}>1 minute</option>
                   <option value="10-minutes" ${state.duration.type === "10-minutes" ? "selected" : ""}>10 minutes</option>
@@ -833,7 +830,7 @@ export async function openZoneBuilder() {
         slug,
         value: isValuedCondition(slug)
           ? Math.max(1, Math.floor(Number(rawValue) || 1))
-          : null,
+          : conditionSlugs().includes(slug) ? null : (rawValue === "" ? null : Number(rawValue)),
         removal,
         condition: removal === "condition-end"
           ? row.querySelector('[data-field="condition-link"]').value
@@ -970,9 +967,9 @@ export async function openZoneBuilder() {
     if (target.field === "trait-use-traits") return block.querySelector(".zb-trait-use-options");
     if (target.field === "save-choices") return block.querySelector(".zb-save-choice-options");
     if (target.field === "immunity-starts") return block.querySelector(".zb-immunity-starts");
-    if (target.field === "condition-link") {
+    if (target.field === "condition-link" || target.field === "condition-slug") {
       const rows = [...block.querySelectorAll(`[data-outcome="${target.outcomeKey}"] .zb-condition-row`)];
-      return rows[target.conditionIndex]?.querySelector('[data-field="condition-link"]') ?? null;
+      return rows[target.conditionIndex]?.querySelector(`[data-field="${target.field}"]`) ?? null;
     }
     if (target.field === "effect-uuid") {
       const rows = [...block.querySelectorAll(`[data-outcome="${target.outcomeKey}"] .zb-effect-row`)];
@@ -1247,7 +1244,7 @@ export async function openZoneBuilder() {
       return normalizeConfig(parsed);
     } catch (err) {
       console.error("PF2e Zone Builder import error", err);
-      ui.notifications.error(`Could not parse zone JSON: ${err.message}`);
+      ui.notifications.error(`Could not import zone JSON: ${err.message}`);
       return null;
     }
   }
@@ -1434,7 +1431,12 @@ export async function openZoneBuilder() {
         if (!record) return;
 
         if (button.dataset.action === "load") {
-          state = normalizeConfig(record.config);
+          try {
+            state = normalizeConfig(record.config);
+          } catch (error) {
+            ui.notifications.error(`Could not open '${presetLabel(record)}': ${error.message ?? error}`);
+            return;
+          }
           loadedPreset = clone(record);
           await dlg.close();
           rerenderInsideDialog();

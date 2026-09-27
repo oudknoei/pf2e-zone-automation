@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { editableDurationRounds, editableZoneSize } from "../scripts/config-input.js";
 import { durationRoundsError } from "../scripts/duration.js";
+import { defaultConfig, normalizeConfig, validateConfig } from "../scripts/zone-config.js";
 
 test("missing legacy fields receive defaults while cleared dimensions remain invalid", () => {
   assert.equal(editableZoneSize(undefined, 15), 15);
@@ -21,4 +22,71 @@ test("missing legacy durations receive a default while cleared custom durations 
   assert.match(durationRoundsError(editableDurationRounds("", 1)), /positive whole number/);
   assert.equal(editableDurationRounds("0", 1), "0");
   assert.equal(editableDurationRounds("2d4", 1), "2d4");
+});
+
+test("unknown duration remains visible for validation while known legacy values migrate", () => {
+  const config = defaultConfig();
+  config.name = "Import";
+  config.targeting.affects = "enemies";
+  config.effects[0].triggers.activation = true;
+  config.effects[0].chatAlert.enabled = true;
+  config.duration.type = "until-next-moon";
+
+  const normalized = normalizeConfig(config);
+  assert.equal(normalized.duration.type, "until-next-moon");
+  const validation = validateConfig(normalized);
+  assert.match(validation.errors.join(" "), /until-next-moon.*unavailable/);
+  assert.deepEqual(validation.issues.find((issue) => issue.target?.field === "duration-type")?.target, {
+    scope: "zone", field: "duration-type"
+  });
+  assert.throws(() => normalizeConfig(config, { strict: true }), /until-next-moon.*not supported/);
+
+  config.duration.type = "until-dismissed";
+  assert.equal(normalizeConfig(config, { strict: true }).duration.type, "unlimited");
+  config.duration.type = "1-round";
+  assert.deepEqual(normalizeConfig(config, { strict: true }).duration, { type: "custom-rounds", rounds: 1 });
+  config.visibility = "gm";
+  config.effects[0].repeat = "once-per-activation";
+  const migrated = normalizeConfig(config, { strict: true });
+  assert.equal(migrated.visibility, "creator");
+  assert.equal(migrated.effects[0].repeat, "once-per-zone");
+});
+
+test("unknown imported enum choices are rejected instead of changed to defaults", () => {
+  const base = defaultConfig();
+  base.name = "Import";
+  const cases = [
+    [(config) => { config.mode = "cone"; }, /Zone type.*cone/],
+    [(config) => { config.targeting.affects = "foes"; }, /Affects.*foes/],
+    [(config) => { config.effects[0].repeat = "occasionally"; }, /repeat setting.*occasionally/],
+    [(config) => { config.effects[0].save.type = "luck"; }, /save type.*luck/],
+    [(config) => { config.effects[0].immunity.starts = ["after-save", "whenever"]; }, /immunity start.*whenever/],
+    [(config) => { config.effects[0].outcomes.noSave.conditions.push({ slug: "frightened", removal: "surprise" }); }, /condition removal.*surprise/]
+  ];
+  for (const [mutate, message] of cases) {
+    const config = structuredClone(base);
+    mutate(config);
+    assert.throws(() => normalizeConfig(config), message);
+  }
+});
+
+test("unknown condition and linked-condition slugs remain intact and receive field errors", () => {
+  const config = defaultConfig();
+  config.name = "Import";
+  config.targeting.affects = "enemies";
+  config.effects[0].triggers.activation = true;
+  config.effects[0].chatAlert.enabled = true;
+  config.effects[0].outcomes.noSave.conditions.push({
+    slug: "mystery-condition", value: 2, removal: "condition-end", condition: "missing-link"
+  });
+  const normalized = normalizeConfig(config);
+  const condition = normalized.effects[0].outcomes.noSave.conditions[0];
+  assert.deepEqual([condition.slug, condition.value, condition.condition], ["mystery-condition", 2, "missing-link"]);
+  const validation = validateConfig(normalized);
+  assert.deepEqual(validation.issues.filter((issue) => issue.target?.conditionIndex === 0)
+    .map((issue) => issue.target.field), ["condition-slug", "condition-link"]);
+
+  condition.slug = "frightened";
+  condition.condition = "sickened";
+  assert.deepEqual(validateConfig(normalized).errors, []);
 });
