@@ -160,15 +160,30 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   }
   if (!region) return { region: null, durationResolution: null };
 
-  const runtime = await zoneRuntimeEntrypoint();
-  await runtime.activateRegion(region);
-  await postFormulaDurationMessage({
-    zoneName: config.name,
-    duration: durationResolution,
-    visibility: config.visibility,
-    creatorUserId: requester.id,
-    actor: sourceActor,
-    token: sourceToken
-  });
-  return { region, durationResolution };
+  const warnings = [];
+  try {
+    const runtime = await zoneRuntimeEntrypoint();
+    await runtime.activateRegion(region);
+  } catch (error) {
+    console.error("PF2e Zone: Region was created but activation failed", region, error);
+    warnings.push("The zone was created, but activation did not finish. Check Manage Existing Zones before creating another; the GM can refresh to retry activation.");
+  }
+
+  try {
+    const durationMessage = await postFormulaDurationMessage({
+      zoneName: config.name,
+      duration: durationResolution,
+      visibility: config.visibility,
+      creatorUserId: requester.id,
+      actor: sourceActor,
+      token: sourceToken
+    });
+    if (durationResolution?.formula && !durationMessage) {
+      warnings.push("The zone was created, but its rolled duration could not be posted to chat.");
+    }
+  } catch (error) {
+    console.error("PF2e Zone: Region was created but its duration announcement failed", region, error);
+    warnings.push("The zone was created, but its rolled duration could not be posted to chat.");
+  }
+  return { region, durationResolution, warnings };
 }

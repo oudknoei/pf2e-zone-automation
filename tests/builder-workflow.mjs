@@ -235,6 +235,27 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.deepEqual(notices.filter((notice) => notice.level === "error").map((notice) => notice.message), [
       "PF2e Zone dismissal failed: Region deletion failed"
     ]);
+
+    const originalActivate = globalThis.PF2EZoneRuntime.activateRegion;
+    const priorCreationError = console.error;
+    const noticeCount = notices.length;
+    globalThis.PF2EZoneRuntime.activateRegion = async () => {
+      throw new Error("Simulated activation failure");
+    };
+    console.error = () => {};
+    try {
+      await until(() => !root.querySelector(".zb-create").disabled);
+      root.querySelector(".zb-create").click();
+      await until(() => regions.size === 1);
+      await until(() => notices.slice(noticeCount).some((notice) => notice.level === "warn"));
+      const creationNotices = notices.slice(noticeCount);
+      assert.ok(creationNotices.some((notice) => notice.level === "info" && notice.message.includes("created")));
+      assert.ok(creationNotices.some((notice) => notice.level === "warn" && notice.message.includes("activation did not finish")));
+      assert.equal(creationNotices.some((notice) => notice.level === "error"), false);
+    } finally {
+      globalThis.PF2EZoneRuntime.activateRegion = originalActivate;
+      console.error = priorCreationError;
+    }
   } finally {
     for (const dialog of dialogs) if (dialog.element.isConnected) await dialog.close();
     dom.window.close();

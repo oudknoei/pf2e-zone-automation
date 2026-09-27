@@ -1294,10 +1294,15 @@ export async function openZoneBuilder() {
       if (response.duration?.formula) {
         ui.notifications.info("PF2e Zone duration: " + response.duration.rounds + " rounds (rolled " + response.duration.formula + ").");
       }
-      return await waitForRegion(response.sceneId, response.regionId);
+      const region = await waitForRegion(response.sceneId, response.regionId);
+      const warnings = [...(response.warnings ?? [])];
+      if (!region) {
+        warnings.push("The GM created the zone, but it has not appeared on this client yet. Check Manage Existing Zones before creating another.");
+      }
+      return { region, regionId: response.regionId, warnings };
     }
 
-    const { region, durationResolution } = await createZoneDocument({
+    const { region, durationResolution, warnings } = await createZoneDocument({
       rawConfig: cfg, scene: canvas.scene, sourceActor, sourceToken: sourceToken.document,
       requester: game.user, savedPresetId, savedPresetRevision, chosenDamageType, color: game.user.color,
       placeArea: async (regionData, config) => {
@@ -1312,7 +1317,7 @@ export async function openZoneBuilder() {
     if (durationResolution?.formula) {
       ui.notifications.info("PF2e Zone duration: " + durationResolution.rounds + " rounds (rolled " + durationResolution.formula + ").");
     }
-    return region;
+    return { region, regionId: region?.id ?? null, warnings };
   }
 
   /** Reads shared presets through the GM worker so players do not need Journal write permissions. */
@@ -1344,7 +1349,13 @@ export async function openZoneBuilder() {
     loadedPreset = clone(response.record);
     state = normalizeConfig(response.record.config);
     ui.notifications.info(`${asNew ? "Saved copy" : "Saved"} '${presetLabel(loadedPreset)}' to ${LIBRARY_JOURNAL_NAME}.`);
-    rerenderInsideDialog();
+    for (const warning of response.warnings ?? []) ui.notifications.warn(warning);
+    try {
+      rerenderInsideDialog();
+    } catch (error) {
+      console.error("PF2e Zone preset saved but builder refresh failed", error);
+      ui.notifications.warn("The preset was saved, but the builder could not refresh. Close and reopen it before editing again.");
+    }
     return true;
   }
 
@@ -1417,8 +1428,10 @@ export async function openZoneBuilder() {
           if (!window.confirm(`Delete saved zone '${presetLabel(record)}'?`)) return;
 
           button.disabled = true;
+          let deletionCommitted = false;
           try {
-            await callGMWorker("library-delete", { recordId: record.id, expectedRevision: record.revision });
+            const response = await callGMWorker("library-delete", { recordId: record.id, expectedRevision: record.revision });
+            deletionCommitted = true;
             row.remove();
             const index = records.findIndex((r) => r.id === record.id);
             if (index >= 0) records.splice(index, 1);
@@ -1427,11 +1440,17 @@ export async function openZoneBuilder() {
               rerenderInsideDialog();
             }
             ui.notifications.info(`Deleted '${presetLabel(record)}'.`);
+            for (const warning of response.warnings ?? []) ui.notifications.warn(warning);
             if (!list.querySelector("[data-record-id]")) await dlg.close();
           } catch (error) {
-            console.error("PF2e Zone saved-zone deletion failed", error);
-            ui.notifications.error(`Could not delete saved zone: ${error.message ?? error}`);
-            button.disabled = false;
+            if (deletionCommitted) {
+              console.error("PF2e Zone preset deleted but list refresh failed", error);
+              ui.notifications.warn("The saved zone was deleted, but this list could not refresh. Reopen it before making another change.");
+            } else {
+              console.error("PF2e Zone saved-zone deletion failed", error);
+              ui.notifications.error(`Could not delete saved zone: ${error.message ?? error}`);
+              button.disabled = false;
+            }
           }
         }
       });
@@ -1964,15 +1983,22 @@ export async function openZoneBuilder() {
       const restoreBuilder = cfg.mode === "area" ? hideBuilderForAreaPlacement() : () => {};
       try {
         globalThis.PF2EZoneBuilderLastConfig = clone(cfg);
-        const region = await createZoneRegion(cfg, chosenDamageType);
-        if (!region) {
+        const creation = await createZoneRegion(cfg, chosenDamageType);
+        if (!creation?.region && !creation?.regionId) {
           restoreBuilder();
           ui.notifications.info("Zone creation was cancelled.");
           return;
         }
-        console.log("PF2e Zone created", { region, config: cfg });
+        console.log("PF2e Zone created", { region: creation.region, regionId: creation.regionId, config: cfg });
         ui.notifications.info(`PF2e Zone '${cfg.name}' created.`);
-        await dialog.close();
+        for (const warning of creation.warnings ?? []) ui.notifications.warn(warning);
+        try {
+          await dialog.close();
+        } catch (error) {
+          restoreBuilder();
+          console.error("PF2e Zone was created but the builder could not close", error);
+          ui.notifications.warn("The zone was created, but the builder could not close. Check Manage Existing Zones before creating another.");
+        }
       } catch (error) {
         restoreBuilder();
         console.error("PF2e Zone creation failed", error);

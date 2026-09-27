@@ -172,6 +172,68 @@ test("direct and player creation reject missing and non-Effect Items before maki
   assert.ok(result.region);
 });
 
+test("activation failure still reports the committed Region to GM and player paths", async () => {
+  const originalActivate = globalThis.PF2EZoneRuntime.activateRegion;
+  const originalConsoleError = console.error;
+  const before = created.length;
+  globalThis.PF2EZoneRuntime.activateRegion = async () => {
+    throw new Error("Simulated activation failure");
+  };
+  console.error = () => {};
+  try {
+    const config = validConfig();
+    const direct = await createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    });
+    assert.ok(direct.region);
+    assert.match(direct.warnings[0], /zone was created, but activation did not finish/);
+    assert.equal(created.length, before + 1);
+
+    const response = await handleWorkerRequest({
+      protocol: 1, action: "create", requesterUserId: gm.id,
+      sceneId: scene.id, sourceTokenUuid: token.uuid, config
+    });
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.regionId, created.at(-1).region.id);
+    assert.match(response.warnings[0], /zone was created, but activation did not finish/);
+    assert.equal(created.length, before + 2, "each request creates exactly one Region");
+  } finally {
+    globalThis.PF2EZoneRuntime.activateRegion = originalActivate;
+    console.error = originalConsoleError;
+  }
+});
+
+test("failed rolled-duration announcement does not hide the created Region", async () => {
+  const originalRoll = globalThis.Roll;
+  const originalChat = globalThis.ChatMessage;
+  const originalConsoleError = console.error;
+  globalThis.Roll = class {
+    static validate() { return true; }
+    async evaluate() { return { total: 3 }; }
+  };
+  globalThis.ChatMessage = {
+    getSpeaker: () => ({}),
+    async create() { throw new Error("Simulated chat failure"); }
+  };
+  console.error = () => {};
+  try {
+    const config = validConfig();
+    config.duration = { type: "custom-rounds", rounds: "1d4" };
+    const result = await createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    });
+    assert.ok(result.region);
+    assert.equal(result.durationResolution.rounds, 3);
+    assert.match(result.warnings[0], /rolled duration could not be posted/);
+  } finally {
+    if (originalRoll === undefined) delete globalThis.Roll;
+    else globalThis.Roll = originalRoll;
+    if (originalChat === undefined) delete globalThis.ChatMessage;
+    else globalThis.ChatMessage = originalChat;
+    console.error = originalConsoleError;
+  }
+});
+
 test("GM worker reports a failed dismissal instead of claiming success", async () => {
   const previousRegions = scene.regions;
   const originalEndZone = globalThis.PF2EZoneRuntime.endZone;

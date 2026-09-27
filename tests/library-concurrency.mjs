@@ -18,10 +18,17 @@ const folder = {
   id: "folder", name: "PF2e Zone Automation", type: "JournalEntry",
   getFlag: () => false
 };
+let failNextIndexUpdate = false;
 const page = {
   name: "Shared Zone Presets",
   getFlag: (_scope, key) => key === "pf2eZoneLibraryIndex",
-  async update(changes) { this.html = changes["text.content"]; }
+  async update(changes) {
+    if (failNextIndexUpdate) {
+      failNextIndexUpdate = false;
+      throw new Error("Simulated index page update failure");
+    }
+    this.html = changes["text.content"];
+  }
 };
 const firstWriteStarted = Promise.withResolvers();
 const releaseFirstWrite = Promise.withResolvers();
@@ -145,6 +152,40 @@ test("a failed library write does not block the next save", async () => {
   const retry = await save("second", 2, "Recovered");
   assert.equal(retry.ok, true, retry.error);
   assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones.second.name, "Recovered");
+});
+
+test("an index failure reports the committed preset and a retry updates that same record", async () => {
+  const priorWarn = console.warn;
+  console.warn = () => {};
+  try {
+    failNextIndexUpdate = true;
+    const saved = await save(null, null, "Index update delayed");
+    assert.equal(saved.ok, true, saved.error);
+    assert.match(saved.warnings[0], /was saved/);
+    const recordId = saved.record.id;
+    assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones[recordId].revision, 1);
+    assert.doesNotMatch(page.html, /Index update delayed/);
+
+    const recordCount = Object.keys(journal.getFlag("world", "pf2eZoneLibrary").zones).length;
+    const retry = await save(recordId, saved.record.revision, "Index now current");
+    assert.equal(retry.ok, true, retry.error);
+    assert.equal(retry.record.id, recordId);
+    assert.equal(retry.record.revision, 2);
+    assert.equal(Object.keys(journal.getFlag("world", "pf2eZoneLibrary").zones).length, recordCount);
+    assert.match(page.html, /Index now current/);
+
+    failNextIndexUpdate = true;
+    const deleted = await handleWorkerRequest({
+      protocol: 1, action: "library-delete", requesterUserId: gm.id,
+      recordId, expectedRevision: retry.record.revision
+    });
+    assert.equal(deleted.ok, true, deleted.error);
+    assert.match(deleted.warnings[0], /was saved/);
+    assert.equal(journal.getFlag("world", "pf2eZoneLibrary").zones[recordId], undefined);
+  } finally {
+    failNextIndexUpdate = false;
+    console.warn = priorWarn;
+  }
 });
 
 test("a malformed preset cannot bypass builder validation through the GM worker", async () => {

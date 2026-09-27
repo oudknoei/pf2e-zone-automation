@@ -195,33 +195,39 @@ export async function handleWorkerRequest(request) {
     if (typeof globalThis._replace !== "function") throw new Error("Foundry v14's flag replacement operator is unavailable.");
     await journal.update({ [`flags.${FLAG_SCOPE}.${LIBRARY_FLAG_KEY}`]: globalThis._replace(clean) });
 
-    const indexPage = page
-      ?? journal.pages.find((p) => p.getFlag(FLAG_SCOPE, LIBRARY_INDEX_FLAG_KEY))
-      ?? journal.pages.find((p) => p.name === LIBRARY_PAGE_NAME)
-      ?? null;
-    const html = libraryIndexHtml(clean);
-    if (indexPage) {
-      await indexPage.update({
-        "text.content": html,
-        "text.format": CONST.JOURNAL_ENTRY_PAGE_FORMATS?.HTML ?? 1,
-        [`flags.${FLAG_SCOPE}.${LIBRARY_INDEX_FLAG_KEY}`]: true
-      });
-    } else {
-      await journal.createEmbeddedDocuments("JournalEntryPage", [{
-        name: LIBRARY_PAGE_NAME,
-        type: "text",
-        text: {
-          content: html,
-          format: CONST.JOURNAL_ENTRY_PAGE_FORMATS?.HTML ?? 1
-        },
-        flags: {
-          [FLAG_SCOPE]: {
-            [LIBRARY_INDEX_FLAG_KEY]: true
+    let indexWarning = null;
+    try {
+      const indexPage = page
+        ?? journal.pages.find((p) => p.getFlag(FLAG_SCOPE, LIBRARY_INDEX_FLAG_KEY))
+        ?? journal.pages.find((p) => p.name === LIBRARY_PAGE_NAME)
+        ?? null;
+      const html = libraryIndexHtml(clean);
+      if (indexPage) {
+        await indexPage.update({
+          "text.content": html,
+          "text.format": CONST.JOURNAL_ENTRY_PAGE_FORMATS?.HTML ?? 1,
+          [`flags.${FLAG_SCOPE}.${LIBRARY_INDEX_FLAG_KEY}`]: true
+        });
+      } else {
+        await journal.createEmbeddedDocuments("JournalEntryPage", [{
+          name: LIBRARY_PAGE_NAME,
+          type: "text",
+          text: {
+            content: html,
+            format: CONST.JOURNAL_ENTRY_PAGE_FORMATS?.HTML ?? 1
+          },
+          flags: {
+            [FLAG_SCOPE]: {
+              [LIBRARY_INDEX_FLAG_KEY]: true
+            }
           }
-        }
-      }]);
+        }]);
+      }
+    } catch (error) {
+      console.warn("PF2e Zone: library flag was saved but its Journal index update failed", error);
+      indexWarning = "The library change was saved, but its Journal index page could not be refreshed. The next library change will retry the index.";
     }
-    return clean;
+    return { data: clean, warning: indexWarning };
   }
 
   /** Limits shared data to the fields a client needs instead of exposing Journal internals. */
@@ -300,11 +306,12 @@ export async function handleWorkerRequest(request) {
     }
 
     data.zones[record.id] = record;
-    await persistLibrary(journal, data, page);
+    const { warning } = await persistLibrary(journal, data, page);
     return succeed({
       action: "library-save",
       journalId: journal.id,
-      record: libraryRecordForClient(record)
+      record: libraryRecordForClient(record),
+      warnings: warning ? [warning] : []
     });
   }
 
@@ -322,8 +329,8 @@ export async function handleWorkerRequest(request) {
       throw new Error("This saved zone changed since you opened the list. Reopen the list before deleting it.");
     }
     delete data.zones[recordId];
-    await persistLibrary(journal, data, page);
-    return succeed({ action: "library-delete", journalId: journal.id, recordId });
+    const { warning } = await persistLibrary(journal, data, page);
+    return succeed({ action: "library-delete", journalId: journal.id, recordId, warnings: warning ? [warning] : [] });
   }
 
   /** Enforces source ownership before the shared creation path changes the Scene. */
@@ -342,7 +349,7 @@ export async function handleWorkerRequest(request) {
       const { data } = await ensureLibraryJournal();
       if (!data.zones[savedPresetId]) throw new Error("The saved zone this configuration came from no longer exists.");
     }
-    const { region, durationResolution } = await createZoneDocument({
+    const { region, durationResolution, warnings } = await createZoneDocument({
       rawConfig: request.config, scene, sourceActor, sourceToken, requester, savedPresetId,
       savedPresetRevision: request.savedPresetRevision ?? null,
       chosenDamageType: request.chosenDamageType ?? null, color: request.color,
@@ -362,6 +369,7 @@ export async function handleWorkerRequest(request) {
     if (!region) throw new Error("Foundry did not create the Region.");
     return succeed({
       action: "create", sceneId: scene.id, regionId: region.id, regionUuid: region.uuid,
+      warnings,
       duration: durationResolution?.formula
         ? { formula: durationResolution.formula, rounds: durationResolution.rounds }
         : null
