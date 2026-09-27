@@ -56,8 +56,9 @@ async function withPendingSave(run) {
   const previousApplyOutcome = runtime.applyOutcome;
   const previousApplyImmunityStarts = runtime.applyImmunityStarts;
   let applications = 0;
+  let immunities = 0;
   runtime.applyOutcome = async () => { applications++; return true; };
-  runtime.applyImmunityStarts = () => {};
+  runtime.applyImmunityStarts = () => { immunities++; };
 
   const makeMessage = (author = owner) => ({
     author, actor, token,
@@ -71,7 +72,8 @@ async function withPendingSave(run) {
   try {
     await run({ actor, token, pending, region, makeMessage,
       get stored() { return stored; },
-      get applications() { return applications; }
+      get applications() { return applications; },
+      get immunities() { return immunities; }
     });
   } finally {
     runtime.applyOutcome = previousApplyOutcome;
@@ -128,7 +130,7 @@ test("a forged chat message cannot make a pending save appear completed", async 
     const forged = fixture.makeMessage(stranger);
     game.messages.contents = [forged];
     const payload = runtime.readPayload(fixture.region);
-    assert.equal(await runtime.hasPending(payload, fixture.token.uuid, fixture.pending.blockId), true);
+    assert.equal(await runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId), true);
     assert.ok(payload.state.pendingSaves.pending);
   });
 });
@@ -140,5 +142,44 @@ test("a GM reroll may retain the original owner's CheckRoll", async () => {
     await runtime.handleSaveResult(message);
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+  });
+});
+
+
+test("a missed authorized save is applied before a later save request replaces it", async () => {
+  await withPendingSave(async (fixture) => {
+    const valid = fixture.makeMessage();
+    const forged = fixture.makeMessage(stranger);
+    game.messages.contents = [valid, forged];
+
+    const stillPending = await runtime.withState(fixture.region, (payload) =>
+      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId)
+    );
+    assert.equal(stillPending, false);
+    assert.equal(fixture.applications, 1);
+    assert.equal(fixture.immunities, 1);
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+
+    await runtime.handleSaveResult(valid);
+    assert.equal(fixture.applications, 1, "the delayed live hook cannot apply the same result twice");
+  });
+});
+
+test("GM startup replays completed saves but leaves forged or unanswered saves pending", async () => {
+  await withPendingSave(async (fixture) => {
+    game.messages.contents = [fixture.makeMessage(stranger)];
+    await runtime.reconcileCompletedSaves();
+    assert.equal(fixture.applications, 0);
+    assert.ok(fixture.stored.state.pendingSaves.pending);
+
+    const valid = fixture.makeMessage();
+    game.messages.contents.push(valid);
+    await runtime.reconcileCompletedSaves();
+    await runtime.reconcileCompletedSaves();
+    assert.equal(fixture.applications, 1);
+    assert.equal(fixture.immunities, 1);
+    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
   });
 });

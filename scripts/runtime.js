@@ -7,7 +7,7 @@ import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.17";
+    const VERSION = "0.5.18";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -566,47 +566,36 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return null;
         },
 
-        /** Treats only an authorized completed save as final so forged chat cannot clear a pending request. */
-        async completedOutcomeForPending(pending) {
+        /** Finds an authorized saved chat result without treating an unrelated roll as completion. */
+        async completedMessageForPending(pending) {
           const token = await fromUuid(pending.tokenUuid);
           if (!token?.actor) return null;
-          const messages = [...game.messages.contents].reverse();
+          const messages = [...(game.messages?.contents ?? [])].reverse();
           for (const message of messages) {
             const outcome = this.saveResultFromMessage(message, pending, token);
-            if (outcome) return outcome;
+            if (outcome) return { message, outcome, token };
           }
           return null;
         },
 
-        /** Prevents a second save request while a creature still needs to choose or roll the first one. */
-        async hasPending(payload, tokenUuid, blockId) {
+        /** Replays a missed result before deciding whether the creature still has an unanswered save. */
+        async hasPending(region, payload, tokenUuid, blockId) {
           for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
             if (pending.tokenUuid !== tokenUuid || pending.blockId !== blockId) continue;
 
             const tombstone = payload.state.resolvedSaves?.[pendingId];
             if (tombstone?.identifier === pending.identifier) {
               delete payload.state.pendingSaves[pendingId];
-              console.info("PF2e Zone cleared resolved pending save", {
-                zone: payload.config.name,
-                pendingId,
-                tokenUuid,
-                blockId,
-                completedOutcome: tombstone.outcome
-              });
               continue;
             }
 
-            const completedOutcome = await this.completedOutcomeForPending(pending);
-            if (completedOutcome) {
-              delete payload.state.pendingSaves[pendingId];
-              console.info("PF2e Zone cleared stale pending save", {
-                zone: payload.config.name,
-                pendingId,
-                tokenUuid,
-                blockId,
-                completedOutcome
-              });
-              continue;
+            const completed = await this.completedMessageForPending(pending);
+            if (completed) {
+              const resolved = await this.resolvePendingSaveUnlocked(
+                region, payload, pendingId, pending.identifier,
+                completed.outcome, completed.token.actor.uuid, completed.message
+              );
+              if (resolved || !payload.state.pendingSaves[pendingId]) continue;
             }
 
             return true;
@@ -653,7 +642,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Records a pending save before chat output so late or duplicate clicks remain safe to handle. */
         async requestSave(region, payload, block, token, trigger, batchId, eventContext = {}) {
-          if (await this.hasPending(payload, token.uuid, block.id)) {
+          if (await this.hasPending(region, payload, token.uuid, block.id)) {
             console.info("PF2e Zone save suppressed: pending save already exists", {
               zone: payload.config.name,
               block: block.name,
@@ -1786,63 +1775,70 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Accepts a save result once and applies its outcome only after authorization and state checks pass. */
+        /** Applies an authorized save while the Region state lock is already held. */
+        async resolvePendingSaveUnlocked(region, payload, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
+          if (!this.isAuthority()) return false;
+          if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
+          if (payload.state.resolvedSaves?.[pendingId]?.identifier === identifier) {
+            delete payload.state.pendingSaves[pendingId];
+            return false;
+          }
+
+          if (!this.isOperational(region, payload)) return false;
+          const pending = payload.state.pendingSaves[pendingId];
+          if (!pending || pending.identifier !== identifier) return false;
+
+          const block = payload.config.effects?.find((b) => b.id === pending.blockId);
+          const token = await fromUuid(pending.tokenUuid);
+          if (!block || !token?.actor) {
+            delete payload.state.pendingSaves[pendingId];
+            return false;
+          }
+
+          if (rollerActorUuid !== token.actor.uuid) return false;
+          if (pending.actorUuid && pending.actorUuid !== token.actor.uuid) return false;
+          if (message && this.saveResultFromMessage(message, pending, token) !== outcome) return false;
+
+          // A persisted tombstone prevents duplicate results if a later hook
+          // or reconciliation finds the same chat message again.
+          delete payload.state.pendingSaves[pendingId];
+          payload.state.resolvedSaves[pendingId] = {
+            identifier,
+            outcome,
+            resolvedWorldTime: nowWorld()
+          };
+
+          const affected = await this.applyOutcome(
+            region,
+            payload,
+            block,
+            token,
+            outcome,
+            pending.batchId,
+            pending.eventContext ?? { trigger: pending.trigger }
+          );
+          this.applyImmunityStarts(payload, block, token, outcome, affected, true);
+
+          console.info("PF2e Zone save resolved", {
+            zone: payload.config.name,
+            regionUuid: region.uuid,
+            block: block.name,
+            token: token.name,
+            pendingId,
+            outcome
+          });
+          return true;
+        },
+
+        /** Serializes live chat and recovery through the same save resolution path. */
         async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
           if (!this.isAuthority()) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
-
           let resolved = false;
           await this.withState(region, async (payload) => {
-            if (payload.state.resolvedSaves?.[pendingId]?.identifier === identifier) {
-              delete payload.state.pendingSaves[pendingId];
-              return;
-            }
-
-            if (!this.isOperational(region, payload)) return;
-            const pending = payload.state.pendingSaves[pendingId];
-            if (!pending || pending.identifier !== identifier) return;
-
-            const block = payload.config.effects?.find((b) => b.id === pending.blockId);
-            const token = await fromUuid(pending.tokenUuid);
-            if (!block || !token?.actor) {
-              delete payload.state.pendingSaves[pendingId];
-              return;
-            }
-
-            if (rollerActorUuid !== token.actor.uuid) return;
-            if (pending.actorUuid && pending.actorUuid !== token.actor.uuid) return;
-            if (message && this.saveResultFromMessage(message, pending, token) !== outcome) return;
-
-            // Delete before applying the result. Keep a small persistent
-            // tombstone as well, so a duplicated resolver cannot apply the same
-            // save twice even if an older pending snapshot resurfaces.
-            delete payload.state.pendingSaves[pendingId];
-            payload.state.resolvedSaves[pendingId] = {
-              identifier,
-              outcome,
-              resolvedWorldTime: nowWorld()
-            };
-
-            const affected = await this.applyOutcome(
-              region,
-              payload,
-              block,
-              token,
-              outcome,
-              pending.batchId,
-              pending.eventContext ?? { trigger: pending.trigger }
+            resolved = await this.resolvePendingSaveUnlocked(
+              region, payload, pendingId, identifier, outcome, rollerActorUuid, message
             );
-            this.applyImmunityStarts(payload, block, token, outcome, affected, true);
-            resolved = true;
-
-            console.info("PF2e Zone save resolved", {
-              zone: payload.config.name,
-              regionUuid: region.uuid,
-              block: block.name,
-              token: token.name,
-              pendingId,
-              outcome
-            });
           });
 
           if (resolved && this.isLiveRegion(region)) {
@@ -1901,6 +1897,28 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             token.actor.uuid,
             message
           );
+        },
+
+        /** Replays authorized saves whose chat messages arrived while the GM hook was unavailable. */
+        async reconcileCompletedSaves() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            const payload = this.readPayload(region);
+            if (!this.isOperational(region, payload)) continue;
+            for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
+              if (payload.state.resolvedSaves?.[pendingId]?.identifier === pending.identifier) continue;
+              try {
+                const completed = await this.completedMessageForPending(pending);
+                if (!completed) continue;
+                await this.resolvePendingSave(
+                  region, pendingId, pending.identifier, completed.outcome,
+                  completed.token.actor.uuid, completed.message
+                );
+              } catch (error) {
+                console.error("PF2e Zone: completed save recovery failed", region, pendingId, error);
+              }
+            }
+          }
         },
 
         /** Ends condition-linked cleanup watches when actors change outside a zone event. */
@@ -2574,6 +2592,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.reconcileUnfinishedZoneEnds();
               await this.reconcileDisabledZones();
               await this.reconcileUnfinishedExitCleanup();
+              await this.reconcileCompletedSaves();
               await this.checkAllDurations();
               for (const region of this.allZones()) {
                 if (!this.isOperational(region)) continue;
