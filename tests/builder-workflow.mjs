@@ -185,6 +185,21 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     );
 
     const { defaultConfig } = await import("../scripts/zone-config.js");
+    const duplicateImport = defaultConfig();
+    duplicateImport.name = "Imported duplicate blocks";
+    duplicateImport.targeting.affects = "enemies";
+    duplicateImport.effects[0].triggers.activation = true;
+    duplicateImport.effects[0].chatAlert.enabled = true;
+    duplicateImport.effects.push(structuredClone(duplicateImport.effects[0]));
+    importResponse = { json: JSON.stringify(duplicateImport) };
+    root.querySelector(".zb-import").click();
+    await until(() => builderDialog.window.content.querySelector('[data-zone="name"]')?.value === duplicateImport.name);
+    root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+    const importedBlockIds = [...root.querySelectorAll("[data-block-id]")].map((block) => block.dataset.blockId);
+    assert.equal(new Set(importedBlockIds).size, 2);
+    assert.equal(importedBlockIds[0], duplicateImport.effects[0].id);
+    assert.notEqual(importedBlockIds[1], importedBlockIds[0]);
+
     const invalidImport = defaultConfig();
     invalidImport.name = "Imported with unavailable choices";
     invalidImport.targeting.affects = "enemies";

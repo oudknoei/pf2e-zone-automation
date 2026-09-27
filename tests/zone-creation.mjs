@@ -77,6 +77,28 @@ test("direct GM and worker creation persist identical normalized config and init
   assert.deepEqual(activated, created.map((entry) => entry.region));
 });
 
+test("direct GM and worker creation repair duplicate block IDs before persistence", async () => {
+  const config = validConfig();
+  const second = structuredClone(config.effects[0]);
+  second.name = "Other outcome";
+  second.chatAlert.text = "Other block";
+  config.effects.push(second);
+  assert.match(validateConfig(config, { sourceActor: actor }).errors.join(" "), /shares ID/);
+
+  const direct = await createZoneDocument({
+    rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+  });
+  const response = await handleWorkerRequest({
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    sceneId: scene.id, sourceTokenUuid: token.uuid, config
+  });
+  assert.equal(response.ok, true, response.error);
+  const directIds = direct.region.getFlag("world", "pf2eZone").config.effects.map((block) => block.id);
+  const workerIds = created.at(-1).data.flags.world.pf2eZone.config.effects.map((block) => block.id);
+  assert.deepEqual(directIds, [config.effects[0].id, "generated-1"]);
+  assert.deepEqual(workerIds, directIds);
+});
+
 test("direct GM creation retains the revision of its saved preset", async () => {
   const result = await createZoneDocument({
     rawConfig: validConfig(), scene, sourceActor: actor, sourceToken: token, requester: gm,

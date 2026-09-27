@@ -52,6 +52,45 @@ test("unknown duration remains visible for validation while known legacy values 
   assert.equal(migrated.effects[0].repeat, "once-per-zone");
 });
 
+test("import repairs missing and duplicate Effect Block IDs without changing the first occurrence", () => {
+  const config = defaultConfig();
+  config.name = "Imported IDs";
+  config.targeting.affects = "enemies";
+  config.effects[0].triggers.activation = true;
+  config.effects[0].chatAlert.enabled = true;
+  const blocks = Array.from({ length: 6 }, () => structuredClone(config.effects[0]));
+  for (const [index, block] of blocks.entries()) block.name = `Effect Block ${index + 1}`;
+  blocks[0].id = "shared";
+  blocks[1].id = " shared ";
+  blocks[2].id = "reserved";
+  blocks[3].id = " ";
+  blocks[4].id = "shared-1";
+  delete blocks[5].id;
+  config.effects = blocks;
+
+  const oldFoundry = globalThis.foundry;
+  globalThis.foundry = { utils: { randomID: () => "reserved" } };
+  try {
+    const rawErrors = validateConfig(config).errors.join(" ");
+    assert.match(rawErrors, /shares ID 'shared'/);
+    assert.match(rawErrors, /needs an ID/);
+
+    const normalized = normalizeConfig(config);
+    const ids = normalized.effects.map((block) => block.id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.ok(ids.every((id) => id.trim()));
+    assert.equal(ids[0], "shared");
+    assert.equal(ids[2], "reserved");
+    assert.equal(ids[4], "shared-1");
+    assert.notEqual(ids[1], "reserved", "generated IDs cannot take a later block's original ID");
+    assert.deepEqual(normalizeConfig(normalized), normalized, "the migration is stable once saved");
+    assert.deepEqual(normalizeConfig(config, { strict: true }).effects.map((block) => block.id), ids);
+    assert.deepEqual(validateConfig(normalized).errors, []);
+  } finally {
+    globalThis.foundry = oldFoundry;
+  }
+});
+
 test("unknown imported enum choices are rejected instead of changed to defaults", () => {
   const base = defaultConfig();
   base.name = "Import";

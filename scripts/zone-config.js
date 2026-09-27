@@ -288,6 +288,27 @@ function validateSuppliedChoices(cfg) {
   }
 }
 
+/** Keeps imported and legacy blocks independent when runtime state is keyed by Effect Block ID. */
+function uniqueEffectBlockIds(effects) {
+  const reserved = new Set(effects.map((block) => String(block?.id ?? "").trim()).filter(Boolean));
+  const used = new Set();
+  return effects.map((block) => {
+    const original = String(block?.id ?? "").trim();
+    if (original && !used.has(original)) {
+      used.add(original);
+      return original;
+    }
+
+    // Preserve the first occurrence of every supplied ID, including one later in the list.
+    const base = String(newId()).trim() || "effect";
+    let replacement = base;
+    let suffix = 1;
+    while (reserved.has(replacement) || used.has(replacement)) replacement = `${base}-${suffix++}`;
+    used.add(replacement);
+    return replacement;
+  });
+}
+
 /** Moves imported and saved configurations into one current shape before the UI uses them. */
 function normalizeConfig(input, { strict = false } = {}) {
   const base = defaultConfig();
@@ -346,6 +367,7 @@ function normalizeConfig(input, { strict = false } = {}) {
   };
 
   const effects = Array.isArray(cfg.effects) && cfg.effects.length ? cfg.effects : base.effects;
+  const effectIds = uniqueEffectBlockIds(effects);
   result.effects = effects.map((block, index) => {
     const saveMode = block?.save?.dc?.mode === "actorStatistic" ? "actorStatistic" : "custom";
     const rawCustomDc = block?.save?.dc?.value;
@@ -362,7 +384,7 @@ function normalizeConfig(input, { strict = false } = {}) {
     for (const [key] of OUTCOMES) outcomes[key] = ensureOutcome(block?.outcomes?.[key], key);
 
     return {
-      id: String(block?.id ?? newId()),
+      id: effectIds[index],
       name: String(block?.name ?? `Effect Block ${index + 1}`).trim() || `Effect Block ${index + 1}`,
       triggers: {
         activation: Boolean(block?.triggers?.activation),
@@ -482,6 +504,17 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
     if (durationError) error(durationError, { scope: "zone", field: "duration-rounds" });
   }
   if (!cfg.effects.length) error("At least one effect block is required.", { scope: "blocks" });
+  const blockIdIndexes = new Map();
+  cfg.effects.forEach((block, index) => {
+    const id = String(block?.id ?? "").trim();
+    if (!id) {
+      error(`Effect Block ${index + 1} needs an ID. Reopen or re-import this configuration to generate one.`, blockTarget(index, "block-id"));
+    } else if (blockIdIndexes.has(id)) {
+      error(`Effect Block ${index + 1} shares ID '${id}' with Effect Block ${blockIdIndexes.get(id) + 1}. Reopen or re-import this configuration to assign a new ID.`, blockTarget(index, "block-id"));
+    } else {
+      blockIdIndexes.set(id, index);
+    }
+  });
 
   const sharedDamageChoice = cfg.activationChoices?.damageType;
   if (sharedDamageChoice?.enabled) {
