@@ -1,6 +1,21 @@
 const TAUNT_ACTION_UUID = "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb";
 const TAUNT_EFFECT_UUID = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
 
+const guardianTauntTails = new Map();
+
+/** Gives each Guardian one ordered Taunt transaction so concurrent requests see the latest effect. */
+async function serializeGuardianTaunt(guardianUuid, operation) {
+  const previous = guardianTauntTails.get(guardianUuid) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  const tail = result.then(() => undefined, () => undefined);
+  guardianTauntTails.set(guardianUuid, tail);
+  try {
+    return await result;
+  } finally {
+    if (guardianTauntTails.get(guardianUuid) === tail) guardianTauntTails.delete(guardianUuid);
+  }
+}
+
 /** Keeps chat text safe when actor and target names come from world data. */
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
@@ -76,84 +91,86 @@ export async function executeShieldingTaunt({ sourceTokenUuid, targetTokenUuid }
   const guardian = sourceToken.actor;
   const target = targetToken.actor;
 
-  if (guardian === target) throw new Error("The Guardian cannot Taunt themself.");
+  return serializeGuardianTaunt(guardian.uuid, async () => {
+    if (guardian === target) throw new Error("The Guardian cannot Taunt themself.");
 
-  const shieldingTaunt = guardian.items?.find((item) => (
-    itemSlug(item) === "shielding-taunt" || item.name === "Shielding Taunt"
-  ));
-  if (!shieldingTaunt) throw new Error(`${guardian.name} does not have Shielding Taunt.`);
+    const shieldingTaunt = guardian.items?.find((item) => (
+      itemSlug(item) === "shielding-taunt" || item.name === "Shielding Taunt"
+    ));
+    if (!shieldingTaunt) throw new Error(`${guardian.name} does not have Shielding Taunt.`);
 
-  const shield = guardian.heldShield;
-  if (!shield) throw new Error(`${guardian.name} is not wielding a shield.`);
-  if (shield.isDestroyed) throw new Error(`${shield.name} is destroyed.`);
-  if (shield.isBroken) throw new Error(`${shield.name} is broken.`);
+    const shield = guardian.heldShield;
+    if (!shield) throw new Error(`${guardian.name} is not wielding a shield.`);
+    if (shield.isDestroyed) throw new Error(`${shield.name} is destroyed.`);
+    if (shield.isBroken) throw new Error(`${shield.name} is broken.`);
 
-  const hasLongDistanceTaunt = guardian.items?.some((item) => (
-    itemSlug(item) === "long-distance-taunt" || item.name === "Long-Distance Taunt"
-  ));
-  const maximumRange = hasLongDistanceTaunt ? 120 : 30;
-  const distance = measureTauntRange(sourceToken, targetToken);
-  if (distance > maximumRange) {
-    throw new Error(`${targetToken.name} is ${distance} feet away; maximum Taunt range is ${maximumRange} feet.`);
-  }
+    const hasLongDistanceTaunt = guardian.items?.some((item) => (
+      itemSlug(item) === "long-distance-taunt" || item.name === "Long-Distance Taunt"
+    ));
+    const maximumRange = hasLongDistanceTaunt ? 120 : 30;
+    const distance = measureTauntRange(sourceToken, targetToken);
+    if (distance > maximumRange) {
+      throw new Error(`${targetToken.name} is ${distance} feet away; maximum Taunt range is ${maximumRange} feet.`);
+    }
 
-  if (!tauntAction || tauntEffect?.type !== "effect") {
-    throw new Error("The PF2e Taunt action or Taunt effect could not be loaded.");
-  }
+    if (!tauntAction || tauntEffect?.type !== "effect") {
+      throw new Error("The PF2e Taunt action or Taunt effect could not be loaded.");
+    }
 
-  // Keep the old Taunt until its replacement has been applied successfully.
-  const previousTaunts = previousTauntsFrom(guardian);
+    // Keep the old Taunt until its replacement has been applied successfully.
+    const previousTaunts = previousTauntsFrom(guardian);
 
-  // PF2e's Raise a Shield action toggles its effect off when called again, so
-  // invoke it only while the Guardian's shield is not already raised.
-  if (!guardian.system?.attributes?.shield?.raised) {
-    await game.pf2e.actions.raiseAShield({ actors: [guardian] });
-  }
-  if (!guardian.system?.attributes?.shield?.raised) {
-    throw new Error("Raise a Shield was not successfully applied.");
-  }
+    // PF2e's Raise a Shield action toggles its effect off when called again, so
+    // invoke it only while the Guardian's shield is not already raised.
+    if (!guardian.system?.attributes?.shield?.raised) {
+      await game.pf2e.actions.raiseAShield({ actors: [guardian] });
+    }
+    if (!guardian.system?.attributes?.shield?.raised) {
+      throw new Error("Raise a Shield was not successfully applied.");
+    }
 
-  const effectSource = tauntEffect.toObject();
-  effectSource._id = null;
-  effectSource.system.context = {
-    origin: {
-      actor: guardian.uuid,
-      token: sourceToken.uuid,
-      item: tauntAction.uuid,
-      spellcasting: null,
-      rollOptions: [
-        ...(guardian.getSelfRollOptions?.("origin") ?? []),
-        ...(tauntAction.getRollOptions?.("origin:item") ?? [])
-      ]
-    },
-    target: {
-      actor: target.uuid,
-      token: targetToken.uuid
-    },
-    roll: null
-  };
-  // Shielding Taunt changes the official Taunt effect to auditory.
-  effectSource.system.traits.value = ["auditory"];
+    const effectSource = tauntEffect.toObject();
+    effectSource._id = null;
+    effectSource.system.context = {
+      origin: {
+        actor: guardian.uuid,
+        token: sourceToken.uuid,
+        item: tauntAction.uuid,
+        spellcasting: null,
+        rollOptions: [
+          ...(guardian.getSelfRollOptions?.("origin") ?? []),
+          ...(tauntAction.getRollOptions?.("origin:item") ?? [])
+        ]
+      },
+      target: {
+        actor: target.uuid,
+        token: targetToken.uuid
+      },
+      roll: null
+    };
+    // Shielding Taunt changes the official Taunt effect to auditory.
+    effectSource.system.traits.value = ["auditory"];
 
-  const created = await target.createEmbeddedDocuments("Item", [effectSource]);
-  if (!created?.length) throw new Error("The Taunt effect could not be applied.");
+    const created = await target.createEmbeddedDocuments("Item", [effectSource]);
+    if (!created?.length) throw new Error("The Taunt effect could not be applied.");
 
-  // A Guardian can have only one Taunt active at a time.
-  for (const previous of previousTaunts) {
-    await previous.actor.deleteEmbeddedDocuments("Item", previous.ids);
-  }
+    // A Guardian can have only one Taunt active at a time.
+    for (const previous of previousTaunts) {
+      await previous.actor.deleteEmbeddedDocuments("Item", previous.ids);
+    }
 
-  await ChatMessage.create({
-    speaker: ChatMessage.getSpeaker({ actor: guardian, token: sourceToken.object }),
-    style: CONST.CHAT_MESSAGE_STYLES.OTHER,
-    content: `<p><strong>Shielding Taunt</strong>: ${escapeHtml(guardian.name)} raises ${escapeHtml(shield.name)} and taunts <strong>${escapeHtml(targetToken.name)}</strong>.</p><p><em>The Taunt has the auditory trait.</em></p>`
+    await ChatMessage.create({
+      speaker: ChatMessage.getSpeaker({ actor: guardian, token: sourceToken.object }),
+      style: CONST.CHAT_MESSAGE_STYLES.OTHER,
+      content: `<p><strong>Shielding Taunt</strong>: ${escapeHtml(guardian.name)} raises ${escapeHtml(shield.name)} and taunts <strong>${escapeHtml(targetToken.name)}</strong>.</p><p><em>The Taunt has the auditory trait.</em></p>`
+    });
+
+    return {
+      action: "shielding-taunt",
+      guardian: guardian.name,
+      target: targetToken.name,
+      distance,
+      maximumRange
+    };
   });
-
-  return {
-    action: "shielding-taunt",
-    guardian: guardian.name,
-    target: targetToken.name,
-    distance,
-    maximumRange
-  };
 }

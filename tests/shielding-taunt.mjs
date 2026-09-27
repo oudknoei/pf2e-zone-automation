@@ -136,3 +136,114 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
     }
   }
 });
+
+
+test("overlapping Shielding Taunts leave only the latest target affected", async () => {
+  const prior = Object.fromEntries([
+    "canvas", "ChatMessage", "CONST", "fromUuid", "game"
+  ].map((key) => [key, globalThis[key]]));
+
+  const scene = { id: "scene", tokens: [] };
+  const guardian = {
+    uuid: "Actor.shared-guardian", name: "Guardian",
+    items: [{ slug: "shielding-taunt", name: "Shielding Taunt" }],
+    heldShield: { name: "Shield", isBroken: false, isDestroyed: false },
+    system: { attributes: { shield: { raised: true } } }
+  };
+  const tauntUuid = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
+  const action = { uuid: "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb" };
+  const effect = {
+    type: "effect",
+    toObject: () => ({ system: { traits: { value: [] }, context: {} } })
+  };
+  const events = [];
+  let releaseFirst;
+  const firstCreationReleased = new Promise((resolve) => { releaseFirst = resolve; });
+  let signalFirstStarted;
+  const firstCreationStarted = new Promise((resolve) => { signalFirstStarted = resolve; });
+
+  /** Models Foundry adding a created Effect to the target's live Item collection. */
+  function makeTarget(name) {
+    return {
+      uuid: "Actor." + name, name,
+      itemTypes: { effect: [] },
+      async createEmbeddedDocuments(type, [source]) {
+        assert.equal(type, "Item");
+        events.push("create:" + name);
+        if (name === "First") {
+          signalFirstStarted();
+          await firstCreationReleased;
+        }
+        const item = {
+          id: "taunt-" + name,
+          sourceId: tauntUuid,
+          system: { context: { origin: { actor: source.system.context.origin.actor } } }
+        };
+        this.itemTypes.effect.push(item);
+        return [item];
+      },
+      async deleteEmbeddedDocuments(type, ids) {
+        assert.equal(type, "Item");
+        events.push("delete:" + name);
+        this.itemTypes.effect = this.itemTypes.effect.filter((item) => !ids.includes(item.id));
+      }
+    };
+  }
+
+  const first = makeTarget("First");
+  const second = makeTarget("Second");
+  const sourceToken = {
+    documentName: "Token", uuid: "Scene.scene.Token.guardian", name: "Guardian",
+    actor: guardian, parent: scene, object: { distanceTo: () => 10 }
+  };
+  const firstToken = {
+    documentName: "Token", uuid: "Scene.scene.Token.first", name: "First",
+    actor: first, parent: scene, object: {}
+  };
+  const secondToken = {
+    documentName: "Token", uuid: "Scene.scene.Token.second", name: "Second",
+    actor: second, parent: scene, object: {}
+  };
+  scene.tokens.push(sourceToken, firstToken, secondToken);
+
+  try {
+    globalThis.canvas = { scene };
+    globalThis.CONST = { CHAT_MESSAGE_STYLES: { OTHER: 0 } };
+    globalThis.ChatMessage = {
+      getSpeaker: () => ({}),
+      create: async () => {}
+    };
+    globalThis.game = {
+      user: { isGM: true }, actors: [guardian, first, second], scenes: [scene]
+    };
+    const documents = new Map([
+      [sourceToken.uuid, sourceToken], [firstToken.uuid, firstToken],
+      [secondToken.uuid, secondToken], [action.uuid, action], [tauntUuid, effect]
+    ]);
+    globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
+
+    const firstRequest = executeShieldingTaunt({
+      sourceTokenUuid: sourceToken.uuid, targetTokenUuid: firstToken.uuid
+    });
+    await firstCreationStarted;
+    const secondRequest = executeShieldingTaunt({
+      sourceTokenUuid: sourceToken.uuid, targetTokenUuid: secondToken.uuid
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const secondStartedBeforeFirstFinished = events.includes("create:Second");
+    releaseFirst();
+    const results = await Promise.all([firstRequest, secondRequest]);
+
+    assert.equal(secondStartedBeforeFirstFinished, false);
+    assert.deepEqual(results.map((result) => result.target), ["First", "Second"]);
+    assert.deepEqual(events, ["create:First", "create:Second", "delete:First"]);
+    assert.equal(first.itemTypes.effect.length, 0);
+    assert.deepEqual(second.itemTypes.effect.map((item) => item.id), ["taunt-Second"]);
+  } finally {
+    releaseFirst();
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
+});
