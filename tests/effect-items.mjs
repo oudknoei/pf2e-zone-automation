@@ -41,3 +41,29 @@ test("effect validation points to the exact invalid result row", async () => {
   assert.deepEqual(result.issues.map((issue) => issue.target.effectIndex), [1, 2]);
   assert.ok(result.issues.every((issue) => issue.target.outcomeKey === "noSave"));
 });
+
+test("Effect Item lookup checks only outcomes the block can execute", async () => {
+  const inspected = [];
+  const inspect = async (uuid) => {
+    inspected.push(uuid);
+    return resolver(uuid);
+  };
+  const block = {
+    name: "Stench",
+    save: { enabled: false },
+    outcomes: {
+      noSave: { effects: [{ uuid: "Actor.ghonatine.Item.stench" }] },
+      failure: { effects: [{ uuid: "Item.gone" }] }
+    }
+  };
+
+  assert.deepEqual((await validateEffectItems({ effects: [block] }, inspect)).errors, []);
+  assert.deepEqual(inspected, ["Actor.ghonatine.Item.stench"]);
+
+  inspected.length = 0;
+  block.save.enabled = true;
+  const enabled = await validateEffectItems({ effects: [block] }, inspect);
+  assert.equal(enabled.errors.length, 1);
+  assert.match(enabled.errors[0], /failure Effect Item 1/);
+  assert.deepEqual(inspected, ["Item.gone"]);
+});

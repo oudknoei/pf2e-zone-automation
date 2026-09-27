@@ -190,11 +190,22 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.match(root.querySelector('[data-outcome="noSave"] .zb-effect-info').textContent, /Builder smoke effect/);
     assert.match(root.querySelector("[data-validation-status]").textContent, /Ready to create/);
 
+    root.querySelector('[data-outcome="failure"] .zb-add-effect').click();
+    const hiddenEffect = root.querySelector('[data-outcome="failure"] [data-field="effect-uuid"]');
+    change(hiddenEffect, "Item.deleted", "input");
+    assert.equal(root.querySelector(".zb-create").disabled, false, "hidden Failure Item does not block No Save creation");
+    change(root.querySelector('[data-field="save-enabled"]'), true);
+    await until(() => root.querySelector(".zb-create").disabled &&
+      /could not be found/.test(root.querySelector('[data-outcome="failure"] .zb-effect-info').textContent));
+    change(root.querySelector('[data-field="save-enabled"]'), false);
+    assert.equal(root.querySelector(".zb-create").disabled, false, "turning saves off restores readiness");
+
     root.querySelector(".zb-create").click();
     await until(() => regions.size === 1);
     const region = [...regions][0];
     assert.equal(region.name, "Smoke Zone");
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.noSave.effects[0].uuid, effectUuid);
+    assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.failure.effects[0].uuid, "Item.deleted");
     assert.deepEqual(runtimeCalls.activated, [region]);
     await until(() => !builderDialog.element.isConnected);
     region.getFlag("world", "pf2eZone").state.endRequested = true;

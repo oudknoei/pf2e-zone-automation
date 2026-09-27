@@ -172,6 +172,56 @@ test("direct and player creation reject missing and non-Effect Items before maki
   assert.ok(result.region);
 });
 
+test("inactive outcomes do not prevent GM or worker creation, but become validatable when enabled", async () => {
+  const config = validConfig();
+  config.effects[0].outcomes.failure.effects.push({ uuid: "Item.deleted", removal: "item-duration" });
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, []);
+  const direct = await createZoneDocument({
+    rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+  });
+  assert.ok(direct.region);
+  const beforeWorker = created.length;
+  const worker = await handleWorkerRequest({
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    sceneId: scene.id, sourceTokenUuid: token.uuid, config
+  });
+  assert.equal(worker.ok, true, worker.error);
+  assert.equal(created.length, beforeWorker + 1);
+  assert.equal(created.at(-1).data.flags.world.pf2eZone.config.effects[0].outcomes.failure.effects[0].uuid, "Item.deleted");
+
+  config.effects[0].save.enabled = true;
+  config.effects[0].save.dc.value = 20;
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, []);
+  const beforeRejected = created.length;
+  await assert.rejects(createZoneDocument({
+    rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+  }), /failure Effect Item 1/);
+  const previous = console.error;
+  console.error = () => {};
+  try {
+    const rejected = await handleWorkerRequest({
+      protocol: 1, action: "create", requesterUserId: gm.id,
+      sceneId: scene.id, sourceTokenUuid: token.uuid, config
+    });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /failure Effect Item 1/);
+  } finally {
+    console.error = previous;
+  }
+  assert.equal(created.length, beforeRejected);
+});
+
+test("inactive linked conditions do not block a No Save zone", () => {
+  const config = validConfig();
+  config.effects[0].outcomes.failure.conditions.push({
+    slug: "frightened", value: 1, removal: "condition-end", condition: null
+  });
+  assert.deepEqual(validateConfig(config, { sourceActor: actor }).errors, []);
+  config.effects[0].save.enabled = true;
+  config.effects[0].save.dc.value = 20;
+  assert.match(validateConfig(config, { sourceActor: actor }).errors.join(" "), /Failure condition/);
+});
+
 test("activation failure still reports the committed Region to GM and player paths", async () => {
   const originalActivate = globalThis.PF2EZoneRuntime.activateRegion;
   const originalConsoleError = console.error;

@@ -1,4 +1,5 @@
 import { editableDurationRounds, editableZoneSize } from "./config-input.js";
+import { activeOutcomeKeys } from "./effect-items.js";
 import { durationRoundsError } from "./duration.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
 import { hasTargetSelection } from "./targeting.js";
@@ -390,9 +391,7 @@ function normalizeConfig(input, { strict = false } = {}) {
 
 /** Lets validation distinguish an intentionally empty block from one with an actual result. */
 function getPayloadCount(block) {
-  const keys = block.save.enabled
-    ? ["criticalSuccess", "success", "failure", "criticalFailure"]
-    : ["noSave"];
+  const keys = activeOutcomeKeys(block);
   return keys.reduce((count, key) => {
     const outcome = block.outcomes[key];
     return count + outcome.conditions.length + outcome.effects.length;
@@ -488,8 +487,9 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       error(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`, blockTarget(index, "damage-type-mode"));
     }
 
-    for (const [outcomeKey, outcome] of Object.entries(block.outcomes)) {
-      for (const [conditionIndex, condition] of (outcome.conditions ?? []).entries()) {
+    for (const outcomeKey of activeOutcomeKeys(block)) {
+      const outcome = block.outcomes[outcomeKey];
+      for (const [conditionIndex, condition] of (outcome?.conditions ?? []).entries()) {
         if (condition.removal === "condition-end") {
           if (!condition.condition) {
             error(
@@ -503,11 +503,7 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       }
     }
 
-    const relevantOutcomes = block.save.enabled
-      ? ["criticalSuccess", "success", "failure", "criticalFailure"]
-      : ["noSave"];
-
-    for (const key of relevantOutcomes) {
+    for (const key of activeOutcomeKeys(block)) {
       const outcome = block.outcomes[key];
       outcome.effects.forEach((effect, effectIndex) => {
         if (!effect.uuid) {

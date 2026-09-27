@@ -10,7 +10,7 @@ import { storedTargeting, targetLabels, targetingChoices } from "./targeting.js"
 import { fixedAreaShape, zoneTypeChoice, zoneTypeFields } from "./area-shape.js";
 import { createZoneDocument, savedPresetFromZone } from "./zone-creation.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
-import { inspectEffectItem, validateEffectItems } from "./effect-items.js";
+import { activeOutcomeKeys, inspectEffectItem, validateEffectItems } from "./effect-items.js";
 
 /*
  * PF2e Zone Automation - Zone Builder
@@ -1063,8 +1063,9 @@ export async function openZoneBuilder() {
     const validation = validateConfig(cfg, { requireCurrentSource: true });
     let pendingCount = 0;
     for (const [index, block] of cfg.effects.entries()) {
-      for (const [outcomeKey, outcome] of Object.entries(block.outcomes)) {
-        for (const [effectIndex, effect] of outcome.effects.entries()) {
+      for (const outcomeKey of activeOutcomeKeys(block)) {
+        const outcome = block.outcomes[outcomeKey];
+        for (const [effectIndex, effect] of (outcome?.effects ?? []).entries()) {
           const target = { scope: "block", index, field: "effect-uuid", outcomeKey, effectIndex };
           const row = validationTarget(root, { target })?.closest(".zb-effect-row");
           const uuid = String(effect.uuid ?? "").trim();

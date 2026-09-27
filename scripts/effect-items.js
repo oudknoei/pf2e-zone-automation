@@ -15,14 +15,22 @@ export async function inspectEffectItem(uuid, resolver = globalThis.fromUuid) {
   return { uuid: value, name: document.name ?? "Effect Item", img: document.img ?? "" };
 }
 
-/** Applies the same Effect Item checks to every nonempty payload before a preset or Region is saved. */
+/** Selects the outcomes the runtime can apply for this block's save setting. */
+export function activeOutcomeKeys(block) {
+  return block.save?.enabled
+    ? ["criticalSuccess", "success", "failure", "criticalFailure"]
+    : ["noSave"];
+}
+
+/** Applies the same Effect Item checks to active payloads before a preset or Region is saved. */
 export async function validateEffectItems(config, resolver = globalThis.fromUuid) {
   const errors = [];
   const issues = [];
   const resolved = new Map();
   for (const [index, block] of (config.effects ?? []).entries()) {
-    for (const [outcomeKey, outcome] of Object.entries(block.outcomes ?? {})) {
-      for (const [effectIndex, effect] of (outcome.effects ?? []).entries()) {
+    for (const outcomeKey of activeOutcomeKeys(block)) {
+      const outcome = block.outcomes?.[outcomeKey];
+      for (const [effectIndex, effect] of (outcome?.effects ?? []).entries()) {
         const uuid = String(effect.uuid ?? "").trim();
         if (!uuid) continue;
         if (!resolved.has(uuid)) resolved.set(uuid, await inspectEffectItem(uuid, resolver));
