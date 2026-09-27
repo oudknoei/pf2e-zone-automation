@@ -1,12 +1,13 @@
 import { highestClassOrSpellDc } from "./dc.js";
 import { combatDurationDeadline } from "./duration-clock.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
+import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.16";
+    const VERSION = "0.5.17";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -82,6 +83,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           payload.state.pendingSaves ??= {};
           payload.state.resolvedSaves ??= {};
           payload.state.repeat ??= {};
+          payload.state.hpObserved ??= {};
           payload.state.immunities ??= {};
           payload.state.applied ??= {};
           payload.state.damageRolls ??= {};
@@ -248,6 +250,25 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           }
           return inside;
+        },
+
+        /** Records current HP without firing when a creature first becomes an occupant. */
+        seedHpBaseline(payload, token, { replace = false } = {}) {
+          const hp = actorHitPoints(token?.actor);
+          if (hp === null || !token?.uuid) return;
+          const key = stateKey("hp", token.uuid);
+          if (replace || !Number.isFinite(payload.state.hpObserved[key])) payload.state.hpObserved[key] = hp;
+        },
+
+        /** Removes stale baselines so leaving and re-entering starts a new crossing watch. */
+        reconcileHpBaselinesUnlocked(region, payload, { replace = false } = {}) {
+          if (!(payload.config.effects ?? []).some((block) => block.triggers?.hpThreshold)) return;
+          const inside = this.tokensInside(region);
+          const keys = new Set(inside.map((token) => stateKey("hp", token.uuid)));
+          for (const key of Object.keys(payload.state.hpObserved)) {
+            if (!keys.has(key)) delete payload.state.hpObserved[key];
+          }
+          for (const token of inside) this.seedHpBaseline(payload, token, { replace });
         },
 
         /** Checks current geometry because a save may resolve after its target has left. */
@@ -1356,6 +1377,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Aligns maintained effects with current occupants after missed or reordered Region events. */
         async reconcileContinuousUnlocked(region, payload) {
+          this.reconcileHpBaselinesUnlocked(region, payload);
           const insideTokens = this.tokensInside(region);
           await this.cleanupExitedItemsUnlocked(region, payload, insideTokens);
 
@@ -1405,6 +1427,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           await this.withState(region, async (payload) => {
             if (!this.isOperational(region, payload)) return;
             for (const token of affected) {
+              if (this.isTokenInside(region, token.uuid)) this.seedHpBaseline(payload, token, { replace: true });
               if (!(await this.eligible(payload, token))) continue;
               await this.processTriggerUnlocked(region, payload, token, "enter", batch + ":" + token.uuid);
             }
@@ -1489,6 +1512,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           let scheduleFinalize = false;
 
           await this.withState(region, async (payload) => {
+            this.reconcileHpBaselinesUnlocked(region, payload);
             if (!payload.state.activationProcessed) {
               payload.state.activationPending = true;
               const batchSeed = randomId();
@@ -2044,9 +2068,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             source: values.source,
             trait: values.trait,
             trigger: values.trigger,
-            count: values.count
+            count: values.count,
+            hp: values.hp,
+            previoushp: values.previousHp,
+            threshold: values.threshold
           };
-          return String(template ?? "").replace(/\{(zone|block|creature|item|source|trait|trigger|count)\}/gi, (_match, key) => {
+          return String(template ?? "").replace(/\{(zone|block|creature|item|source|trait|trigger|count|hp|previousHp|threshold)\}/gi, (_match, key) => {
             return String(replacements[String(key).toLowerCase()] ?? "");
           });
         },
@@ -2099,7 +2126,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             item: eventContext?.itemName ?? "",
             source: sourceName,
             trait,
-            trigger: trigger ? titleCaseLocal(trigger) : "",
+            trigger: trigger === "hpThreshold" ? "HP threshold" : trigger ? titleCaseLocal(trigger) : "",
+            hp: eventContext?.hp ?? "",
+            previousHp: eventContext?.previousHp ?? "",
+            threshold: eventContext?.threshold ?? "",
             count
           });
 
@@ -2129,6 +2159,61 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
 
           await ChatMessage.create(messageData);
+        },
+
+        /** Watches authoritative actor HP changes and applies each crossed threshold to occupants. */
+        async handleActorHitPointUpdate(actor) {
+          if (!this.isAuthority() || !actor?.uuid) return;
+          const currentHp = actorHitPoints(actor);
+          if (currentHp === null) return;
+
+          const candidateZones = this.allZones().filter((region) => {
+            const payload = this.readPayload(region);
+            return this.isOperational(region, payload)
+              && (payload.config.effects ?? []).some((block) => block.triggers?.hpThreshold);
+          });
+          for (const region of candidateZones) {
+            const occupants = this.tokensInside(region);
+            const matching = occupants.filter((token) => token.actor?.uuid === actor.uuid);
+            if (!matching.length) continue;
+            const observed = this.readPayload(region)?.state?.hpObserved ?? {};
+            if (matching.every((token) => observed[stateKey("hp", token.uuid)] === currentHp)) continue;
+
+            await this.withState(region, async (payload) => {
+              if (!this.isOperational(region, payload)) return;
+              const troopGroup = actor.system?.traits?.value?.includes?.("troop")
+                ? new Set([actor.uuid, ...(actor.otherSegments ?? []).map((segment) => segment?.uuid).filter(Boolean)])
+                : null;
+              let representative = null;
+              if (troopGroup?.size > 1) {
+                const eligibleSegments = [];
+                for (const token of occupants) {
+                  if (troopGroup.has(token.actor?.uuid) && await this.eligible(payload, token)) eligibleSegments.push(token);
+                }
+                representative = eligibleSegments.sort((a, b) => a.uuid.localeCompare(b.uuid))[0] ?? null;
+              }
+
+              for (const token of matching) {
+                const key = stateKey("hp", token.uuid);
+                const previousHp = payload.state.hpObserved[key];
+                payload.state.hpObserved[key] = currentHp;
+                if (!Number.isFinite(previousHp) || previousHp === currentHp) continue;
+                if (troopGroup?.size > 1 && token.uuid !== representative?.uuid) continue;
+                if (!(await this.eligible(payload, token))) continue;
+
+                for (const block of payload.config.effects ?? []) {
+                  if (!block.triggers?.hpThreshold) continue;
+                  const threshold = block.hitPoints?.threshold;
+                  if (!crossedHpThreshold(previousHp, currentHp, threshold)) continue;
+                  await this.processBlock(
+                    region, payload, block, token, "hpThreshold",
+                    `hpThreshold:${token.uuid}:${previousHp}:${currentHp}:${block.id}:${randomId()}`,
+                    { eventContext: { trigger: "hpThreshold", hp: currentHp, previousHp, threshold, count: 1 } }
+                  );
+                }
+              }
+            });
+          }
         },
 
         /** Dispatches chat-card actions only to zones that observe the caster's location and the action that was actually used. */
@@ -2305,6 +2390,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 .catch((e) => console.error("PF2e Zone condition hook", e));
             }, 100);
           };
+          on("updateActor", (actor) => {
+            runtime.handleActorHitPointUpdate(actor)
+              .catch((e) => console.error("PF2e Zone HP threshold hook", e));
+          });
+
           on("updateItem", itemChanged);
           on("deleteItem", itemChanged);
 
@@ -2485,6 +2575,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.reconcileDisabledZones();
               await this.reconcileUnfinishedExitCleanup();
               await this.checkAllDurations();
+              for (const region of this.allZones()) {
+                if (!this.isOperational(region)) continue;
+                await this.withState(region, (payload) => this.reconcileHpBaselinesUnlocked(region, payload, { replace: true }));
+              }
             } catch (error) {
               console.error("PF2e Zone initial zone reconcile", error);
             }
@@ -2536,7 +2630,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 this.areaBoundarySuppression.get(region.uuid)?.tokens.has(token.uuid)
               )) break;
               await this.withState(region, async (payload) => {
-                if (!this.isOperational(region, payload) || !(await this.eligible(payload, token))) return;
+                if (!this.isOperational(region, payload)) return;
+                this.seedHpBaseline(payload, token, { replace: true });
+                if (!(await this.eligible(payload, token))) return;
                 const batch = `enter:${token.uuid}:${randomId()}`;
                 const initialKey = stateKey("initial", token.uuid);
                 const isInitialOccupant =

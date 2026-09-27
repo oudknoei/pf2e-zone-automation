@@ -532,6 +532,7 @@ export async function openZoneBuilder() {
               ${trigger("continuous", "While a creature is inside")}
               ${trigger("spellCast", "When a creature casts a spell")}
               ${trigger("traitUse", "When a creature uses a selected trait")}
+              ${trigger("hpThreshold", "When a creature drops to or below a Hit Point amount")}
             </div>
             <p class="notes">Choose one or more events. “When the zone is created” affects eligible creatures already inside. “When a creature enters” only affects a creature that crosses into the zone later. The source-turn event follows the source combatant even when it is outside a fixed area, and does not run on the turn the zone is created.</p>
           </fieldset>
@@ -547,6 +548,14 @@ export async function openZoneBuilder() {
             <p class="notes">Choose one or more traits. The block runs once when a creature inside the zone uses an item, spell, or ability with any selected trait. For spells, PF2e must mark the spell as actually cast; generic abilities are detected from their PF2e chat card.</p>
           </fieldset>
 
+          <fieldset class="zb-hp-threshold-options">
+            <legend>Hit Point Trigger</legend>
+            <label>Hit Points at or below
+              <input data-field="hp-threshold" type="text" inputmode="numeric" value="${esc(block.hitPoints?.threshold ?? "")}" placeholder="e.g. 25">
+            </label>
+            <p class="notes">Use a separate Effect Block for this trigger. It runs only when an eligible creature inside the zone crosses down to this HP or lower. A creature already at or below it when the zone starts or it enters will not trigger. For troop thresholds, enter one less than the printed threshold because a troop loses a segment below it.</p>
+          </fieldset>
+
           <fieldset>
             <legend>Chat Alert</legend>
             <label class="zb-check"><input type="checkbox" data-field="chat-alert-enabled" ${block.chatAlert?.enabled ? "checked" : ""}> Post a chat alert when this Effect Block triggers</label>
@@ -554,7 +563,7 @@ export async function openZoneBuilder() {
               <label>Chat alert text
                 <input data-field="chat-alert-text" type="text" value="${esc(block.chatAlert?.text ?? "")}">
               </label>
-              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, and <b>{trigger}</b>. Trait-use and spell-cast triggers provide <b>{item}</b>; trait-use triggers also provide <b>{trait}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets.</p>
+              <p class="notes">Chat alerts post once per trigger event. Available placeholders: <b>{zone}</b>, <b>{block}</b>, <b>{creature}</b>, <b>{count}</b>, <b>{source}</b>, and <b>{trigger}</b>. Trait-use and spell-cast triggers provide <b>{item}</b>; trait-use triggers also provide <b>{trait}</b>. The Hit Point trigger provides <b>{hp}</b>, <b>{previousHp}</b>, and <b>{threshold}</b>. For multi-target events, <b>{creature}</b> becomes “affected creatures” and <b>{count}</b> gives the number of targets.</p>
             </div>
           </fieldset>
 
@@ -904,8 +913,10 @@ export async function openZoneBuilder() {
           turnEnd: blockEl.querySelector('[data-trigger="turnEnd"]').checked,
           continuous: blockEl.querySelector('[data-trigger="continuous"]').checked,
           traitUse: blockEl.querySelector('[data-trigger="traitUse"]').checked,
-          spellCast: blockEl.querySelector('[data-trigger="spellCast"]').checked
+          spellCast: blockEl.querySelector('[data-trigger="spellCast"]').checked,
+          hpThreshold: blockEl.querySelector('[data-trigger="hpThreshold"]').checked
         },
+        hitPoints: { threshold: blockEl.querySelector('[data-field="hp-threshold"]').value.trim() },
         traitUse: {
           traits: [...new Set([...watchedTraits, ...customWatchedTraits])]
         },
@@ -1125,9 +1136,11 @@ export async function openZoneBuilder() {
       const immunityDuration = blockEl.querySelector('[data-field="immunity-duration"]').value;
       const recoveryChecked = Boolean(blockEl.querySelector('[data-immunity-start="condition-recovery"]:checked'));
       const traitUseEnabled = blockEl.querySelector('[data-trigger="traitUse"]').checked;
+      const hpThresholdEnabled = blockEl.querySelector('[data-trigger="hpThreshold"]').checked;
       const chatAlertEnabled = blockEl.querySelector('[data-field="chat-alert-enabled"]').checked;
 
       blockEl.querySelector(".zb-trait-use-options").style.display = traitUseEnabled ? "block" : "none";
+      blockEl.querySelector(".zb-hp-threshold-options").style.display = hpThresholdEnabled ? "block" : "none";
       blockEl.querySelector(".zb-chat-alert-options").style.display = chatAlertEnabled ? "block" : "none";
       blockEl.querySelector(".zb-save-options").style.display = saveEnabled ? "block" : "none";
       blockEl.querySelector(".zb-save-choice-options").style.display = saveEnabled && saveType === "choice" ? "block" : "none";
@@ -1518,6 +1531,7 @@ export async function openZoneBuilder() {
     if (triggers.turnEnd) labels.push("At creature turn end");
     if (triggers.continuous) labels.push("While inside");
     if (triggers.spellCast) labels.push("When a creature casts a spell");
+    if (triggers.hpThreshold) labels.push(`When HP drops to ${block?.hitPoints?.threshold ?? "?"} or less`);
     if (triggers.traitUse) {
       const watchedTraits = watchedTraitSlugs(block?.traitUse);
       labels.push(`When ${watchedTraits.length ? watchedTraits.map(titleCase).join(" or ") : "a selected trait"} is used`);
@@ -1663,7 +1677,7 @@ export async function openZoneBuilder() {
         return;
       }
 
-      if (target.matches('[data-zone="mode"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+      if (target.matches('[data-zone="mode"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-trigger="hpThreshold"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
       refreshLiveValidation(root);

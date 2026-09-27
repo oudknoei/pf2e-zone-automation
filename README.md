@@ -6,7 +6,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 
 - Create token-following emanations and fixed circular or square areas. Drag a fixed area to apply Entry effects to creatures it crosses, including those outside its final position.
 - Configure one or more Effect Blocks for each zone.
-- Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, or when a watched trait is used.
+- Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, when a watched trait is used, or when an occupant crosses an HP threshold.
 - Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
 - Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration to the creator for **Creator only** zones and publicly otherwise.
 - Save, share, load, update, and delete presets through the PF2e Zone Library.
@@ -68,12 +68,17 @@ Choose one or more plain-language trigger choices:
 | **While a creature is inside** | The No Save result should be maintained for occupants, such as an ongoing Effect Item. This trigger cannot share an Effect Block with a saving throw; use a separate block for Entry or another save trigger. Verify damage and healing carefully before using this trigger. |
 | **When a creature casts a spell** | A creature inside the zone casts any spell, regardless of its individual traits. Use this for reactions that trigger on spellcasting itself; later attack, damage, or healing roll cards from that cast do not trigger it again. |
 | **When a creature uses a selected trait** | A creature inside the zone uses an item, spell, or ability with one of the selected traits. |
+| **When a creature drops to or below a Hit Point amount** | An eligible occupant's HP changes from above the entered amount to that amount or lower. Put this trigger in its own Effect Block. It does not fire just because a creature starts inside the zone at low HP. |
 
 If an older preset combines **While a creature is inside** with a saving throw, open it and split those behaviors into separate Effect Blocks. Dismiss and recreate any zone already active with that combination: earlier processing may have applied an unsaved result or spent its repeat allowance. The runtime skips further continuous processing of the combined block.
 
 For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), choose **Area - Square** with a 10-foot side length and two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.
 
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
+
+For an HP reminder about a creature's surrender or flight, select **Self (Source Actor)** for a source-centered emanation, add an Effect Block with the HP trigger, enter the threshold, and enable **Chat Alert**. Use **Once for this zone** when the reminder should appear only once. Chat text can include `{hp}`, `{previousHp}`, and `{threshold}`. Healing above the threshold rearms the crossing when the repeat setting allows it.
+
+For a troop, use two HP Effect Blocks, one for each segment-loss threshold. A troop with 240 HP and printed thresholds of 160 and 80 should use trigger amounts of **159** and **79**, because [Troop Defenses](https://2e.aonprd.com/MonsterAbilities.aspx?ID=86) removes a segment when HP falls *below* a threshold. The module can post the reminders, including both if one hit crosses both thresholds. Choose and remove the affected segment in Foundry yourself; this trigger does not reshape the troop or adjust its maximum HP.
 
 Then choose how often the block can trigger: every time the event happens, once each round, or once for the zone's lifetime. New Effect Blocks default to **Once each round**. For **While a creature is inside**, ongoing Conditions and Effect Items are restored as needed after re-entry; this choice still limits new chat alerts, damage, and healing.
 

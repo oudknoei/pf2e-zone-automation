@@ -3,8 +3,9 @@ import { durationRoundsError } from "./duration.js";
 import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
 import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
+import { editableHpThreshold } from "./hp-threshold.js";
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 /** Keeps saved trait labels and validation messages readable. */
 const titleCase = (slug) => String(slug ?? "").replaceAll("-", " ").replace(/\b\w/g, (m) => m.toUpperCase());
 /** Uses PF2e translations when the system provides one. */
@@ -135,8 +136,10 @@ function newBlock(index = 1) {
       turnEnd: false,
       continuous: false,
       traitUse: false,
-      spellCast: false
+      spellCast: false,
+      hpThreshold: false
     },
+    hitPoints: { threshold: "" },
     traitUse: {
       traits: []
     },
@@ -316,8 +319,10 @@ function normalizeConfig(input, { strict = false } = {}) {
         turnEnd: Boolean(block?.triggers?.turnEnd),
         continuous: Boolean(block?.triggers?.continuous),
         traitUse: Boolean(block?.triggers?.traitUse),
-        spellCast: Boolean(block?.triggers?.spellCast)
+        spellCast: Boolean(block?.triggers?.spellCast),
+        hpThreshold: Boolean(block?.triggers?.hpThreshold)
       },
+      hitPoints: { threshold: editableHpThreshold(block?.hitPoints?.threshold) },
       traitUse: {
         traits: watchedTraitSlugs(block?.traitUse)
       },
@@ -440,6 +445,14 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
     }
     if (block.triggers.traitUse && !watchedTraitSlugs(block.traitUse).length) {
       error(`${prefix} On Trait Use requires at least one watched trait.`, blockTarget(index, "trait-use-traits"));
+    }
+    if (block.triggers.hpThreshold) {
+      if (!Number.isSafeInteger(block.hitPoints?.threshold) || block.hitPoints.threshold < 0) {
+        error(`${prefix} enter a whole-number Hit Point threshold of 0 or higher.`, blockTarget(index, "hp-threshold"));
+      }
+      if (Object.entries(block.triggers).some(([key, enabled]) => key !== "hpThreshold" && enabled)) {
+        error(`${prefix} the Hit Point trigger needs its own Effect Block so its repeat limit does not hide another trigger.`, blockTarget(index, "triggers"));
+      }
     }
     if (block.chatAlert?.enabled && !block.chatAlert?.text) {
       error(`${prefix} Chat Alert is enabled but no alert text was entered.`, blockTarget(index, "chat-alert-text"));

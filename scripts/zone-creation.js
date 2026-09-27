@@ -5,7 +5,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
 
-const RUNTIME_VERSION = "0.5.16";
+const RUNTIME_VERSION = "0.5.17";
 const FLAG_SCOPE = "world";
 const FLAG_KEY = "pf2eZone";
 
@@ -95,6 +95,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
     pendingSaves: {},
     resolvedSaves: {},
     repeat: {},
+    hpObserved: {},
     immunities: {},
     applied: {},
     damageRolls: {},

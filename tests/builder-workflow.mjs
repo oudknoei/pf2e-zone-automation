@@ -119,7 +119,7 @@ globalThis.fromUuid = async (uuid) => ({
   [effectUuid]: effect, [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.16",
+  version: "0.5.17",
   installHooks() {},
   async activateRegion(region) { runtimeCalls.activated.push(region); },
   async endZone(region) {
@@ -165,6 +165,20 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(root.querySelector(".zb-create").disabled, true);
     change(root.querySelector('[data-field="save-enabled"]'), false);
     change(root.querySelector('[data-trigger="continuous"]'), false);
+
+    change(root.querySelector('[data-trigger="activation"]'), false);
+    change(root.querySelector('[data-trigger="hpThreshold"]'), true);
+    const hpField = root.querySelector('[data-field="hp-threshold"]');
+    assert.equal(hpField.closest(".zb-hp-threshold-options").style.display, "block");
+    change(hpField, "2d4", "input");
+    assert.match(hpField.closest("label").textContent, /whole-number Hit Point threshold/);
+    change(hpField, "12", "input");
+    const effectBlock = root.querySelector("details.zb-block");
+    effectBlock.open = false;
+    await until(() => /HP drops to 12/.test(root.querySelector("[data-block-summary]").textContent));
+    effectBlock.open = true;
+    change(root.querySelector('[data-trigger="hpThreshold"]'), false);
+    change(root.querySelector('[data-trigger="activation"]'), true);
 
     const dropTarget = root.querySelector('[data-outcome="noSave"] .zb-effect-list');
     const drop = new window.Event("drop", { bubbles: true, cancelable: true });
