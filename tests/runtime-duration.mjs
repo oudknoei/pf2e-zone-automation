@@ -27,6 +27,21 @@ test("runtime uses a formula duration's stored result without attempting a rerol
   assert.equal(runtime.durationRounds(formulaConfig, { duration: { rounds: 5, formula: "2d4" } }), 5);
   assert.equal(runtime.durationRounds(formulaConfig, { duration: {} }), null);
 });
+test("runtime resolves the same positive Actor DC that validation offers", () => {
+  const actor = {
+    classDC: { dc: { value: 27 } },
+    getStatistic(slug) {
+      if (slug === "spell-dc") return { dc: { value: null } };
+      if (slug === "class-spell") return { dc: { value: 0 } };
+      return null;
+    }
+  };
+  const block = { save: { dc: { mode: "actorStatistic", statistic: "spell-dc" } } };
+  assert.equal(runtime.resolveDC({}, block, actor), null);
+  block.save.dc.statistic = "class-dc";
+  assert.equal(runtime.resolveDC({}, block, actor), 27);
+});
+
 test("zone cleanup serializes accepted state work before deleting the Region", async () => {
   globalThis._replace = (payload) => payload;
 

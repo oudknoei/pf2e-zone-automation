@@ -1,7 +1,7 @@
 import { editableDurationRounds, editableZoneSize } from "./config-input.js";
 import { activeOutcomeKeys } from "./effect-items.js";
 import { durationRoundsError } from "./duration.js";
-import { highestClassOrSpellDc, statisticDc as statDc } from "./dc.js";
+import { actorStatisticDc } from "./dc.js";
 import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
 import { editableHpThreshold } from "./hp-threshold.js";
@@ -83,32 +83,27 @@ function getDcChoices(actor) {
 
   /** Filters incomplete actor statistics so invalid preparation data cannot become a selectable DC. */
   const add = (statistic, label, dc) => {
-    if (!statistic || seen.has(statistic) || !Number.isFinite(Number(dc))) return;
+    if (!statistic || seen.has(statistic) || !Number.isFinite(dc) || dc <= 0) return;
     seen.add(statistic);
-    found.push({ statistic, label, dc: Number(dc) });
+    found.push({ statistic, label, dc });
   };
 
   try {
-    if (actor.classDC) {
-      add("class-dc", `${statLabel(actor.classDC, "Primary Class DC")} (Primary Class DC)`, statDc(actor.classDC));
-    }
+    add("class-dc", `${statLabel(actor?.classDC, "Primary Class DC")} (Primary Class DC)`, actorStatisticDc(actor, "class-dc"));
   } catch (_err) { /* actor type may not expose classDC */ }
 
   try {
-    for (const [slug, stat] of Object.entries(actor.classDCs ?? {})) {
-      add(slug, `${statLabel(stat, titleCase(slug))} (Class DC)`, statDc(stat));
+    for (const [slug, stat] of Object.entries(actor?.classDCs ?? {})) {
+      add(slug, `${statLabel(stat, titleCase(slug))} (Class DC)`, actorStatisticDc(actor, slug));
     }
   } catch (_err) { /* ignore */ }
 
-  try {
-    add("spell-dc", "Highest Spell DC", statDc(actor.getStatistic?.("spell-dc")));
-  } catch (_err) { /* not supported by this actor type */ }
+  add("spell-dc", "Highest Spell DC", actorStatisticDc(actor, "spell-dc"));
 
   // PF2e's combined statistic can retain an unprepared 0 during actor data
   // updates. Calculate its value from prepared class and spell statistics,
   // and do the same when a save is resolved.
-  const classOrSpellDc = highestClassOrSpellDc(actor);
-  if (classOrSpellDc !== null) add("class-spell", "Highest Class or Spell DC", classOrSpellDc);
+  add("class-spell", "Highest Class or Spell DC", actorStatisticDc(actor, "class-spell"));
 
   // Avoid duplicate primary class choices that resolve to exactly the same slug/DC.
   return found.sort((a, b) => b.dc - a.dc || a.label.localeCompare(b.label));
@@ -469,8 +464,13 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
         if (!(Number(block.save.dc.value) > 0)) {
           error(`${prefix} custom save DC must be greater than 0.`, blockTarget(index, "custom-dc"));
         }
-      } else if (!dcChoices.some((x) => x.statistic === block.save.dc.statistic)) {
-        error(`${prefix} DC statistic '${block.save.dc.statistic}' is not available on ${sourceActor.name}.`, blockTarget(index, "dc-source"));
+      } else {
+        const statistic = block.save.dc.statistic;
+        const choice = dcChoices.find((x) => x.statistic === statistic);
+        const resolved = actorStatisticDc(sourceActor, statistic);
+        if (!choice || !(resolved > 0)) {
+          error(`${prefix} DC statistic '${statistic}' is not available on ${sourceActor?.name ?? "the source Actor"}.`, blockTarget(index, "dc-source"));
+        }
       }
     }
 

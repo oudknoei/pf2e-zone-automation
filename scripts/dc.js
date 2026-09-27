@@ -1,7 +1,9 @@
 /** Keeps DC selection compatible with the statistic shapes PF2e exposes across actor types. */
 export function statisticDc(statistic) {
   const value = statistic?.dc?.value ?? statistic?.dc ?? null;
-  return Number.isFinite(Number(value)) ? Number(value) : null;
+  if (value == null || String(value).trim() === "") return null;
+  const dc = Number(value);
+  return Number.isFinite(dc) && dc > 0 ? dc : null;
 }
 
 /**
@@ -38,6 +40,23 @@ export function highestClassOrSpellDc(actor) {
   // do not expose one of the collections above.
   try {
     return statisticDc(actor?.getStatistic?.("class-spell"));
+  } catch (_error) {
+    return null;
+  }
+}
+
+/** Keeps creation and save requests on the same usable Actor DC for a saved selector. */
+export function actorStatisticDc(actor, slug) {
+  if (slug === "class-spell") return highestClassOrSpellDc(actor);
+  try {
+    if (slug === "class-dc") {
+      const primary = statisticDc(actor?.classDC);
+      if (primary !== null) return primary;
+    } else if (slug !== "spell-dc") {
+      const classDc = statisticDc(actor?.classDCs?.[slug]);
+      if (classDc !== null) return classDc;
+    }
+    return statisticDc(actor?.getStatistic?.(slug));
   } catch (_error) {
     return null;
   }

@@ -1,4 +1,4 @@
-import { highestClassOrSpellDc } from "./dc.js";
+import { actorStatisticDc } from "./dc.js";
 import { combatDurationDeadline } from "./duration-clock.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
@@ -608,10 +608,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Uses the source statistic at resolution time while protecting combined Class-or-Spell DCs from PF2e fallback data. */
         resolveDC(payload, block, sourceActor) {
           if (block.save.dc.mode === "custom") return Number(block.save.dc.value) || 0;
-          if (block.save.dc.statistic === "class-spell") return highestClassOrSpellDc(sourceActor);
-          const statistic = sourceActor?.getStatistic?.(block.save.dc.statistic);
-          const value = statistic?.dc?.value ?? statistic?.dc ?? null;
-          return Number.isFinite(Number(value)) ? Number(value) : null;
+          return actorStatisticDc(sourceActor, block.save.dc.statistic);
         },
 
         /** Identifies linked conditions so recovery watchers only observe outcomes this block can create. */

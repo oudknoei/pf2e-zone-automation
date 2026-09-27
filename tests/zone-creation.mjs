@@ -114,6 +114,32 @@ test("the worker rejects invalid triggers and saving-throw setups before creatin
   }
 });
 
+test("GM and worker reject a saved spell DC that the source Actor does not have", async () => {
+  const config = validConfig();
+  config.effects[0].save.enabled = true;
+  config.effects[0].save.dc = { mode: "actorStatistic", statistic: "spell-dc" };
+  const validation = validateConfig(config, { sourceActor: actor });
+  assert.match(validation.errors.join(" "), /spell-dc.*not available/);
+  const before = created.length;
+  assert.throws(() => requireValidConfig(config, actor), /spell-dc.*not available/);
+  await assert.rejects(createZoneDocument({
+    rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+  }), /spell-dc.*not available/);
+  const previous = console.error;
+  console.error = () => {};
+  try {
+    const response = await handleWorkerRequest({
+      protocol: 1, action: "create", requesterUserId: gm.id,
+      sceneId: scene.id, sourceTokenUuid: token.uuid, config
+    });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /spell-dc.*not available/);
+  } finally {
+    console.error = previous;
+  }
+  assert.equal(created.length, before);
+});
+
 test("continuous maintenance and saving throws must use separate Effect Blocks", () => {
   const config = validConfig();
   const block = config.effects[0];

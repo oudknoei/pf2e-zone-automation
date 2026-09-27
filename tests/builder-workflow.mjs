@@ -171,6 +171,11 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(builderDialog.title, `PF2e Zone Automation v${moduleVersion}`);
     let root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
     assert.ok(root);
+    assert.deepEqual(
+      [...root.querySelector('[data-field="dc-source"]').options].map((option) => option.textContent),
+      ["Custom DC"],
+      "an Actor without prepared DCs offers no DC 0 choices"
+    );
 
     change(root.querySelector('[data-zone="name"]'), "Smoke Zone", "input");
     change(root.querySelector('[data-zone="affects-enemies"]'), true);
