@@ -407,6 +407,13 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(hookCallbacks.get("updateItem")?.size, 0, "the closed builder removes its Item watches");
     assert.equal(hookCallbacks.get("updateCompendium")?.size, 0, "the closed builder removes its pack watch");
     region.getFlag("world", "pf2eZone").state.endRequested = true;
+    region.getFlag("world", "pf2eZone").state.pendingSaves = {
+      "save-1": {
+        id: "save-1", identifier: "pf2e-zone:scene:region:save-1",
+        tokenUuid: tokenDocument.uuid, actorUuid: actor.uuid,
+        blockId: "block", blockName: "Battle Cry", saveTypes: ["will"], dc: 25
+      }
+    };
 
     await openZoneBuilder();
     const reopenedDialog = dialogs.at(-1);
@@ -417,6 +424,31 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.match(manageDialog.window.content.textContent, /Smoke Zone/);
     assert.match(manageDialog.window.content.textContent, /Cleanup pending/);
     assert.match(manageDialog.window.content.querySelector('[data-action="end"]').textContent, /Retry Dismiss/);
+    assert.match(manageDialog.window.content.textContent, /Pending saves \(1\)/);
+    assert.match(manageDialog.window.content.textContent, /Battle Cry.*Will DC 25/s);
+
+    const originalCancel = globalThis.PF2EZoneRuntime.cancelPendingSave;
+    const originalGetUser = game.users.get;
+    game.users.get = (id) => id === gm.id ? { ...gm, active: true } : null;
+    const cancelled = [];
+    globalThis.PF2EZoneRuntime.cancelPendingSave = async (_region, pendingId, identifier) => {
+      cancelled.push([pendingId, identifier]);
+      delete region.getFlag("world", "pf2eZone").state.pendingSaves[pendingId];
+      return { status: "cancelled" };
+    };
+    try {
+      manageDialog.window.content.querySelector('[data-action="cancel-save"]').click();
+      await until(() => !manageDialog.window.content.querySelector('[data-action="cancel-save"]'));
+      assert.deepEqual(cancelled, [["save-1", "pf2e-zone:scene:region:save-1"]]);
+      assert.equal(region.getFlag("world", "pf2eZone").state.pendingSaves["save-1"], undefined);
+      assert.equal(manageDialog.window.content.querySelector(".pza-pending-list"), null);
+      assert.equal(manageDialog.element.isConnected, true, "cancellation keeps the zone manager open");
+    } finally {
+      if (originalCancel === undefined) delete globalThis.PF2EZoneRuntime.cancelPendingSave;
+      else globalThis.PF2EZoneRuntime.cancelPendingSave = originalCancel;
+      if (originalGetUser === undefined) delete game.users.get;
+      else game.users.get = originalGetUser;
+    }
 
     const dismissButton = manageDialog.window.content.querySelector('[data-action="end"]');
     const dismissalNoticeStart = notices.length;

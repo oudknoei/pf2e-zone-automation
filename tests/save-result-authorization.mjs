@@ -6,11 +6,12 @@ globalThis.document = { addEventListener: () => {}, removeEventListener: () => {
 globalThis.foundry = { utils: {} };
 globalThis._replace = (payload) => payload;
 
-const gm = { id: "gm", isGM: true };
-const owner = { id: "owner", isGM: false };
-const stranger = { id: "stranger", isGM: false };
+const gm = { id: "gm", isGM: true, active: true };
+const owner = { id: "owner", isGM: false, active: true };
+const stranger = { id: "stranger", isGM: false, active: true };
 const users = new Map([gm, owner, stranger].map((user) => [user.id, user]));
 globalThis.game = {
+  system: { id: "pf2e" },
   actors: { contents: [] },
   scenes: { contents: [] },
   messages: { contents: [] },
@@ -21,6 +22,7 @@ globalThis.game = {
 
 const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
+const { handleWorkerRequest } = await import("../scripts/worker.js");
 
 /** Gives each case an independent pending save and observes any applied effect. */
 async function withPendingSave(run) {
@@ -180,6 +182,90 @@ test("GM startup replays completed saves but leaves forged or unanswered saves p
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.immunities, 1);
     assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+  });
+});
+
+test("GM cancellation clears only the unanswered save and releases its repeat marker", async () => {
+  await withPendingSave(async (fixture) => {
+    const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+    fixture.stored.state.repeat = { [key]: { zone: true } };
+    const stale = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, "wrong-identifier");
+    assert.equal(stale.status, "missing");
+    assert.ok(fixture.stored.state.pendingSaves.pending);
+    assert.ok(fixture.stored.state.repeat[key]);
+
+    const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+    assert.equal(result.status, "cancelled");
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+    assert.equal(fixture.stored.state.repeat[key], undefined);
+    assert.equal(fixture.stored.state.resolvedSaves?.pending, undefined);
+    await runtime.handleSaveResult(fixture.makeMessage());
+    assert.equal(fixture.applications, 0, "a late roll for the cancelled identifier has no effect");
+  });
+});
+
+test("cancelling a stale pending record keeps an already resolved save spent", async () => {
+  await withPendingSave(async (fixture) => {
+    const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+    fixture.stored.state.repeat = { [key]: { zone: true } };
+    fixture.stored.state.resolvedSaves = {
+      pending: { identifier: fixture.pending.identifier, outcome: "failure" }
+    };
+    const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+    assert.equal(result.status, "resolved");
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+    assert.deepEqual(fixture.stored.state.repeat[key], { zone: true });
+    assert.equal(fixture.applications, 0, "the already resolved result is not applied twice");
+  });
+});
+
+test("GM can remove a stale pending request from an inactive zone", async () => {
+  await withPendingSave(async (fixture) => {
+    fixture.stored.state.deactivated = true;
+    game.messages.contents = [fixture.makeMessage()];
+    const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+    assert.equal(result.status, "cancelled");
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+    assert.equal(fixture.applications, 0);
+  });
+});
+
+test("GM cancellation applies a completed save found in chat instead of discarding it", async () => {
+  await withPendingSave(async (fixture) => {
+    game.messages.contents = [fixture.makeMessage()];
+    const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+    fixture.stored.state.repeat = { [key]: { zone: true } };
+    const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+    assert.equal(result.status, "resolved");
+    assert.deepEqual(fixture.stored.state.repeat[key], { zone: true }, "a completed save keeps its repeat allowance spent");
+    assert.equal(fixture.applications, 1);
+    assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
+    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+  });
+});
+
+test("the GM worker refuses player cancellation and accepts the GM request", async () => {
+  await withPendingSave(async (fixture) => {
+    const request = {
+      protocol: 1, action: "cancel-pending-save",
+      sceneId: fixture.region.parent.id, regionId: fixture.region.id,
+      pendingId: fixture.pending.id, identifier: fixture.pending.identifier
+    };
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      const denied = await handleWorkerRequest({ ...request, requesterUserId: owner.id });
+      assert.equal(denied.ok, false);
+      assert.match(denied.error, /Only a GM/);
+      assert.ok(fixture.stored.state.pendingSaves.pending);
+    } finally {
+      console.error = previousError;
+    }
+
+    const accepted = await handleWorkerRequest({ ...request, requesterUserId: gm.id });
+    assert.equal(accepted.ok, true, accepted.error);
+    assert.equal(accepted.status, "cancelled");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
   });
 });

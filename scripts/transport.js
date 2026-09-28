@@ -16,9 +16,9 @@ export function registerZoneSocket() {
 /** Gives callers a bounded request-response path instead of leaving player actions pending indefinitely. */
 export async function requestGMWorker(request) {
   const gm = game.users.activeGM;
-  const libraryAction = ["library-list", "library-save", "library-delete"].includes(request?.action);
-  // Send every shared-library operation to one GM client so its write queue is authoritative.
-  if (game.user.isGM && (!libraryAction || !gm || gm.id === game.user.id)) {
+  const activeGMAction = ["library-list", "library-save", "library-delete", "cancel-pending-save"].includes(request?.action);
+  // Shared-library writes and save cancellation must reach the authoritative GM.
+  if (game.user.isGM && (!activeGMAction || !gm || gm.id === game.user.id)) {
     return handleWorkerRequest(request);
   }
 

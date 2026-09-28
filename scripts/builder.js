@@ -1558,9 +1558,29 @@ export async function openZoneBuilder() {
       const cfg = payload?.config ?? {};
       const canEnd = await canCurrentUserDismiss(payload);
       const cleanupPending = Boolean(payload?.state?.endRequested);
-      zoneRows.push(`<div class="pza-zone-row" data-region-id="${esc(region.id)}">
-        <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}${cleanupPending ? " · Cleanup pending" : ""}</div></div>
-        ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> ${cleanupPending ? "Retry Dismiss" : "Dismiss"}</button>` : `<span></span>`}
+      const pendingRows = [];
+      if (game.user.isGM) {
+        for (const [pendingId, pending] of Object.entries(payload?.state?.pendingSaves ?? {})) {
+          if (!pending?.identifier) continue;
+          let target = null;
+          try { target = await fromUuid(pending.tokenUuid); } catch { /* A deleted token still needs a cleanup control. */ }
+          const targetName = target?.name ?? pending.actorUuid ?? pending.tokenUuid ?? "Unknown creature";
+          const saveTypes = (pending.saveTypes ?? []).map(titleCase).join(" or ") || "Save";
+          pendingRows.push(`<div class="pza-pending-row" data-pending-id="${esc(pendingId)}">
+            <span>${esc(targetName)} — ${esc(pending.blockName ?? "Effect Block")} · ${esc(saveTypes)} DC ${esc(pending.dc ?? "?")}</span>
+            <button type="button" data-action="cancel-save" data-pending-id="${esc(pendingId)}">Cancel request</button>
+          </div>`);
+        }
+      }
+      const pendingMarkup = pendingRows.length
+        ? `<div class="pza-pending-list"><b class="pza-pending-count">Pending saves (${pendingRows.length})</b>${pendingRows.join("")}</div>`
+        : "";
+      zoneRows.push(`<div class="pza-zone-entry" data-region-id="${esc(region.id)}">
+        <div class="pza-zone-row">
+          <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}${cleanupPending ? " · Cleanup pending" : ""}</div></div>
+          ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> ${cleanupPending ? "Retry Dismiss" : "Dismiss"}</button>` : `<span></span>`}
+        </div>
+        ${pendingMarkup}
       </div>`);
     }
 
@@ -1569,8 +1589,14 @@ export async function openZoneBuilder() {
       <style>
         .pza-manage { max-height:55vh; overflow:auto; }
         .pza-zone-row { display:grid; grid-template-columns:minmax(180px,1fr) auto; gap:8px; align-items:center; padding:8px 0; border-bottom:1px solid rgba(127,127,127,.3); }
-        .pza-zone-row:last-child { border-bottom:0; }
+        .pza-zone-entry { border-bottom:1px solid rgba(127,127,127,.3); }
+        .pza-zone-entry:last-child { border-bottom:0; }
+        .pza-zone-row { border-bottom:0; }
         .pza-zone-meta { opacity:.72; font-size:.9em; }
+        .pza-pending-list { margin:0 0 8px 12px; padding:8px 0 0 12px; border-left:2px solid rgba(127,127,127,.4); }
+        .pza-pending-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:4px 0; }
+        .pza-pending-row span { min-width:0; overflow-wrap:anywhere; }
+        .pza-pending-row button { flex:none; }
       </style>
       <div class="pza-manage">${zoneRows.join("")}</div>`;
 
@@ -1588,6 +1614,40 @@ export async function openZoneBuilder() {
         const region = row ? canvas.scene.regions.get(row.dataset.regionId) : null;
         if (!button || !region) return;
         const payload = region.getFlag("world", "pf2eZone");
+        if (button.dataset.action === "cancel-save") {
+          if (!game.user.isGM) return;
+          const pendingId = button.dataset.pendingId;
+          const pending = payload?.state?.pendingSaves?.[pendingId];
+          if (!pending?.identifier) {
+            ui.notifications.warn("That save request is no longer pending.");
+            return;
+          }
+          button.disabled = true;
+          try {
+            const response = await callGMWorker("cancel-pending-save", {
+              sceneId: region.parent.id, regionId: region.id,
+              pendingId, identifier: pending.identifier
+            });
+            const pendingRow = button.closest(".pza-pending-row");
+            const list = pendingRow?.closest(".pza-pending-list");
+            pendingRow?.remove();
+            const remaining = list?.querySelectorAll(".pza-pending-row").length ?? 0;
+            if (remaining) list.querySelector(".pza-pending-count").textContent = `Pending saves (${remaining})`;
+            else list?.remove();
+            if (response.status === "cancelled") {
+              ui.notifications.info("Pending save request cancelled. Its chat button is no longer active.");
+            } else if (response.status === "resolved") {
+              ui.notifications.info("The save was already rolled, so its result was applied instead of cancelling it.");
+            } else {
+              ui.notifications.warn("That save request is no longer pending.");
+            }
+          } catch (error) {
+            console.error("PF2e Zone save cancellation failed", error);
+            ui.notifications.error(`Could not cancel save request: ${error.message ?? error}`);
+            button.disabled = false;
+          }
+          return;
+        }
         if (button.dataset.action !== "end") return;
         button.disabled = true;
         try {

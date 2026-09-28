@@ -70,6 +70,31 @@ test("a secondary GM routes shared-library requests to the active GM", async () 
   }
 });
 
+test("a secondary GM routes save cancellation to the authoritative GM", async () => {
+  const otherGM = { id: "other-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  try {
+    game.user = otherGM;
+    const resultPromise = requestGMWorker({
+      protocol: 1, action: "cancel-pending-save", requesterUserId: otherGM.id,
+      sceneId: "scene", regionId: "zone", pendingId: "pending", identifier: "save-id"
+    });
+    const request = sent.shift();
+    assert.equal(request.kind, "request");
+    assert.equal(request.gmId, gm.id);
+    assert.equal(request.request.action, "cancel-pending-save");
+
+    await listener({
+      kind: "response", id: request.id, gmId: gm.id,
+      recipientUserId: otherGM.id, response: { ok: true, status: "cancelled" }
+    }, gm.id);
+    assert.equal((await resultPromise).status, "cancelled");
+  } finally {
+    users.delete(otherGM.id);
+    game.user = player;
+  }
+});
+
 test("GM rejects a forged requester id supplied in the socket payload", async () => {
   game.user = player;
   const resultPromise = requestGMWorker({ protocol: 1, action: "ping", requesterUserId: gm.id });

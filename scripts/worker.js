@@ -449,10 +449,32 @@ export async function handleWorkerRequest(request) {
     return succeed({ action: "end", sceneId: scene.id, regionId: request.regionId });
   }
 
+  /** Allows only a GM to remove one exact outstanding request through the active runtime. */
+  async function cancelPendingSave() {
+    const requester = getRequester();
+    if (!requester.isGM) throw new Error("Only a GM can cancel a PF2e Zone save request.");
+    const scene = game.scenes.get(request.sceneId ?? "");
+    const region = scene?.regions.get(request.regionId ?? "");
+    if (!scene || !region?.getFlag(FLAG_SCOPE, FLAG_KEY)) {
+      throw new Error("The requested PF2e Zone no longer exists.");
+    }
+    const runtime = await zoneRuntimeEntrypoint();
+    const pendingId = String(request.pendingId ?? "");
+    const identifier = String(request.identifier ?? "");
+    if (!pendingId || !identifier) throw new Error("A pending save ID and identifier are required.");
+    const result = await runtime.cancelPendingSave(region, pendingId, identifier);
+    if (!result) throw new Error("The PF2e Zone changed before its save request could be cancelled.");
+    return succeed({
+      action: "cancel-pending-save", sceneId: scene.id, regionId: region.id,
+      pendingId, status: result.status
+    });
+  }
+
   try {
     switch (request.action) {
       case "create": return await oncePerCreationRequest(request, createZone);
       case "end": return await endZone();
+      case "cancel-pending-save": return await cancelPendingSave();
       case "shielding-taunt": {
         const requester = getRequester();
         const sourceToken = await fromUuid(request.sourceTokenUuid ?? "");

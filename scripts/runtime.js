@@ -1963,6 +1963,40 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return true;
         },
 
+        /** Lets the authoritative GM discard an unanswered request without consuming its repeat allowance. */
+        async cancelPendingSave(region, pendingId, identifier) {
+          if (!this.isAuthority()) throw new Error("Only the active GM can cancel a PF2e Zone save request.");
+          if (!this.readPayload(region)) throw new Error("The PF2e Zone no longer exists.");
+
+          return await this.withState(region, async (payload) => {
+            const pending = payload.state.pendingSaves?.[pendingId];
+            if (!pending || pending.identifier !== identifier) return { status: "missing" };
+            if (payload.state.resolvedSaves?.[pendingId]?.identifier === identifier) {
+              delete payload.state.pendingSaves[pendingId];
+              return { status: "resolved" };
+            }
+
+            // A valid roll may already be in chat even if its hook was missed.
+            // Resolve that result rather than discarding a creature's completed save.
+            const completed = this.isOperational(region, payload)
+              ? await this.completedMessageForPending(pending) : null;
+            if (completed) {
+              const resolved = await this.resolvePendingSaveUnlocked(
+                region, payload, pendingId, identifier,
+                completed.outcome, completed.token.actor.uuid, completed.message
+              );
+              if (!resolved && payload.state.pendingSaves?.[pendingId]) {
+                throw new Error("A completed save was found but could not be resolved.");
+              }
+              return { status: resolved ? "resolved" : "missing" };
+            }
+
+            delete payload.state.pendingSaves[pendingId];
+            delete payload.state.repeat[this.repeatKey(pending.tokenUuid, pending.blockId)];
+            return { status: "cancelled" };
+          });
+        },
+
         /** Serializes live chat and recovery through the same save resolution path. */
         async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
           if (!this.isAuthority()) return false;
