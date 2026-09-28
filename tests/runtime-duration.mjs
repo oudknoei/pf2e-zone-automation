@@ -785,3 +785,113 @@ test("another Scene's combat update cannot start this zone's source or occupant 
     }
   });
 });
+
+test("entering combat keeps only the unused world-time immunity duration", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
+    game.combat = null;
+    game.combats.contents = [];
+    const payload = region.getFlag();
+    payload.state.immunities = {};
+    runtime.setImmunity(payload, sourceToken.uuid, {
+      id: "stench", immunity: { duration: "1-minute" }
+    });
+    const expiry = Object.values(payload.state.immunities)[0].expiry;
+    assert.equal(expiry.combatId, null);
+    assert.equal(expiry.worldExpires, 160);
+
+    game.time.worldTime = 154;
+    game.combat = combat;
+    game.combats.contents.push(combat);
+    runtime.syncImmunityCombatClock(payload);
+    assert.equal(expiry.combatId, combat.id);
+    assert.equal(expiry.rounds, 1);
+    assert.equal(expiry.remainingRounds, 1);
+
+    combat.round = 2;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), false);
+  });
+});
+
+test("changing encounters carries prior combat progress even after a missed update hook", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken, sourceActor }) => {
+    const payload = region.getFlag();
+    payload.state.immunities = {};
+    runtime.setImmunity(payload, sourceToken.uuid, {
+      id: "stench", immunity: { duration: "1-minute" }
+    });
+    const expiry = Object.values(payload.state.immunities)[0].expiry;
+    delete expiry.remainingRounds; // A legacy record has no progress field.
+    combat.round = 6;
+
+    const nextSource = { id: "next-source", actor: sourceActor, token: sourceToken };
+    const nextCombat = {
+      id: "next-fight", scene: region.parent, round: 1, turn: 0,
+      turns: [nextSource], combatant: nextSource
+    };
+    game.combats.contents.push(nextCombat);
+    game.combat = nextCombat;
+    runtime.syncImmunityCombatClock(payload);
+    assert.equal(expiry.combatId, nextCombat.id);
+    assert.equal(expiry.rounds, 5);
+    assert.equal(expiry.remainingRounds, 5);
+    assert.equal(expiry.worldExpires, 130);
+
+    nextCombat.round = 5;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), true);
+    nextCombat.round = 6;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), false);
+  });
+});
+
+test("leaving combat shortens the world deadline before a later encounter", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken, sourceActor }) => {
+    const payload = region.getFlag();
+    payload.state.immunities = {};
+    runtime.setImmunity(payload, sourceToken.uuid, {
+      id: "stench", immunity: { duration: "1-minute" }
+    });
+    const expiry = Object.values(payload.state.immunities)[0].expiry;
+    combat.round = 5;
+    runtime.syncImmunityCombatClock(payload);
+    assert.equal(expiry.remainingRounds, 6);
+
+    game.combat = null;
+    game.combats.contents = [];
+    runtime.syncImmunityCombatClock(payload);
+    assert.equal(expiry.combatId, null);
+    assert.equal(expiry.worldExpires, 136);
+
+    game.time.worldTime = 112;
+    const nextSource = { id: "next-source", actor: sourceActor, token: sourceToken };
+    const nextCombat = {
+      id: "next-fight", scene: region.parent, round: 1, turn: 0,
+      turns: [nextSource], combatant: nextSource
+    };
+    game.combats.contents.push(nextCombat);
+    game.combat = nextCombat;
+    runtime.syncImmunityCombatClock(payload);
+    assert.equal(expiry.combatId, nextCombat.id);
+    assert.equal(expiry.rounds, 4);
+
+    nextCombat.round = 5;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), false);
+  });
+});
+
+test("immunity keeps its original turn as the expiration point", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken, otherCombatant }) => {
+    const payload = region.getFlag();
+    payload.state.immunities = {};
+    combat.turn = 1;
+    combat.combatant = otherCombatant;
+    runtime.setImmunity(payload, sourceToken.uuid, {
+      id: "stench", immunity: { duration: "1-round" }
+    });
+
+    combat.round = 2;
+    combat.turn = 0;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), true);
+    combat.turn = 1;
+    assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), false);
+  });
+});

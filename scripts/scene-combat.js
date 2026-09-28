@@ -62,3 +62,12 @@ export function combatForZoneState(state, recordedCombatId = null) {
     recordedCombatId
   });
 }
+
+/** Recovers the prior Scene encounter's latest round when its update hook was missed. */
+export function recordedCombatForZoneState(state, combatId) {
+  const sceneId = sceneIdFromTokenUuid(state?.sourceTokenUuid);
+  if (!sceneId || !combatId) return null;
+  const candidates = [game.combats?.get?.(combatId), game.combat,
+    ...Array.from(game.combats?.contents ?? game.combats ?? [])];
+  return candidates.find((combat) => combat?.id === combatId && combatSceneId(combat) === sceneId) ?? null;
+}

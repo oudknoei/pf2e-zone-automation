@@ -1,6 +1,6 @@
 import { actorStatisticDc } from "./dc.js";
 import { combatDurationDeadline } from "./duration-clock.js";
-import { combatForZone, combatForZoneState } from "./scene-combat.js";
+import { combatForZone, combatForZoneState, recordedCombatForZoneState } from "./scene-combat.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 
@@ -350,6 +350,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const combat = this.combatForPayload(payload)?.combat;
           return {
             rounds,
+            remainingRounds: rounds,
             worldExpires: nowWorld() + rounds * 6,
             combatId: combat?.id ?? null,
             startRound: Number(combat?.round ?? 0),
@@ -357,39 +358,70 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           };
         },
 
-        /** Lets immunity checks make one consistent decision regardless of how the duration was measured. */
-        expiryActive(expiry, payload) {
-          if (!expiry) return false;
-          const combat = this.combatForPayload(payload, expiry.combatId)?.combat;
-          if (expiry.combatId && combat?.id === expiry.combatId) {
-            const roundDelta = Number(combat.round ?? 0) - Number(expiry.startRound ?? 0);
-            if (roundDelta < expiry.rounds) return true;
-            if (roundDelta > expiry.rounds) return false;
-            return Number(combat.turn ?? 0) < Number(expiry.startTurn ?? 0);
-          }
-          return nowWorld() < Number(expiry.worldExpires ?? 0);
+        /** Counts a partial combat round so a switch cannot restore time already spent in initiative. */
+        immunityCombatRemaining(expiry, combat) {
+          const rounds = Math.max(0, Number(expiry.rounds) || 0);
+          const roundDelta = Number(combat.round ?? 0) - Number(expiry.startRound ?? 0);
+          const partialRound = Number(combat.turn ?? 0) < Number(expiry.startTurn ?? 0) ? 1 : 0;
+          return Math.max(0, Math.min(rounds, rounds - roundDelta + partialRound));
         },
 
-        /** Keeps round-based immunity from expiring early when combat state changes. */
+        /** Lets immunity checks make one consistent decision regardless of how the duration was measured. */
+        expiryActive(expiry, payload) {
+          const worldExpires = Number(expiry?.worldExpires);
+          if (!Number.isFinite(worldExpires) || nowWorld() >= worldExpires) return false;
+          const combat = this.combatForPayload(payload, expiry.combatId)?.combat;
+          if (expiry.combatId && combat?.id === expiry.combatId) {
+            return this.immunityCombatRemaining(expiry, combat) > 0;
+          }
+          return true;
+        },
+
+        /** Carries only unused immunity time into a new encounter or back to world time. */
         syncImmunityCombatClock(payload) {
           const combat = this.combatForPayload(payload)?.combat;
-          if (!combat?.id) return;
 
           for (const record of Object.values(payload.state.immunities ?? {})) {
             const expiry = record?.expiry;
-            if (!expiry || expiry.combatId) continue;
+            if (!expiry) continue;
+            const worldExpires = Number(expiry.worldExpires);
+            const worldRemaining = Number.isFinite(worldExpires)
+              ? Math.max(0, Math.ceil((worldExpires - nowWorld()) / 6))
+              : 0;
+            let storedRemaining = Number.isSafeInteger(expiry.remainingRounds)
+              ? Math.max(0, expiry.remainingRounds)
+              : Math.max(0, Number(expiry.rounds) || 0);
 
-            // If world time really advanced past the immunity, leave it
-            // expired rather than attaching it to a new encounter.
-            if (nowWorld() >= Number(expiry.worldExpires ?? Infinity)) continue;
+            if (expiry.combatId && combat?.id !== expiry.combatId) {
+              const previousCombat = recordedCombatForZoneState(payload.state, expiry.combatId);
+              if (previousCombat) {
+                storedRemaining = Math.min(storedRemaining, this.immunityCombatRemaining(expiry, previousCombat));
+              }
+            }
 
-            // Immunities created before initiative started otherwise have no
-            // encounter clock, and Foundry does not automatically advance
-            // worldTime as rounds pass. Anchor them when combat becomes active.
+            if (expiry.combatId && combat?.id === expiry.combatId) {
+              expiry.remainingRounds = Math.min(storedRemaining, this.immunityCombatRemaining(expiry, combat));
+              continue;
+            }
+
+            const remaining = Math.min(worldRemaining, storedRemaining);
+            if (expiry.combatId) {
+              // Foundry can change encounters without advancing world time.
+              // Carry observed combat progress into the world-time deadline.
+              expiry.worldExpires = Number.isFinite(worldExpires)
+                ? Math.min(worldExpires, nowWorld() + remaining * 6)
+                : nowWorld();
+              expiry.combatId = null;
+              expiry.startRound = 0;
+              expiry.startTurn = 0;
+            }
+            expiry.remainingRounds = remaining;
+            if (!combat?.id || remaining <= 0) continue;
+
             expiry.combatId = combat.id;
+            expiry.rounds = remaining;
             expiry.startRound = Number(combat.round ?? 0);
             expiry.startTurn = Number(combat.turn ?? 0);
-            expiry.anchoredFromWorldTime = true;
           }
         },
 
@@ -407,6 +439,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Prevents a repeat trigger from reapplying an effect during its configured immunity period. */
         isImmune(payload, tokenUuid, blockId) {
+          this.syncImmunityCombatClock(payload);
           const entry = this.findImmunityEntry(payload, tokenUuid, blockId);
           if (!entry) {
             console.info("PF2e Zone immunity lookup", {
@@ -455,6 +488,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Keeps persisted state small and prevents expired entries from influencing later triggers. */
         pruneExpiredImmunities(payload) {
+          this.syncImmunityCombatClock(payload);
           let removed = 0;
           for (const [key, record] of Object.entries(payload.state.immunities ?? {})) {
             if (this.expiryActive(record?.expiry, payload)) continue;
