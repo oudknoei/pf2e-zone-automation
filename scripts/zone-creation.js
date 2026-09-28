@@ -1,4 +1,5 @@
 import { combatDurationDeadline } from "./duration-clock.js";
+import { combatForZone } from "./scene-combat.js";
 import { resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
@@ -71,8 +72,11 @@ export function savedPresetFromZone(record, zoneState) {
 
 /** Gives finite zones the same duration metadata regardless of who created them. */
 function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution }) {
-  const combat = game.combat;
-  const sourceCombatant = sourceActor.combatant ?? null;
+  const { combat = null, sourceCombatant = null } = combatForZone({
+    sceneId: sourceToken.parent?.id,
+    sourceTokenUuid: sourceToken.uuid,
+    sourceActorUuid: sourceActor.uuid
+  }) ?? {};
   const rounds = durationResolution?.rounds ?? null;
   const currentIsSource = Boolean(combat && sourceCombatant && combat.combatant?.id === sourceCombatant.id);
   const currentTurnKey = currentIsSource

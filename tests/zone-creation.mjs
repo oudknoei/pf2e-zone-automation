@@ -409,3 +409,60 @@ test("both area placement adapters use the shared payload and state", async () =
   assert.deepEqual(created.at(-2).data.flags, created.at(-1).data.flags);
   assert.equal(created.at(-1).data.shapes[0].type, "rectangle");
 });
+
+test("creation anchors to a matching Scene encounter, never the GM's unrelated combat", async () => {
+  const previousCombat = game.combat;
+  const previousCombats = game.combats;
+  const previousCombatant = actor.combatant;
+  const otherScene = { id: "other" };
+  const otherCombatant = {
+    id: "other-source", actor,
+    token: { uuid: "Scene.other.Token.source", parent: otherScene }
+  };
+  const otherCombat = {
+    id: "other-fight", scene: otherScene, round: 9, turn: 0,
+    turns: [otherCombatant], combatant: otherCombatant
+  };
+  const sourceCombatant = { id: "source", actor, token };
+  const sceneCombat = {
+    id: "scene-fight", scene, round: 2, turn: 0,
+    turns: [sourceCombatant], combatant: sourceCombatant
+  };
+  const config = validConfig();
+  config.duration = { type: "custom-rounds", rounds: 3 };
+
+  try {
+    game.combat = otherCombat;
+    game.combats = { contents: [otherCombat] };
+    actor.combatant = otherCombatant;
+    const outside = await createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    });
+    assert.equal(outside.region.getFlag("world", "pf2eZone").state.duration.combatId, null);
+
+    game.combats.contents.push({
+      id: "wrong-token", scene, round: 4, turn: 0,
+      turns: [{
+        id: "same-actor", actor,
+        token: { uuid: "Scene.scene.Token.another", parent: scene }
+      }]
+    });
+    const sameActor = await createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    });
+    assert.equal(sameActor.region.getFlag("world", "pf2eZone").state.duration.combatId, null);
+
+    game.combats.contents.push(sceneCombat);
+    const inside = await createZoneDocument({
+      rawConfig: config, scene, sourceActor: actor, sourceToken: token, requester: gm
+    });
+    const duration = inside.region.getFlag("world", "pf2eZone").state.duration;
+    assert.equal(duration.combatId, sceneCombat.id);
+    assert.equal(duration.sourceCombatantId, sourceCombatant.id);
+    assert.equal(duration.combatExpiresAtRound, 5);
+  } finally {
+    game.combat = previousCombat;
+    game.combats = previousCombats;
+    actor.combatant = previousCombatant;
+  }
+});

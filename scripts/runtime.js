@@ -1,5 +1,6 @@
 import { actorStatisticDc } from "./dc.js";
 import { combatDurationDeadline } from "./duration-clock.js";
+import { combatForZone, combatForZoneState } from "./scene-combat.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 
@@ -334,14 +335,19 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Uses the saved source token to keep every zone clock on its own Scene. */
+        combatForPayload(payload, recordedCombatId = null) {
+          return combatForZoneState(payload?.state, recordedCombatId);
+        },
+
         /** Records both combat and world-time limits so temporary immunity behaves across combat transitions. */
-        makeExpiry(duration) {
+        makeExpiry(duration, payload) {
           const rounds = duration === "1-round" ? 1
             : duration === "1-minute" ? 10
             : duration === "10-minutes" ? 100
             : null;
           if (!rounds) return null;
-          const combat = game.combat;
+          const combat = this.combatForPayload(payload)?.combat;
           return {
             rounds,
             worldExpires: nowWorld() + rounds * 6,
@@ -352,9 +358,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Lets immunity checks make one consistent decision regardless of how the duration was measured. */
-        expiryActive(expiry) {
+        expiryActive(expiry, payload) {
           if (!expiry) return false;
-          const combat = game.combat;
+          const combat = this.combatForPayload(payload, expiry.combatId)?.combat;
           if (expiry.combatId && combat?.id === expiry.combatId) {
             const roundDelta = Number(combat.round ?? 0) - Number(expiry.startRound ?? 0);
             if (roundDelta < expiry.rounds) return true;
@@ -366,7 +372,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Keeps round-based immunity from expiring early when combat state changes. */
         syncImmunityCombatClock(payload) {
-          const combat = game.combat;
+          const combat = this.combatForPayload(payload)?.combat;
           if (!combat?.id) return;
 
           for (const record of Object.values(payload.state.immunities ?? {})) {
@@ -418,8 +424,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
 
           const { storageId, record } = entry;
-          const active = this.expiryActive(record.expiry);
-          const combat = game.combat;
+          const active = this.expiryActive(record.expiry, payload);
+          const combat = this.combatForPayload(payload, record.expiry?.combatId)?.combat;
           console.info("PF2e Zone immunity check", {
             zone: payload.config.name,
             tokenUuid,
@@ -451,7 +457,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         pruneExpiredImmunities(payload) {
           let removed = 0;
           for (const [key, record] of Object.entries(payload.state.immunities ?? {})) {
-            if (this.expiryActive(record?.expiry)) continue;
+            if (this.expiryActive(record?.expiry, payload)) continue;
             delete payload.state.immunities[key];
             removed++;
           }
@@ -459,8 +465,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             console.info("PF2e Zone expired immunities pruned", {
               zone: payload.config.name,
               removed,
-              combatRound: Number(game.combat?.round ?? 0),
-              combatTurn: Number(game.combat?.turn ?? 0)
+              combatRound: Number(this.combatForPayload(payload)?.combat?.round ?? 0),
+              combatTurn: Number(this.combatForPayload(payload)?.combat?.turn ?? 0)
             });
           }
           return removed;
@@ -469,7 +475,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Records a temporary exclusion immediately after the outcome that should grant it. */
         setImmunity(payload, tokenUuid, block) {
           if (!block?.immunity || block.immunity.duration === "none") return;
-          const expiry = this.makeExpiry(block.immunity.duration);
+          const expiry = this.makeExpiry(block.immunity.duration, payload);
           if (!expiry) return;
 
           for (const [storageId, record] of Object.entries(payload.state.immunities ?? {})) {
@@ -507,8 +513,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Creates a shared round marker so once-per-round effects cannot fire twice on one turn cycle. */
-        roundStamp() {
-          const combat = game.combat;
+        roundStamp(payload) {
+          const combat = this.combatForPayload(payload)?.combat;
           return combat?.id
             ? `${combat.id}:${Number(combat.round ?? 0)}`
             : `world:${Math.floor(nowWorld() / 6)}`;
@@ -521,7 +527,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const key = this.repeatKey(tokenUuid, block.id);
           const record = payload.state.repeat[key];
           if (policy === "once-per-zone") return Boolean(record?.zone);
-          return record?.round === this.roundStamp();
+          return record?.round === this.roundStamp(payload);
         },
 
         /** Records an accepted application so later hooks observe the configured frequency limit. */
@@ -531,7 +537,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const key = this.repeatKey(tokenUuid, block.id);
           payload.state.repeat[key] ??= {};
           if (policy === "once-per-zone") payload.state.repeat[key].zone = true;
-          else if (policy === "once-per-round") payload.state.repeat[key].round = this.roundStamp();
+          else if (policy === "once-per-round") payload.state.repeat[key].round = this.roundStamp(payload);
         },
 
         /** Translates only actual PF2e roll degrees into stored outcome keys. */
@@ -1193,7 +1199,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Distinguishes a real combat turn from repeated Foundry hooks during that same turn. */
-        combatTurnKey(combat = game.combat) {
+        combatTurnKey(combat) {
           const active = combat?.combatant ?? null;
           return combat?.id && active
             ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`
@@ -1208,7 +1214,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Both Foundry's Region behavior and our combat-hook fallback can
           // therefore observe the same turn start. Persist one key per token so
           // the trigger is processed only once for the active combat turn.
-          const turnKey = this.combatTurnKey();
+          const turnKey = this.combatTurnKey(this.combatForPayload(payload)?.combat);
           const eventKey = stateKey("turnStart", token.uuid);
           if (turnKey && payload.state.turnStartEvents?.[eventKey] === turnKey) return;
           if (turnKey) {
@@ -1221,14 +1227,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             payload,
             token,
             "turnStart",
-            `${batchPrefix}:${token.uuid}:${turnKey ?? this.roundStamp()}:${randomId()}`
+            `${batchPrefix}:${token.uuid}:${turnKey ?? this.roundStamp(payload)}:${randomId()}`
           );
         },
 
         /** Handles the current combatant once even if Foundry announces the turn through multiple hooks. */
-        async processActiveTurnStart(region) {
+        async processActiveTurnStart(region, changedCombat = null) {
           if (!this.isAuthority() || !this.isLiveRegion(region)) return;
-          const combat = game.combat;
+          const payload = this.readPayload(region);
+          const combat = this.combatForPayload(payload)?.combat;
+          if (changedCombat && combat?.id !== changedCombat.id) return;
           const active = combat?.combatant ?? null;
           const token = active?.token ?? null;
           if (!combat || !active || !token || token.parent?.id !== region.parent?.id) return;
@@ -1246,9 +1254,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Catches up active zones after combat state changes that skip an individual turn hook. */
-        async processAllActiveTurnStarts() {
+        async processAllActiveTurnStarts(changedCombat = null) {
           if (!this.isAuthority()) return;
-          for (const region of this.allZones()) await this.processActiveTurnStart(region);
+          for (const region of this.allZones()) await this.processActiveTurnStart(region, changedCombat);
         },
 
         /** Keeps source-controlled effects tied to the source combatant rather than Region occupancy. */
@@ -1417,7 +1425,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const token of insideTokens) {
             if (await this.eligible(payload, token)) eligibleTokens.push(token);
           }
-          const batch = `continuous:${this.roundStamp()}:${randomId()}`;
+          const batch = `continuous:${this.roundStamp(payload)}:${randomId()}`;
           const count = eligibleTokens.length;
           for (const token of eligibleTokens) {
             await this.processContinuousUnlocked(region, payload, token, batch, { count });
@@ -1620,17 +1628,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (finalizationAt != null) this.scheduleActivationFinalization(region, finalizationAt);
         },
 
-        /** Resolves the source against the current roster so a removed combatant cannot hold a stale turn clock. */
-        combatantForSource(combat, sourceToken, sourceActor, recordedId) {
-          const roster = Array.isArray(combat?.turns) && combat.turns.length
-            ? combat.turns
-            : Array.from(combat?.combatants?.contents ?? combat?.combatants ?? []);
-          return roster.find((entry) => entry.token?.uuid === sourceToken?.uuid)
-            ?? roster.find((entry) => entry.id === recordedId && (!sourceActor || entry.actor?.uuid === sourceActor.uuid))
-            ?? roster.find((entry) => entry.actor?.uuid === sourceActor?.uuid)
-            ?? null;
-        },
-
         /** Ends a finite zone at its stored combat deadline even when intermediate turn hooks were missed. */
         async checkSourceAndDuration(region) {
           if (!this.isAuthority()) return;
@@ -1654,13 +1651,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
             const worldExpired = nowWorld() >= d.worldExpires;
 
-            const combat = game.combat;
-            if (!combat?.id) {
+            const { combat = null, sourceCombatant = null } = combatForZone({
+              sceneId: region.parent?.id,
+              sourceTokenUuid: payload.state.sourceTokenUuid,
+              sourceActorUuid: payload.state.sourceActorUuid,
+              recordedCombatId: d.combatId
+            }) ?? {};
+            if (!combat) {
               shouldEnd = worldExpired;
               return;
             }
-
-            const sourceCombatant = this.combatantForSource(combat, sourceToken, sourceActor, d.sourceCombatantId);
             const currentRound = Number(combat.round ?? 0);
 
             if (d.combatId !== combat.id) {
@@ -1725,24 +1725,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Provides a locked entry point for source-turn hooks that may arrive concurrently. */
-        async processSourceTurnStart(region) {
+        async processSourceTurnStart(region, changedCombat = null) {
           if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+          if (changedCombat && this.combatForPayload(this.readPayload(region))?.combat?.id !== changedCombat.id) return;
 
           await this.withState(region, async (payload) => {
             if (!this.isOperational(region, payload)) return;
             if (!(payload.config.effects ?? []).some((block) => block.triggers?.sourceTurnStart)) return;
 
-            const combat = game.combat;
+            const { combat = null, sourceCombatant = null } = this.combatForPayload(payload) ?? {};
             const active = combat?.combatant ?? null;
-            if (!combat || !active) return;
+            if (!sourceCombatant || !active || active.id !== sourceCombatant.id) return;
 
             const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
             if (!sourceToken || !sourceActor) return;
-
-            const sourceCombatant = combat.combatants?.find?.((combatant) =>
-              combatant?.token?.uuid === sourceToken.uuid || combatant?.actor?.uuid === sourceActor.uuid
-            ) ?? sourceActor.combatant ?? null;
-            if (!sourceCombatant || active.id !== sourceCombatant.id) return;
 
             const turnKey = `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${active.id}`;
             if (payload.state.lastSourceTriggerTurnKey === turnKey) return;
@@ -1758,9 +1754,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Catches up source-turn effects after combat updates that do not name one Region. */
-        async processAllSourceTurnStarts() {
+        async processAllSourceTurnStarts(changedCombat = null) {
           if (!this.isAuthority()) return;
-          for (const region of this.allZones()) await this.processSourceTurnStart(region);
+          for (const region of this.allZones()) await this.processSourceTurnStart(region, changedCombat);
         },
 
         /** Leaves a retryable Region when owned Items or Region deletion fails. */
@@ -2482,11 +2478,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           on("updateItem", itemChanged);
           on("deleteItem", itemChanged);
 
-          on("updateCombat", async () => {
+          on("updateCombat", async (combat) => {
             try {
               await runtime.checkAllDurations();
-              await runtime.processAllSourceTurnStarts();
-              await runtime.processAllActiveTurnStarts();
+              await runtime.processAllSourceTurnStarts(combat);
+              await runtime.processAllActiveTurnStarts(combat);
             } catch (e) {
               console.error("PF2e Zone combat hook", e);
             }
@@ -2693,14 +2689,15 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const token = event?.data?.token ?? null;
 
           if (name === "tokenEnter" || name === "tokenExit") {
+            const combat = this.combatForPayload(this.readPayload(region))?.combat;
             console.info("PF2e Zone Region event", {
               event: name,
               zone: region.name,
               regionUuid: region.uuid,
               token: token?.name ?? null,
               tokenUuid: token?.uuid ?? null,
-              combatRound: Number(game.combat?.round ?? 0),
-              combatTurn: Number(game.combat?.turn ?? 0)
+              combatRound: Number(combat?.round ?? 0),
+              combatTurn: Number(combat?.turn ?? 0)
             });
           }
 
@@ -2777,7 +2774,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (!token) break;
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload) || !(await this.eligible(payload, token))) return;
-                await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp()}:${randomId()}`);
+                await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp(payload)}:${randomId()}`);
               });
               break;
           }

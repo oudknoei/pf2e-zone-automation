@@ -329,6 +329,7 @@ async function withFiniteZoneFixture(run) {
   const saved = {
     time: game.time,
     combat: game.combat,
+    combats: game.combats,
     scenes: game.scenes,
     fromUuid: globalThis.fromUuid,
     replace: globalThis._replace
@@ -342,6 +343,7 @@ async function withFiniteZoneFixture(run) {
   const otherCombatant = { id: "other", actor: { uuid: "Actor.other" }, token: { uuid: "Token.other" } };
   const combat = {
     id: "fight",
+    scene,
     round: 1,
     turn: 0,
     turns: [sourceCombatant, otherCombatant],
@@ -381,6 +383,7 @@ async function withFiniteZoneFixture(run) {
   globalThis._replace = (payload) => payload;
   game.time = { worldTime: 100 };
   game.combat = combat;
+  game.combats = { contents: [combat] };
   game.scenes = { contents: [scene], get: (id) => id === scene.id ? scene : null };
 
   try {
@@ -391,6 +394,7 @@ async function withFiniteZoneFixture(run) {
   } finally {
     game.time = saved.time;
     game.combat = saved.combat;
+    game.combats = saved.combats;
     game.scenes = saved.scenes;
     if (saved.fromUuid === undefined) delete globalThis.fromUuid;
     else globalThis.fromUuid = saved.fromUuid;
@@ -437,7 +441,8 @@ test("a new encounter preserves observed remaining rounds instead of restarting 
     assert.equal(scene.regions.has(region.id), true);
 
     const newSource = { id: "new-source", actor: sourceActor, token: sourceToken };
-    game.combat = { id: "next-fight", round: 1, turn: 0, turns: [newSource], combatant: newSource };
+    game.combat = { id: "next-fight", scene, round: 1, turn: 0, turns: [newSource], combatant: newSource };
+    game.combats.contents.push(game.combat);
     await runtime.checkSourceAndDuration(region);
     assert.equal(scene.regions.has(region.id), true);
     assert.equal(region.getFlag().state.duration.combatExpiresAtRound, 2);
@@ -647,6 +652,136 @@ test("reactivating an overdue zone ends it before maintained effects return", as
       assert.equal(reconciles, 0);
     } finally {
       runtime.reconcileContinuousUnlocked = originalReconcile;
+    }
+  });
+});
+
+test("a zone ignores another Scene's combat clock while its own encounter advances", async () => {
+  await withFiniteZoneFixture(async ({ scene, region, combat }) => {
+    const otherScene = { id: "other" };
+    const otherCombat = {
+      id: "other-fight", scene: otherScene, round: 1, turn: 0,
+      turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
+    };
+    game.combats.contents.push(otherCombat);
+    game.combat = otherCombat;
+
+    otherCombat.round = 20;
+    await runtime.checkSourceAndDuration(region);
+    assert.equal(scene.regions.has(region.id), true);
+    assert.equal(region.getFlag().state.duration.combatId, combat.id);
+
+    combat.round = 3;
+    await runtime.checkSourceAndDuration(region);
+    assert.equal(scene.regions.has(region.id), false, "the owning encounter ends the zone");
+  });
+});
+
+test("a zone uses world time when only an unrelated Scene has an encounter", async () => {
+  await withFiniteZoneFixture(async ({ scene, region }) => {
+    const otherScene = { id: "other" };
+    const otherCombat = {
+      id: "other-fight", scene: otherScene, round: 20, turn: 0,
+      turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
+    };
+    game.combats.contents = [otherCombat];
+    game.combat = otherCombat;
+
+    await runtime.checkSourceAndDuration(region);
+    assert.equal(scene.regions.has(region.id), true);
+    assert.equal(region.getFlag().state.duration.combatId, "fight");
+
+    game.time.worldTime = 112;
+    await runtime.checkSourceAndDuration(region);
+    assert.equal(scene.regions.has(region.id), false);
+  });
+});
+
+test("once-per-round limits follow the zone's encounter instead of another Scene", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
+    const otherScene = { id: "other" };
+    const otherCombat = {
+      id: "other-fight", scene: otherScene, round: 10, turn: 0,
+      turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
+    };
+    game.combats.contents.push(otherCombat);
+    game.combat = otherCombat;
+    const payload = region.getFlag();
+    payload.state.repeat = {};
+    const block = { id: "alert", repeat: "once-per-round" };
+
+    runtime.markRepeat(payload, sourceToken.uuid, block);
+    assert.equal(payload.state.repeat[runtime.repeatKey(sourceToken.uuid, block.id)].round, "fight:1");
+    otherCombat.round = 11;
+    assert.equal(runtime.repeatBlocked(payload, sourceToken.uuid, block), true);
+    combat.round = 2;
+    assert.equal(runtime.repeatBlocked(payload, sourceToken.uuid, block), false);
+  });
+});
+
+test("temporary immunity uses the zone's encounter and ignores another Scene", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
+    const otherScene = { id: "other" };
+    const otherCombat = {
+      id: "other-fight", scene: otherScene, round: 5, turn: 0,
+      turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
+    };
+    game.combats.contents.push(otherCombat);
+    game.combat = otherCombat;
+    const payload = region.getFlag();
+    payload.state.immunities = {};
+    runtime.setImmunity(payload, sourceToken.uuid, { id: "fervor", immunity: { duration: "1-round" } });
+    const record = Object.values(payload.state.immunities)[0];
+    assert.equal(record.expiry.combatId, combat.id);
+
+    const priorLog = console.info;
+    console.info = () => {};
+    try {
+      otherCombat.round = 20;
+      assert.equal(runtime.isImmune(payload, sourceToken.uuid, "fervor"), true);
+      combat.round = 2;
+      assert.equal(runtime.isImmune(payload, sourceToken.uuid, "fervor"), false);
+    } finally {
+      console.info = priorLog;
+    }
+  });
+});
+
+test("another Scene's combat update cannot start this zone's source or occupant turn", async () => {
+  await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
+    const otherScene = { id: "other" };
+    const otherCombat = {
+      id: "other-fight", scene: otherScene, round: 2, turn: 0,
+      turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
+    };
+    game.combats.contents.push(otherCombat);
+    game.combat = otherCombat;
+    const payload = region.getFlag();
+    payload.config.effects = [{ triggers: { sourceTurnStart: true, turnStart: true } }];
+    payload.state.lastSourceTriggerTurnKey = null;
+
+    const original = {
+      source: runtime.processSourceTurnStartUnlocked,
+      occupant: runtime.processTurnStartUnlocked,
+      inside: runtime.tokensInside
+    };
+    let sourceStarts = 0;
+    let occupantStarts = 0;
+    runtime.processSourceTurnStartUnlocked = async () => { sourceStarts++; };
+    runtime.processTurnStartUnlocked = async () => { occupantStarts++; };
+    runtime.tokensInside = () => [sourceToken];
+    try {
+      await runtime.processSourceTurnStart(region, otherCombat);
+      await runtime.processActiveTurnStart(region, otherCombat);
+      assert.deepEqual([sourceStarts, occupantStarts], [0, 0]);
+
+      await runtime.processSourceTurnStart(region, combat);
+      await runtime.processActiveTurnStart(region, combat);
+      assert.deepEqual([sourceStarts, occupantStarts], [1, 1]);
+    } finally {
+      runtime.processSourceTurnStartUnlocked = original.source;
+      runtime.processTurnStartUnlocked = original.occupant;
+      runtime.tokensInside = original.inside;
     }
   });
 });
