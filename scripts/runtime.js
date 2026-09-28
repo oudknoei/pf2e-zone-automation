@@ -846,9 +846,32 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             ui.notifications.error(`PF2e Zone: PF2e Effect Item not found: ${effect.uuid}`);
             return false;
           }
+          const originActorUuid = payload.state?.sourceActorUuid ?? (await this.resolveSource(payload)).actor?.uuid;
+          if (!originActorUuid) {
+            ui.notifications.error(`PF2e Zone: source Actor for '${payload.config.name}' is unavailable.`);
+            return false;
+          }
           const source = template.toObject();
           delete source._id;
           delete source.folder;
+          // An Actor-sheet Effect is a template here, not a continuation of its
+          // old aura, grant, caster, target, or clock.
+          delete source.flags?.pf2e?.aura;
+          delete source.flags?.pf2e?.grantedBy;
+          delete source.flags?.pf2e?.itemGrants;
+          delete source.system.start;
+          delete source.system.expired;
+          source.system.context = {
+            origin: {
+              actor: originActorUuid,
+              token: payload.state?.sourceTokenUuid ?? null,
+              item: null,
+              spellcasting: null,
+              rollOptions: []
+            },
+            target: { actor: actor.uuid, token: token.uuid ?? null },
+            roll: null
+          };
 
           // For zone-managed Effect Items, the zone owns the lifetime. Prevent the
           // source Effect Item's native duration from expiring it before on-exit or

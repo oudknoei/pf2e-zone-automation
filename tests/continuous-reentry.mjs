@@ -116,7 +116,10 @@ for (const policy of ["once-per-round", "once-per-zone", "every"]) {
         }
       }
     };
-    let stored = { config: { name: "Aura", effects: [block] }, state: {} };
+    let stored = {
+      config: { name: "Aura", effects: [block] },
+      state: { sourceActorUuid: "Actor.zone-source", sourceTokenUuid: "Scene.scene.Token.zone-source" }
+    };
     const scene = { regions: new Map() };
     const region = {
       id: `zone-${policy}`,

@@ -92,7 +92,7 @@ Within an Effect Block, enable only the result sections the ability needs:
 - **Degree-of-success payloads** apply Conditions or PF2e Effect Items for each save result, or under **No Save** when no save is enabled. Each Condition has its own removal rule. **Normal PF2e handling** leaves it on the Actor after the zone ends; temporary rules remove only the Condition created by that zone. PF2e uses the strongest active value when multiple sources apply the same Condition.
 - **Temporary Immunity** prevents later applications for the chosen duration after the selected result.
 
-To apply an Effect Item, drag it from an Actor sheet, the Items list, or a compendium into the relevant result. The builder shows its name and image after resolving it. You can also paste its Item UUID. A missing UUID or an Item that is not a PF2e Effect is rejected before saving or creating a zone. Actor sheet references depend on that Actor remaining available, so use a compendium Effect when you want a reusable template. The supplied Effects are available in the **PF2e Zone Effects** compendium:
+To apply an Effect Item, drag it from an Actor sheet, the Items list, or a compendium into the relevant result. The builder shows its name and image after resolving it. You can also paste its Item UUID. A missing UUID or an Item that is not a PF2e Effect is rejected before saving or creating a zone. Actor sheet references depend on that Actor remaining available, so use a compendium Effect when you want a reusable template. Each copy uses the zone's source and current target for its PF2e effect context; it does not inherit the original Item's aura or grant links. The supplied Effects are available in the **PF2e Zone Effects** compendium:
 
 | Effect | UUID |
 | --- | --- |

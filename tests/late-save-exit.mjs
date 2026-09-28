@@ -102,6 +102,8 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
   let stored = {
     config: { name: "Delayed save zone", mode: "area", effects: [block] },
     state: {
+      sourceActorUuid: "Actor.zone-source",
+      sourceTokenUuid: "Scene.scene.Token.zone-source",
       pendingSaves: {
         pending: {
           id: "pending",

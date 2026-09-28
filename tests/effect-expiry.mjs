@@ -28,7 +28,7 @@ const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
 
 /** Recreates PF2e's choice to retain expired Effect Items while ignoring their rules. */
-function effectFixture() {
+function effectFixture(templateSource = { type: "effect", system: { duration: { value: 1, unit: "rounds" } } }) {
   const items = new Map();
   let creations = 0;
   let failDeletion = false;
@@ -59,12 +59,19 @@ function effectFixture() {
   const token = { uuid: "Token.target", actor };
   const template = {
     documentName: "Item", type: "effect",
-    toObject: () => ({ type: "effect", system: { duration: { value: 1, unit: "rounds" } } })
+    toObject: () => structuredClone(templateSource)
   };
   globalThis.fromUuid = async (uuid) => uuid === "Item.template" ? template : null;
   globalThis.ui = { notifications: { error: (message) => errors.push(message) } };
   const region = { uuid: "Region.zone" };
-  const payload = { config: { name: "Test zone" }, state: { applied: {} } };
+  const payload = {
+    config: { name: "Test zone" },
+    state: {
+      applied: {},
+      sourceActorUuid: "Actor.zone-source",
+      sourceTokenUuid: "Scene.scene.Token.zone-source"
+    }
+  };
   const block = { id: "block", name: "Effect block" };
   const effect = { uuid: "Item.template", removal: "item-duration" };
   return {
@@ -73,6 +80,66 @@ function effectFixture() {
     setDeletionFailure(value) { failDeletion = value; }
   };
 }
+
+test("an Actor-sheet Effect becomes a new zone application without stale aura or grant links", async () => {
+  const template = {
+    type: "effect",
+    flags: {
+      pf2e: {
+        aura: { slug: "old-aura", origin: "Actor.previous", removeOnExit: true },
+        grantedBy: { id: "old-granter" },
+        itemGrants: { old: { id: "old-child" } },
+        rulesSelections: { choice: "fire" },
+        customFlag: "keep"
+      },
+      otherModule: { useful: true }
+    },
+    system: {
+      duration: { value: 1, unit: "rounds" },
+      rules: [{ key: "FlatModifier", selector: "attack", value: 1 }],
+      start: { value: 10, initiative: 5 },
+      expired: true,
+      context: {
+        origin: { actor: "Actor.previous", token: "Token.previous", item: "Item.previous", rollOptions: ["old"] },
+        target: { actor: "Actor.previous-target", token: "Token.previous-target" },
+        roll: { total: 12 }
+      }
+    }
+  };
+  const f = effectFixture(template);
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect), true);
+  const created = [...f.actor.items.values()][0];
+  assert.equal(created.flags.pf2e.aura, undefined);
+  assert.equal(created.flags.pf2e.grantedBy, undefined);
+  assert.equal(created.flags.pf2e.itemGrants, undefined);
+  assert.deepEqual(created.flags.pf2e.rulesSelections, { choice: "fire" });
+  assert.equal(created.flags.pf2e.customFlag, "keep");
+  assert.deepEqual(created.flags.otherModule, { useful: true });
+  assert.deepEqual(created.system.rules, template.system.rules);
+  assert.equal(created.system.start, undefined);
+  assert.equal(created.system.expired, undefined);
+  assert.deepEqual(created.system.context, {
+    origin: {
+      actor: "Actor.zone-source",
+      token: "Scene.scene.Token.zone-source",
+      item: null,
+      spellcasting: null,
+      rollOptions: []
+    },
+    target: { actor: f.actor.uuid, token: f.token.uuid },
+    roll: null
+  });
+  assert.deepEqual(template.flags.pf2e.aura, { slug: "old-aura", origin: "Actor.previous", removeOnExit: true },
+    "the source Item is unchanged");
+});
+
+test("a compendium Effect gets the zone source and current target even without template context", async () => {
+  const f = effectFixture();
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect), true);
+  const created = [...f.actor.items.values()][0];
+  assert.equal(created.system.context.origin.actor, f.payload.state.sourceActorUuid);
+  assert.equal(created.system.context.target.actor, f.actor.uuid);
+});
 
 test("an expired tracked Effect Item is replaced and only the new application remains tracked", async () => {
   const f = effectFixture();
