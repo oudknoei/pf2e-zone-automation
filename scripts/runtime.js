@@ -68,6 +68,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         regionReconcileTimers: new Map(),
         activationFinalizeTimers: new Map(),
         areaBoundaryBefore: new Map(),
+        areaBoundarySnapshots: new Map(),
         areaBoundarySuppression: new Map(),
 
         /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
@@ -1466,14 +1467,51 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Remembers the old footprint so a later Region update can find creatures crossed by a drag. */
-        captureAreaBoundary(region) {
+        /** Keeps a stable geometry signature so a remote boundary event can wait for the full sweep. */
+        areaBoundaryShapes(region) {
+          return [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape));
+        },
+
+        /** Captures both geometry and membership before the next area update arrives. */
+        areaBoundarySnapshot(region) {
           const payload = this.readPayload(region);
-          if (!this.isOperational(region, payload) || payload.config?.mode !== "area") return;
-          this.areaBoundaryBefore.set(region.uuid, {
-            shapes: [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape)),
+          if (!this.isOperational(region, payload) || payload.config?.mode !== "area"
+            || !region.shapes?.[Symbol.iterator]) return null;
+          const shapes = this.areaBoundaryShapes(region);
+          return {
+            shapes,
+            signature: JSON.stringify(shapes),
             occupants: new Set(this.tokensInside(region).map((token) => token.uuid))
-          });
+          };
+        },
+
+        /** Gives every client the last known footprint, including a GM who did not initiate the update. */
+        rememberAreaBoundary(region) {
+          const snapshot = this.areaBoundarySnapshot(region);
+          if (snapshot) this.areaBoundarySnapshots.set(region.uuid, snapshot);
+          else this.areaBoundarySnapshots.delete(region.uuid);
+        },
+
+        /** Preserves the initiating client's pre-update membership if Foundry delivers an early boundary event. */
+        captureAreaBoundary(region) {
+          const snapshot = this.areaBoundarySnapshot(region);
+          if (snapshot) this.areaBoundaryBefore.set(region.uuid, snapshot);
+        },
+
+        /** Detects a remote drag before the shared post-update hook can run. */
+        areaBoundaryChangedSinceSnapshot(region) {
+          const snapshot = this.areaBoundarySnapshots.get(region.uuid);
+          return Boolean(snapshot && snapshot.signature !== JSON.stringify(this.areaBoundaryShapes(region)));
+        },
+
+        /** Keeps resize comparisons current when a creature moves without moving the area. */
+        noteAreaBoundaryOccupant(region, token, inside, movement) {
+          const snapshot = this.areaBoundarySnapshots.get(region.uuid);
+          if (!snapshot || !token || this.areaBoundaryBefore.has(region.uuid)
+            || this.areaBoundaryChangedSinceSnapshot(region)
+            || (movement == null && this.areaBoundarySuppression.has(region.uuid))) return;
+          if (inside) snapshot.occupants.add(token.uuid);
+          else snapshot.occupants.delete(token.uuid);
         },
 
         /** Prevents Foundry boundary events from applying a moved-area entry twice. */
@@ -1490,7 +1528,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Applies Entry to creatures reached anywhere along a fixed area drag. */
         async processAreaBoundaryChange(region, before) {
           if (!before || !this.isAuthority()) return;
-          const afterShapes = [...region.shapes].map((shape) => shape.toObject?.() ?? clone(shape));
+          const afterShapes = this.areaBoundaryShapes(region);
           const translation = translatedAreaShapes(before.shapes, afterShapes);
           const affected = translation
             ? [...(region.parent?.tokens ?? [])].filter((token) => sweptAreaIntersectsToken(translation, tokenBounds(token)))
@@ -1610,6 +1648,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Initializes a newly created Region before delayed hooks can process its occupants. */
         async activateRegion(region) {
           if (!this.isAuthority() || !this.isRuntimeBehaviorActive(region)) return;
+          if (!this.areaBoundarySnapshots.has(region.uuid)) this.rememberAreaBoundary(region);
 
           // A behavior may be re-enabled after its old deadline passed. Check
           // expiration before maintained effects are applied again.
@@ -2442,6 +2481,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const timer of this.activationFinalizeTimers.values()) clearTimeout(timer);
           this.activationFinalizeTimers.clear();
           this.areaBoundaryBefore.clear();
+          this.areaBoundarySnapshots.clear();
           for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);
           this.areaBoundarySuppression.clear();
 
@@ -2550,6 +2590,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           });
 
+          on("createRegion", (region) => runtime.rememberAreaBoundary(region));
+          on("createScene", (scene) => {
+            for (const region of scene.regions ?? []) runtime.rememberAreaBoundary(region);
+          });
+
           on("preUpdateRegion", (region, changes) => {
             if (!runtime.isAuthority()) return;
             if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
@@ -2557,11 +2602,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
 
           on("updateRegion", (region, changes) => {
-            if (!runtime.isAuthority()) return;
             if (!Object.prototype.hasOwnProperty.call(changes ?? {}, "shapes")) return;
-            const before = runtime.areaBoundaryBefore.get(region.uuid);
+            const before = runtime.areaBoundaryBefore.get(region.uuid)
+              ?? runtime.areaBoundarySnapshots.get(region.uuid);
             runtime.areaBoundaryBefore.delete(region.uuid);
-            if (!runtime.isOperational(region)) return;
+            runtime.rememberAreaBoundary(region);
+            if (!runtime.isAuthority() || !runtime.isOperational(region)) return;
 
             // Foundry reports destination entry, but a dragged area can pass
             // over a token that is outside again at the end of the move.
@@ -2578,6 +2624,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (activationTimer) clearTimeout(activationTimer);
             runtime.activationFinalizeTimers.delete(region.uuid);
             runtime.areaBoundaryBefore.delete(region.uuid);
+            runtime.areaBoundarySnapshots.delete(region.uuid);
             const suppression = runtime.areaBoundarySuppression.get(region.uuid);
             if (suppression) clearTimeout(suppression.timer);
             runtime.areaBoundarySuppression.delete(region.uuid);
@@ -2686,6 +2733,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             clickHandler
           };
           this.hooksInstalled = true;
+          for (const region of this.allZones()) this.rememberAreaBoundary(region);
 
           // Catch any linked-condition records left from a zone that ended earlier.
           setTimeout(() =>
@@ -2756,8 +2804,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               // handles these entries once, including creatures along the path.
               if (event?.data?.movement == null && (
                 this.areaBoundaryBefore.has(region.uuid) ||
+                this.areaBoundaryChangedSinceSnapshot(region) ||
                 this.areaBoundarySuppression.get(region.uuid)?.tokens.has(token.uuid)
               )) break;
+              this.noteAreaBoundaryOccupant(region, token, true, event?.data?.movement);
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload)) return;
                 this.seedHpBaseline(payload, token, { replace: true });
@@ -2791,6 +2841,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               break;
             case "tokenExit":
               if (!token) break;
+              this.noteAreaBoundaryOccupant(region, token, false, event?.data?.movement);
               // Do not delete on-exit state immediately. Region moves/resizes
               // can report a transient exit for a token that is still inside the
               // new geometry. The deferred reconcile removes true exits and

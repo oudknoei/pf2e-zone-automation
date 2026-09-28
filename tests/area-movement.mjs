@@ -94,7 +94,9 @@ test("moved-area Entry runs once for crossed and destination creatures", async (
   const processed = [];
   runtime.processTriggerUnlocked = async (_region, _payload, token, trigger) => processed.push([token.uuid, trigger]);
 
-  handlers.get("preUpdateRegion")(region, { shapes: [shape] });
+  handlers.get("createRegion")(region);
+  assert.equal(runtime.areaBoundarySnapshots.get(region.uuid).shapes[0].x, 0);
+  // The authoritative GM sees the completed update but never receives preUpdateRegion.
   shape = { ...shape, x: 300 };
   occupants = [destination];
   await runtime.handleRegionEvent({ region, event: { name: "tokenEnter", data: { token: destination, movement: null } } });
@@ -115,5 +117,29 @@ test("moved-area Entry runs once for crossed and destination creatures", async (
   handlers.get("updateRegion")(region, { shapes: [shape] });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(processed.at(-1), ["off-path", "enter"], "resize applies Entry only to newly covered tokens");
+
+  // A second GM changes the Region; this client receives updateRegion but no preUpdateRegion.
+  const beforeRemote = processed.length;
+  shape = { ...shape, x: 0 };
+  occupants = [crossed, adjacent];
+  await runtime.handleRegionEvent({ region, event: {
+    name: "tokenEnter", data: { token: crossed, movement: null }
+  } });
+  assert.equal(processed.length, beforeRemote, "early remote boundary entry waits for the sweep");
+  handlers.get("updateRegion")(region, { shapes: [shape] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    processed.slice(beforeRemote).map(([id]) => id).sort(),
+    ["adjacent", "crossed", "destination", "off-path"].sort(),
+    "remote drag reaches creatures along the path exactly once"
+  );
+  assert.equal(runtime.areaBoundarySnapshots.get(region.uuid).shapes[0].x, 0);
+
+  runtime.teardownHooks();
+  game.scenes.contents = [scene];
+  runtime.installHooks();
+  assert.equal(runtime.areaBoundarySnapshots.get(region.uuid).shapes[0].x, 0,
+    "an existing area is snapshotted when the GM connects");
+  game.scenes.contents = [];
   runtime.teardownHooks();
 });
