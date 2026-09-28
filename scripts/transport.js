@@ -31,7 +31,9 @@ export async function requestGMWorker(request) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pending.delete(id);
-      reject(new Error("The GM did not respond to the PF2e Zone request in time."));
+      const error = new Error("The GM did not respond to the PF2e Zone request in time.");
+      error.code = "PF2E_ZONE_REQUEST_TIMEOUT";
+      reject(error);
     }, RESPONSE_TIMEOUT_MS);
     pending.set(id, { resolve, gmId: gm.id, timeout });
     try {

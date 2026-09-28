@@ -11,6 +11,7 @@ const activated = [];
 const scene = {
   id: "scene",
   dimensions: { distancePixels: 20 },
+  regions: new Map(),
   async createEmbeddedDocuments(type, [data]) {
     assert.equal(type, "Region");
     return [makeRegion(data)];
@@ -24,6 +25,7 @@ function makeRegion(data) {
   const id = `region-${created.length + 1}`;
   const region = { id, uuid: `Scene.scene.Region.${id}`, parent: scene, getFlag: (scope, key) => data.flags?.[scope]?.[key] };
   created.push({ data, region });
+  scene.regions.set(id, region);
   return region;
 }
 
@@ -464,5 +466,50 @@ test("creation anchors to a matching Scene encounter, never the GM's unrelated c
     game.combat = previousCombat;
     game.combats = previousCombats;
     actor.combatant = previousCombatant;
+  }
+});
+
+test("a retried creation request returns one Region during and after GM processing", async () => {
+  const operationId = "creation-retry-12345";
+  const request = {
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    operationId, sceneId: scene.id, sourceTokenUuid: token.uuid,
+    config: validConfig(), color: gm.color
+  };
+  const originalCreate = CONFIG.Region.documentClass.createTokenEmanation;
+  let startCreation;
+  const entered = new Promise((resolve) => { startCreation = resolve; });
+  let finishCreation;
+  const blocked = new Promise((resolve) => { finishCreation = resolve; });
+  let calls = 0;
+  CONFIG.Region.documentClass.createTokenEmanation = async (...args) => {
+    calls++;
+    startCreation();
+    await blocked;
+    return originalCreate(...args);
+  };
+  try {
+    const first = handleWorkerRequest(request);
+    await entered;
+    const second = handleWorkerRequest(structuredClone(request));
+    assert.equal(calls, 1, "the second request joins the in-flight creation");
+    finishCreation();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(firstResult.ok, true, firstResult.error);
+    assert.equal(secondResult.regionId, firstResult.regionId);
+    assert.equal(calls, 1);
+
+    const completedRetry = await handleWorkerRequest(request);
+    assert.equal(completedRetry.regionId, firstResult.regionId);
+    assert.equal(calls, 1);
+
+    const reloadedWorker = await import(`../scripts/worker.js?reload=${Date.now()}`);
+    const retryAfterReload = await reloadedWorker.handleWorkerRequest(request);
+    assert.equal(retryAfterReload.regionId, firstResult.regionId);
+    assert.equal(calls, 1, "persisted operation ID also survives a GM refresh");
+    assert.equal(scene.regions.get(firstResult.regionId).getFlag("world", "pf2eZone").state.creationOperationId, operationId);
+  } finally {
+    finishCreation();
+    CONFIG.Region.documentClass.createTokenEmanation = originalCreate;
   }
 });

@@ -171,6 +171,70 @@ function change(element, value, event = "change") {
   element.dispatchEvent(new window.Event(event, { bubbles: true }));
 }
 
+test("overlapping Save actions leave edits made during the GM response intact", async () => {
+  const previous = { user: game.user, users: game.users, socket: game.socket };
+  const player = { id: "player", name: "Player", active: true, isGM: false, color: "#336699" };
+  const users = new Map([[gm.id, gm], [player.id, player]]);
+  users.activeGM = gm;
+  let socketListener;
+  const sent = [];
+  game.user = player;
+  game.users = users;
+  game.socket = {
+    connected: true,
+    on(_channel, listener) { socketListener = listener; },
+    emit(_channel, message) { sent.push(message); }
+  };
+  const { registerZoneSocket } = await import("../scripts/transport.js");
+  registerZoneSocket();
+  let builderDialog;
+  try {
+    await openZoneBuilder();
+    builderDialog = dialogs.at(-1);
+    const root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+    change(root.querySelector('[data-zone="name"]'), "Before Save", "input");
+    change(root.querySelector('[data-zone="affects-enemies"]'), true);
+    change(root.querySelector('[data-trigger="activation"]'), true);
+    change(root.querySelector('[data-field="chat-alert-enabled"]'), true);
+    change(root.querySelector('[data-field="chat-alert-text"]'), "Notice", "input");
+    assert.equal(root.querySelector(".zb-create").disabled, false);
+
+    const button = root.querySelector(".zb-save");
+    button.click();
+    button.dispatchEvent(new window.Event("click", { bubbles: true }));
+    root.querySelector(".zb-save-as").dispatchEvent(new window.Event("click", { bubbles: true }));
+    await until(() => sent.length === 1);
+    const request = sent.shift();
+    assert.equal(request.request.action, "library-save");
+    assert.equal(request.request.config.name, "Before Save");
+    assert.equal(button.disabled, true, "Save is reserved before the GM responds");
+
+    change(root.querySelector('[data-zone="name"]'), "Edited After Save", "input");
+    await socketListener({
+      kind: "response", id: request.id, gmId: gm.id, recipientUserId: player.id,
+      response: {
+        ok: true,
+        record: {
+          id: "saved-before-edit", name: "Before Save", revision: 1,
+          createdBy: { userId: player.id, name: player.name },
+          config: request.request.config
+        }
+      }
+    }, gm.id);
+    await until(() => !button.disabled);
+    assert.equal(root.querySelector('[data-zone="name"]').value, "Edited After Save");
+    assert.equal(builderDialog.window.content.querySelector(".pf2e-zone-builder"), root,
+      "a delayed response does not rerender over newer edits");
+    assert.equal(sent.length, 0, "overlapping Save and Save As did not send another write");
+    assert.ok(notices.some((notice) => notice.message.includes("editor changed during saving")));
+  } finally {
+    if (builderDialog?.element.isConnected) await builderDialog.close();
+    game.user = previous.user;
+    game.users = previous.users;
+    game.socket = previous.socket;
+  }
+});
+
 test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses a zone", async () => {
   try {
     await openZoneBuilder();
@@ -328,8 +392,12 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     change(root.querySelector('[data-field="save-enabled"]'), false);
     assert.equal(root.querySelector(".zb-create").disabled, false, "turning saves off restores readiness");
 
-    root.querySelector(".zb-create").click();
+    const createButton = root.querySelector(".zb-create");
+    createButton.click();
+    createButton.dispatchEvent(new window.Event("click", { bubbles: true }));
     await until(() => regions.size === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(regions.size, 1, "two clicks before validation finishes create only one Region");
     const region = [...regions][0];
     assert.equal(region.name, "Smoke Zone");
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.noSave.effects[0].uuid, effectUuid);

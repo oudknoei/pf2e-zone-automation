@@ -6,6 +6,40 @@ import { validateEffectItems } from "./effect-items.js";
 /* GM-only document operations and authorization for module socket requests. */
 
 let libraryOperationTail = Promise.resolve();
+const creationRequests = new Map();
+const CREATION_REQUEST_TTL_MS = 10 * 60 * 1000;
+
+/** Joins concurrent retries and remembers a completed result while a late socket reply is possible. */
+function oncePerCreationRequest(request, create) {
+  const operationId = request.operationId;
+  if (operationId == null) return create();
+  if (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(operationId)) {
+    throw new Error("Creation operation ID is invalid.");
+  }
+  const now = Date.now();
+  for (const [key, entry] of creationRequests) {
+    if (entry.completedAt && now - entry.completedAt > CREATION_REQUEST_TTL_MS) creationRequests.delete(key);
+  }
+  const key = `${request.requesterUserId}:${operationId}`;
+  const fingerprint = JSON.stringify({
+    sceneId: request.sceneId, sourceTokenUuid: request.sourceTokenUuid,
+    config: request.config, savedPresetId: request.savedPresetId,
+    savedPresetRevision: request.savedPresetRevision, chosenDamageType: request.chosenDamageType,
+    color: request.color, areaCenter: request.areaCenter
+  });
+  const prior = creationRequests.get(key);
+  if (prior) {
+    if (prior.fingerprint !== fingerprint) throw new Error("Creation operation ID was reused with different zone details.");
+    return prior.promise;
+  }
+  const entry = { fingerprint, promise: Promise.resolve().then(create), completedAt: null };
+  creationRequests.set(key, entry);
+  entry.promise.then(
+    () => { entry.completedAt = Date.now(); },
+    () => { if (creationRequests.get(key) === entry) creationRequests.delete(key); }
+  );
+  return entry.promise;
+}
 
 /** Keeps one GM client's library reads and writes in order so each mutation starts from the latest flag. */
 function serializeLibraryOperation(operation) {
@@ -344,6 +378,23 @@ export async function handleWorkerRequest(request) {
     const sourceActor = sourceToken.actor;
     if (!sourceActor) throw new Error("Source Token has no Actor.");
     assertSourcePermission(sourceActor, requester);
+    const operationId = request.operationId ?? null;
+    if (operationId) {
+      const existing = [...(scene.regions?.values?.() ?? scene.regions ?? [])].find((candidate) => {
+        const state = candidate.getFlag?.(FLAG_SCOPE, FLAG_KEY)?.state;
+        return state?.creationOperationId === operationId && state.createdBy?.userId === requester.id;
+      });
+      if (existing) {
+        const state = existing.getFlag(FLAG_SCOPE, FLAG_KEY).state;
+        return succeed({
+          action: "create", sceneId: scene.id, regionId: existing.id, regionUuid: existing.uuid,
+          warnings: [],
+          duration: state.duration?.formula
+            ? { formula: state.duration.formula, rounds: state.duration.rounds }
+            : null
+        });
+      }
+    }
     const savedPresetId = String(request.savedPresetId ?? "").trim() || null;
     if (savedPresetId) {
       const { data } = await ensureLibraryJournal();
@@ -352,7 +403,7 @@ export async function handleWorkerRequest(request) {
     const { region, durationResolution, warnings } = await createZoneDocument({
       rawConfig: request.config, scene, sourceActor, sourceToken, requester, savedPresetId,
       savedPresetRevision: request.savedPresetRevision ?? null,
-      chosenDamageType: request.chosenDamageType ?? null, color: request.color,
+      chosenDamageType: request.chosenDamageType ?? null, color: request.color, operationId,
       placeArea: async (regionData, config) => {
         const center = request.areaCenter;
         if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) {
@@ -400,7 +451,7 @@ export async function handleWorkerRequest(request) {
 
   try {
     switch (request.action) {
-      case "create": return await createZone();
+      case "create": return await oncePerCreationRequest(request, createZone);
       case "end": return await endZone();
       case "shielding-taunt": {
         const requester = getRequester();

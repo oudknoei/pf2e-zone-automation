@@ -71,7 +71,7 @@ export function savedPresetFromZone(record, zoneState) {
 }
 
 /** Gives finite zones the same duration metadata regardless of who created them. */
-function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution }) {
+function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId }) {
   const { combat = null, sourceCombatant = null } = combatForZone({
     sceneId: sourceToken.parent?.id,
     sourceTokenUuid: sourceToken.uuid,
@@ -85,6 +85,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
   return {
     createdWorldTime: Number(game.time?.worldTime ?? 0),
     createdBy: { userId: requester.id, name: requester.name },
+    creationOperationId: operationId ?? null,
     savedPresetId: savedPresetId ?? null,
     savedPresetRevision: savedPresetId ? presetRevision(savedPresetRevision) : null,
     sourceActorUuid: sourceActor.uuid,
@@ -120,7 +121,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
 }
 
 /** Shares validation, payload, activation, and duration handling while allowing each client to place an area in its own UI. */
-export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea }) {
+export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea, operationId = null }) {
   if (!scene || sourceToken?.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
   const config = requireValidConfig(rawConfig, sourceActor);
   const effectValidation = await validateEffectItems(config);
@@ -133,7 +134,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   const payload = {
     runtimeVersion: RUNTIME_VERSION,
     config,
-    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution })
+    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId })
   };
   const regionData = {
     name: config.name,

@@ -323,6 +323,52 @@ export async function openZoneBuilder() {
 
   let state = defaultConfig();
   let loadedPreset = null; // { id, createdBy, modifiedBy, revision, ... } for the currently loaded/saved library entry
+  let pendingMutation = null;
+  let editRevision = 0;
+  let creationAttempt = null;
+  let creationCompleted = false;
+
+  /** Reserves a write before validation can yield, and keeps its source and preset fixed. */
+  function beginMutation(root, kind) {
+    if (pendingMutation || (kind === "create" && creationCompleted)) return null;
+    pendingMutation = { kind };
+    try {
+      pendingMutation = {
+        kind, root, editRevision,
+        config: clone(syncState(root)),
+        scene: canvas.scene,
+        sourceActor,
+        sourceToken: sourceToken.document,
+        preset: loadedPreset ? clone(loadedPreset) : null,
+        color: game.user.color
+      };
+      refreshLiveValidation(root);
+      return pendingMutation;
+    } catch (error) {
+      pendingMutation = null;
+      throw error;
+    }
+  }
+
+  /** Leaves a later editor version untouched when an earlier save finishes. */
+  function mutationStillCurrent(operation) {
+    const currentRoot = dialog?.window?.content?.querySelector(".pf2e-zone-builder");
+    return currentRoot === operation.root && currentRoot.isConnected
+      && canvas.scene?.id === operation.scene?.id
+      && editRevision === operation.editRevision
+      && sourceToken.document.uuid === operation.sourceToken.uuid
+      && loadedPreset?.id === operation.preset?.id
+      && loadedPreset?.revision === operation.preset?.revision
+      && JSON.stringify(readConfig(currentRoot)) === JSON.stringify(operation.config);
+  }
+
+  /** Releases the write slot without re-enabling a button in a replaced editor. */
+  function finishMutation(operation) {
+    if (pendingMutation !== operation) return;
+    pendingMutation = null;
+    const currentRoot = dialog?.window?.content?.querySelector(".pf2e-zone-builder");
+    if (currentRoot?.isConnected) refreshLiveValidation(currentRoot);
+  }
 
   /** Protects shared presets from being overwritten by users who did not create them. */
   function canOverwritePreset(record = loadedPreset) {
@@ -1115,7 +1161,11 @@ export async function openZoneBuilder() {
         : pendingCount ? "Checking Effect Items…"
         : "Ready to create" + (warningCount ? " · " + warningCount + " warning" + (warningCount === 1 ? "" : "s") : "");
     }
-    if (create) create.disabled = errorCount > 0 || pendingCount > 0;
+    if (create) create.disabled = errorCount > 0 || pendingCount > 0 || Boolean(pendingMutation) || creationCompleted;
+    const save = root.querySelector(".zb-save");
+    if (save) save.disabled = Boolean(pendingMutation) || Boolean(loadedPreset && !canOverwritePreset());
+    const saveAs = root.querySelector(".zb-save-as");
+    if (saveAs) saveAs.disabled = Boolean(pendingMutation);
     refreshOperationStatus(root);
     return validation;
   }
@@ -1292,24 +1342,26 @@ export async function openZoneBuilder() {
     return fd ? String(fd.damageType ?? "") : undefined;
   }
 
-  /** Sends player requests to the GM and uses the same creation logic for direct GM actions. */
-  async function createZoneRegion(cfg, chosenDamageType) {
-    const savedPresetId = loadedPreset?.id ?? null;
-    const savedPresetRevision = loadedPreset?.revision ?? null;
-    if (savedPresetId && !(await fetchSavedZoneRecords()).some((record) => record.id === savedPresetId)) {
+  /** Sends one frozen creation request so a retry can reuse its original GM operation ID. */
+  async function createZoneRegion(operation, chosenDamageType, attempt) {
+    const cfg = operation.config;
+    const savedPresetId = operation.preset?.id ?? null;
+    const savedPresetRevision = operation.preset?.revision ?? null;
+    if (savedPresetId && !attempt.uncertain
+      && !(await fetchSavedZoneRecords()).some((record) => record.id === savedPresetId)) {
       throw new Error("The saved zone this configuration came from no longer exists. Use Save As to create a new preset.");
     }
     if (!game.user.isGM) {
-      let areaCenter = null;
-      if (cfg.mode === "area") {
+      if (cfg.mode === "area" && !attempt.areaCenter) {
         const dimensions = cfg.areaShape === "square" ? cfg.sideLength + "-foot square" : cfg.radius + "-foot circle";
-        areaCenter = await pickAreaCenter(cfg.name, dimensions);
-        if (!areaCenter) return null;
+        attempt.areaCenter = await pickAreaCenter(cfg.name, dimensions);
+        if (!attempt.areaCenter) return null;
       }
       const response = await callGMWorker("create", {
-        sceneId: canvas.scene.id, sourceTokenUuid: sourceToken.document.uuid,
+        operationId: attempt.operationId,
+        sceneId: operation.scene.id, sourceTokenUuid: operation.sourceToken.uuid,
         config: clone(cfg), savedPresetId, savedPresetRevision, chosenDamageType: chosenDamageType ?? null,
-        color: game.user.color, areaCenter
+        color: operation.color, areaCenter: attempt.areaCenter ?? null
       });
       if (response.duration?.formula) {
         ui.notifications.info("PF2e Zone duration: " + response.duration.rounds + " rounds (rolled " + response.duration.formula + ").");
@@ -1323,8 +1375,8 @@ export async function openZoneBuilder() {
     }
 
     const { region, durationResolution, warnings } = await createZoneDocument({
-      rawConfig: cfg, scene: canvas.scene, sourceActor, sourceToken: sourceToken.document,
-      requester: game.user, savedPresetId, savedPresetRevision, chosenDamageType, color: game.user.color,
+      rawConfig: cfg, scene: operation.scene, sourceActor: operation.sourceActor, sourceToken: operation.sourceToken,
+      requester: game.user, savedPresetId, savedPresetRevision, chosenDamageType, color: operation.color,
       placeArea: async (regionData, config) => {
         const dimensions = config.areaShape === "square" ? config.sideLength + "-foot square" : config.radius + "-foot circle";
         ui.notifications.info("Place the " + dimensions + " " + config.name + " area on the Scene.");
@@ -1346,30 +1398,37 @@ export async function openZoneBuilder() {
     return Array.isArray(response.records) ? response.records : [];
   }
 
-  /** Preserves ownership and revision checks when users save a zone for later reuse. */
-  async function saveCurrentPreset(root, { asNew = false } = {}) {
-    const cfg = syncState(root);
+  /** Saves the click-time configuration while leaving later editor changes intact. */
+  async function saveCurrentPreset(operation, { asNew = false } = {}) {
+    const { root, config: cfg, preset } = operation;
     const validation = await validateForAction(root, cfg);
     if (validation.errors.length) {
       await showValidation(validation);
       return false;
     }
-
-    if (!asNew && loadedPreset && !canOverwritePreset(loadedPreset)) {
-      ui.notifications.warn(`You can load ${presetLabel(loadedPreset)}, but only its creator or a GM can overwrite it. Use Save As instead.`);
+    if (!mutationStillCurrent(operation)) {
+      ui.notifications.warn("The editor changed while validating. Save again to use the current configuration.");
+      return false;
+    }
+    if (!asNew && preset && !canOverwritePreset(preset)) {
+      ui.notifications.warn(`You can load ${presetLabel(preset)}, but only its creator or a GM can overwrite it. Use Save As instead.`);
       return false;
     }
 
     const response = await callGMWorker("library-save", {
-      recordId: asNew ? null : (loadedPreset?.id ?? null),
-      expectedRevision: asNew ? null : (loadedPreset?.revision ?? null),
-      sourceActorUuid: sourceActor.uuid,
+      recordId: asNew ? null : (preset?.id ?? null),
+      expectedRevision: asNew ? null : (preset?.revision ?? null),
+      sourceActorUuid: operation.sourceActor.uuid,
       config: clone(cfg)
     });
+    for (const warning of response.warnings ?? []) ui.notifications.warn(warning);
+    if (!mutationStillCurrent(operation)) {
+      ui.notifications.info(`Saved '${presetLabel(response.record)}' to ${LIBRARY_JOURNAL_NAME}. The editor changed during saving; reopen the preset to see the saved version.`);
+      return true;
+    }
     loadedPreset = clone(response.record);
     state = normalizeConfig(response.record.config);
     ui.notifications.info(`${asNew ? "Saved copy" : "Saved"} '${presetLabel(loadedPreset)}' to ${LIBRARY_JOURNAL_NAME}.`);
-    for (const warning of response.warnings ?? []) ui.notifications.warn(warning);
     try {
       rerenderInsideDialog();
     } catch (error) {
@@ -1698,6 +1757,7 @@ export async function openZoneBuilder() {
     }
 
     root.addEventListener("change", (event) => {
+      editRevision++;
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
 
@@ -1728,6 +1788,7 @@ export async function openZoneBuilder() {
     });
 
     root.addEventListener("input", (event) => {
+      editRevision++;
       if (event.target instanceof HTMLElement) refreshLiveValidation(root);
     });
 
@@ -1923,20 +1984,28 @@ export async function openZoneBuilder() {
     });
 
     root.querySelector(".zb-save").addEventListener("click", async () => {
+      const operation = beginMutation(root, "save");
+      if (!operation) return;
       try {
-        await saveCurrentPreset(root, { asNew: false });
+        await saveCurrentPreset(operation, { asNew: false });
       } catch (error) {
         console.error("PF2e Zone save failed", error);
         ui.notifications.error(`Could not save zone: ${error.message ?? error}`);
+      } finally {
+        finishMutation(operation);
       }
     });
 
     root.querySelector(".zb-save-as").addEventListener("click", async () => {
+      const operation = beginMutation(root, "save-as");
+      if (!operation) return;
       try {
-        await saveCurrentPreset(root, { asNew: true });
+        await saveCurrentPreset(operation, { asNew: true });
       } catch (error) {
         console.error("PF2e Zone Save As failed", error);
         ui.notifications.error(`Could not save zone copy: ${error.message ?? error}`);
+      } finally {
+        finishMutation(operation);
       }
     });
 
@@ -1999,30 +2068,63 @@ export async function openZoneBuilder() {
     });
 
     root.querySelector(".zb-create").addEventListener("click", async () => {
-      const cfg = syncState(root);
-      const validation = await validateForAction(root, cfg, { requireCurrentSource: true });
-      if (validation.errors.length) {
-        await showValidation(validation);
-        return;
-      }
-      const chosenDamageType = await chooseActivationDamageType(cfg);
-      if (cfg.activationChoices?.damageType?.enabled && chosenDamageType === undefined) return;
-
-      const button = root.querySelector(".zb-create");
-      button.disabled = true;
-      /** Gives the creation flow one safe restoration callback whether or not the builder was hidden for placement. */
-      const restoreBuilder = cfg.mode === "area" ? hideBuilderForAreaPlacement() : () => {};
+      const operation = beginMutation(root, "create");
+      if (!operation) return;
+      let restoreBuilder = () => {};
       try {
+        const cfg = operation.config;
+        const validation = await validateForAction(root, cfg, { requireCurrentSource: true });
+        if (validation.errors.length) {
+          await showValidation(validation);
+          return;
+        }
+        if (!mutationStillCurrent(operation) || !selectionStillMatchesSource()) {
+          ui.notifications.warn("The editor or source selection changed while validating. Create again to use the current configuration.");
+          return;
+        }
+        const chosenDamageType = await chooseActivationDamageType(cfg);
+        if (cfg.activationChoices?.damageType?.enabled && chosenDamageType === undefined) return;
+        if (!mutationStillCurrent(operation) || !selectionStillMatchesSource()) {
+          ui.notifications.warn("The editor or source selection changed while choosing a damage type. Create again to use the current configuration.");
+          return;
+        }
+
+        const signature = JSON.stringify({
+          config: cfg, sceneId: operation.scene.id, sourceTokenUuid: operation.sourceToken.uuid,
+          presetId: operation.preset?.id ?? null, presetRevision: operation.preset?.revision ?? null,
+          chosenDamageType
+        });
+        if (creationAttempt?.uncertain && creationAttempt.signature !== signature) {
+          ui.notifications.warn("A previous creation request may still finish. Retry that configuration or check Manage Existing Zones before creating a different one.");
+          return;
+        }
+        if (!creationAttempt || creationAttempt.signature !== signature) {
+          creationAttempt = {
+            signature,
+            operationId: foundry.utils.randomID?.(20) ?? crypto.randomUUID(),
+            areaCenter: null,
+            uncertain: false
+          };
+        }
+        const attempt = creationAttempt;
+        restoreBuilder = cfg.mode === "area" ? hideBuilderForAreaPlacement() : () => {};
         globalThis.PF2EZoneBuilderLastConfig = clone(cfg);
-        const creation = await createZoneRegion(cfg, chosenDamageType);
+        const creation = await createZoneRegion(operation, chosenDamageType, attempt);
         if (!creation?.region && !creation?.regionId) {
-          restoreBuilder();
+          creationAttempt = null;
           ui.notifications.info("Zone creation was cancelled.");
           return;
         }
+        creationAttempt = null;
+        creationCompleted = true;
         console.log("PF2e Zone created", { region: creation.region, regionId: creation.regionId, config: cfg });
         ui.notifications.info(`PF2e Zone '${cfg.name}' created.`);
         for (const warning of creation.warnings ?? []) ui.notifications.warn(warning);
+        if (!mutationStillCurrent(operation)) {
+          restoreBuilder();
+          ui.notifications.warn("The zone was created from the earlier configuration. Your newer editor changes were kept; close and reopen the builder before creating another zone.");
+          return;
+        }
         try {
           await dialog.close();
         } catch (error) {
@@ -2032,10 +2134,12 @@ export async function openZoneBuilder() {
         }
       } catch (error) {
         restoreBuilder();
+        if (creationAttempt) creationAttempt.uncertain = error?.code === "PF2E_ZONE_REQUEST_TIMEOUT";
+        if (!creationAttempt?.uncertain) creationAttempt = null;
         console.error("PF2e Zone creation failed", error);
         ui.notifications.error(`PF2e Zone creation failed: ${error.message ?? error}`);
       } finally {
-        refreshLiveValidation(root);
+        finishMutation(operation);
       }
     });
   }
