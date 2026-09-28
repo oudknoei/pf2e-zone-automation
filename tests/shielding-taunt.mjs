@@ -2,12 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { executeShieldingTaunt } from "../scripts/shielding-taunt-worker.js";
 
-test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", async () => {
+test("Shielding Taunt measures from its owning Scene without requiring the GM to view it", async () => {
   const prior = Object.fromEntries([
     "canvas", "ChatMessage", "CONST", "fromUuid", "game"
   ].map((key) => [key, globalThis[key]]));
 
-  const scene = { id: "scene", tokens: [] };
+  const grid = {
+    type: 1,
+    size: 100,
+    sizeX: 100,
+    sizeY: 100,
+    distance: 5,
+    getTopLeftPoint: ({ x, y }) => ({
+      x: Math.floor(x / 100) * 100,
+      y: Math.floor(y / 100) * 100
+    })
+  };
+  const scene = { id: "scene", tokens: [], grid, dimensions: { size: 100, distance: 5 } };
   const guardian = {
     name: "Guardian",
     uuid: "Actor.guardian",
@@ -18,6 +29,7 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
     itemTypes: { effect: [] },
     heldShield: { name: "Tower Shield", isBroken: false, isDestroyed: false },
     system: { attributes: { shield: { raised: false } } },
+    dimensions: { height: 5 },
     getSelfRollOptions: () => ["origin:guardian"]
   };
   let createdEffect;
@@ -25,6 +37,7 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
   const target = {
     name: "Dragon",
     uuid: "Actor.dragon",
+    dimensions: { height: 10 },
     items: [],
     itemTypes: {
       effect: [{
@@ -43,20 +56,18 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
       deletedEffectIds = ids;
     }
   };
-  let measuredDistance = 60;
   const sourceToken = {
     documentName: "Token",
     uuid: "Scene.scene.Token.guardian",
     name: "Guardian",
     actor: guardian,
     parent: scene,
-    object: {
-      center: { x: 0, y: 0 },
-      distanceTo(otherToken) {
-        assert.equal(otherToken, targetToken.object);
-        return measuredDistance;
-      }
-    }
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    elevation: 0,
+    object: null
   };
   const targetToken = {
     documentName: "Token",
@@ -64,7 +75,12 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
     name: "Dragon",
     actor: target,
     parent: scene,
-    object: { center: { x: 800, y: 0 }, document: { elevation: 0 }, mechanicalBounds: { width: 200, height: 200 } }
+    x: 1200,
+    y: 0,
+    width: 2,
+    height: 2,
+    elevation: 0,
+    object: null
   };
   scene.tokens.push(sourceToken, targetToken);
   const tauntAction = { uuid: "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb", getRollOptions: () => ["origin:item:taunt"] };
@@ -75,10 +91,14 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
   let chat;
 
   try {
-    globalThis.canvas = { scene, grid: { measurePath: () => { throw new Error("Center measurement must not be used."); } } };
-    globalThis.CONST = { CHAT_MESSAGE_STYLES: { OTHER: 0 } };
+    globalThis.canvas = { scene: { id: "different-scene" } };
+    globalThis.CONST = { GRID_TYPES: { SQUARE: 1 }, CHAT_MESSAGE_STYLES: { OTHER: 0 } };
     globalThis.ChatMessage = {
-      getSpeaker: ({ actor, token }) => ({ actor: actor.uuid, token: token === sourceToken.object ? sourceToken.uuid : null }),
+      getSpeaker: ({ actor, scene: speakerScene, token }) => ({
+        actor: actor.uuid,
+        scene: speakerScene.id,
+        token: token === sourceToken ? sourceToken.uuid : null
+      }),
       create: async (data) => { chat = data; }
     };
     globalThis.game = {
@@ -110,11 +130,16 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
     assert.equal(createdEffect.system.context.origin.actor, guardian.uuid);
     assert.equal(createdEffect.system.context.target.actor, target.uuid);
     assert.deepEqual(deletedEffectIds, ["previous-taunt"]);
+    assert.deepEqual(chat.speaker, {
+      actor: guardian.uuid,
+      scene: scene.id,
+      token: sourceToken.uuid
+    });
     assert.match(chat.content, /Guardian raises Tower Shield and taunts <strong>Dragon<\/strong>/);
 
     // PF2e's nearest occupied squares can be in range when a Large token's center is not.
     guardian.items = guardian.items.filter((item) => item.slug !== "long-distance-taunt");
-    measuredDistance = 30;
+    targetToken.x = 600;
     const largeTargetResult = await executeShieldingTaunt({
       sourceTokenUuid: sourceToken.uuid,
       targetTokenUuid: targetToken.uuid
@@ -122,9 +147,16 @@ test("Shielding Taunt uses PF2e token distance and applies the auditory Taunt", 
     assert.equal(largeTargetResult.maximumRange, 30);
     assert.equal(largeTargetResult.distance, 30);
 
+    // Overlapping creature heights add no vertical distance.
+    targetToken.elevation = 5;
+    const overlappingElevationResult = await executeShieldingTaunt({
+      sourceTokenUuid: sourceToken.uuid,
+      targetTokenUuid: targetToken.uuid
+    });
+    assert.equal(overlappingElevationResult.distance, 30);
+
     // Elevation can put the same target beyond the 30-foot range.
-    targetToken.object.document.elevation = 20;
-    measuredDistance = 35;
+    targetToken.elevation = 15;
     await assert.rejects(
       executeShieldingTaunt({ sourceTokenUuid: sourceToken.uuid, targetTokenUuid: targetToken.uuid }),
       /Dragon is 35 feet away; maximum Taunt range is 30 feet/
@@ -143,11 +175,13 @@ test("overlapping Shielding Taunts leave only the latest target affected", async
     "canvas", "ChatMessage", "CONST", "fromUuid", "game"
   ].map((key) => [key, globalThis[key]]));
 
-  const scene = { id: "scene", tokens: [] };
+  const grid = { type: 1, size: 100, sizeX: 100, sizeY: 100, distance: 5 };
+  const scene = { id: "scene", tokens: [], grid, dimensions: { size: 100, distance: 5 } };
   const guardian = {
     uuid: "Actor.shared-guardian", name: "Guardian",
     items: [{ slug: "shielding-taunt", name: "Shielding Taunt" }],
     heldShield: { name: "Shield", isBroken: false, isDestroyed: false },
+    dimensions: { height: 5 },
     system: { attributes: { shield: { raised: true } } }
   };
   const tauntUuid = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
@@ -166,6 +200,7 @@ test("overlapping Shielding Taunts leave only the latest target affected", async
   function makeTarget(name) {
     return {
       uuid: "Actor." + name, name,
+      dimensions: { height: 5 },
       itemTypes: { effect: [] },
       async createEmbeddedDocuments(type, [source]) {
         assert.equal(type, "Item");
@@ -194,21 +229,21 @@ test("overlapping Shielding Taunts leave only the latest target affected", async
   const second = makeTarget("Second");
   const sourceToken = {
     documentName: "Token", uuid: "Scene.scene.Token.guardian", name: "Guardian",
-    actor: guardian, parent: scene, object: { distanceTo: () => 10 }
+    actor: guardian, parent: scene, x: 0, y: 0, width: 1, height: 1, elevation: 0, object: null
   };
   const firstToken = {
     documentName: "Token", uuid: "Scene.scene.Token.first", name: "First",
-    actor: first, parent: scene, object: {}
+    actor: first, parent: scene, x: 200, y: 0, width: 1, height: 1, elevation: 0, object: null
   };
   const secondToken = {
     documentName: "Token", uuid: "Scene.scene.Token.second", name: "Second",
-    actor: second, parent: scene, object: {}
+    actor: second, parent: scene, x: 300, y: 0, width: 1, height: 1, elevation: 0, object: null
   };
   scene.tokens.push(sourceToken, firstToken, secondToken);
 
   try {
-    globalThis.canvas = { scene };
-    globalThis.CONST = { CHAT_MESSAGE_STYLES: { OTHER: 0 } };
+    globalThis.canvas = { scene: { id: "different-scene" } };
+    globalThis.CONST = { GRID_TYPES: { SQUARE: 1 }, CHAT_MESSAGE_STYLES: { OTHER: 0 } };
     globalThis.ChatMessage = {
       getSpeaker: () => ({}),
       create: async () => {}

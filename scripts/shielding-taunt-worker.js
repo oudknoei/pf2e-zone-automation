@@ -65,15 +65,152 @@ function previousTauntsFrom(guardian) {
   return prior;
 }
 
-/** Uses PF2e's token distance so Taunt range includes creature footprints and elevation. */
+/** Reads a numeric TokenDocument source value without requiring a rendered Token. */
+function tokenNumber(token, property, fallback = null) {
+  const value = Number(token?._source?.[property] ?? token?.[property] ?? fallback);
+  return Number.isFinite(value) ? value : NaN;
+}
+
+/** Returns whether two plain rectangular bounds overlap. */
+function boundsOverlap(first, second) {
+  return first.x < second.x + second.width
+    && first.x + first.width > second.x
+    && first.y < second.y + second.height
+    && first.y + first.height > second.y;
+}
+
+/** Snaps token bounds toward another token the same way PF2e's cuboid measurement does. */
+function snapBounds(bounds, toward, gridWidth) {
+  const roundX = bounds.x < toward.x ? Math.ceil : Math.floor;
+  const roundY = bounds.y < toward.y ? Math.ceil : Math.floor;
+  return {
+    x: roundX(bounds.x / gridWidth) * gridWidth,
+    y: roundY(bounds.y / gridWidth) * gridWidth,
+    width: Math.ceil(bounds.width / gridWidth) * gridWidth,
+    height: Math.ceil(bounds.height / gridWidth) * gridWidth,
+  };
+}
+
+/** Measures the pixel separation between rectangular token bounds. */
+function boundsSeparation(first, second, gridWidth) {
+  if (boundsOverlap(first, second)) return { dx: 0, dy: 0 };
+
+  const snappedFirst = snapBounds(first, second, gridWidth);
+  const snappedSecond = snapBounds(second, first, gridWidth);
+  const dx = Math.max(
+    snappedFirst.x - (snappedSecond.x + snappedSecond.width),
+    snappedSecond.x - (snappedFirst.x + snappedFirst.width),
+    0,
+  ) + gridWidth;
+  const dy = Math.max(
+    snappedFirst.y - (snappedSecond.y + snappedSecond.height),
+    snappedSecond.y - (snappedFirst.y + snappedFirst.height),
+    0,
+  ) + gridWidth;
+  return { dx, dy };
+}
+
+/** Builds PF2e-compatible mechanical bounds from a TokenDocument and its owning Scene. */
+function tokenBounds(token, scene) {
+  const grid = scene.grid;
+  const x = tokenNumber(token, "x");
+  const y = tokenNumber(token, "y");
+  const widthUnits = tokenNumber(token, "width");
+  const heightUnits = tokenNumber(token, "height");
+  const gridWidth = Number(grid.sizeX ?? grid.size);
+  const gridHeight = Number(grid.sizeY ?? grid.size);
+  const bounds = {
+    x,
+    y,
+    width: widthUnits * gridWidth,
+    height: heightUnits * gridHeight,
+  };
+
+  if (widthUnits >= 1) return bounds;
+
+  const center = {
+    x: x + bounds.width / 2,
+    y: y + bounds.height / 2,
+  };
+  const topLeft = grid.getTopLeftPoint?.(center);
+  return {
+    x: Number(topLeft?.x),
+    y: Number(topLeft?.y),
+    width: Math.max(gridWidth, bounds.width),
+    height: Math.max(gridHeight, bounds.height),
+  };
+}
+
+/** Measures vertical separation between creature volumes in scene pixels. */
+function elevationSeparation(sourceToken, targetToken, sourceBounds, targetBounds, scene, gridWidth) {
+  const sourceElevation = tokenNumber(sourceToken, "elevation", 0);
+  const targetElevation = tokenNumber(targetToken, "elevation", 0);
+  if (sourceElevation === targetElevation || !sourceToken.actor || !targetToken.actor) return 0;
+
+  const sceneSize = Number(scene.dimensions?.size ?? scene.grid.size);
+  const sceneDistance = Number(scene.dimensions?.distance ?? scene.grid.distance);
+  const sourceHeight = Number(sourceToken.actor.dimensions?.height);
+  const targetHeight = Number(targetToken.actor.dimensions?.height);
+  const sourceVerticalBounds = {
+    x: sourceBounds.x,
+    y: Math.floor(sourceElevation / sceneDistance * sceneSize),
+    width: sourceBounds.width,
+    height: Math.floor(sourceHeight / sceneDistance * sceneSize),
+  };
+  const targetVerticalBounds = {
+    x: targetBounds.x,
+    y: Math.floor(targetElevation / sceneDistance * sceneSize),
+    width: targetBounds.width,
+    height: Math.floor(targetHeight / sceneDistance * sceneSize),
+  };
+  const verticalOverlap = targetVerticalBounds.y + targetVerticalBounds.height > sourceVerticalBounds.y
+    && targetVerticalBounds.y < sourceVerticalBounds.y + sourceVerticalBounds.height;
+  if (verticalOverlap) return 0;
+
+  const snappedSource = snapBounds(sourceVerticalBounds, targetVerticalBounds, gridWidth);
+  const snappedTarget = snapBounds(targetVerticalBounds, sourceVerticalBounds, gridWidth);
+  return Math.max(
+    snappedSource.y - (snappedTarget.y + snappedTarget.height),
+    snappedTarget.y - (snappedSource.y + snappedSource.height),
+    0,
+  ) + gridWidth;
+}
+
+/** Measures Taunt range from TokenDocuments on their owning Scene, even when it is not viewed. */
 function measureTauntRange(sourceToken, targetToken) {
   if (sourceToken.parent?.id !== targetToken.parent?.id) {
     throw new Error("The Guardian and target must be on the same Scene.");
   }
-  if (canvas?.scene?.id !== sourceToken.parent?.id || !sourceToken.object || !targetToken.object) {
-    throw new Error("Shielding Taunt requires the active GM to have the encounter Scene open.");
+
+  const scene = sourceToken.parent;
+  const grid = scene?.grid;
+  const sourceElevation = tokenNumber(sourceToken, "elevation", 0);
+  const targetElevation = tokenNumber(targetToken, "elevation", 0);
+  const squareGridType = globalThis.CONST?.GRID_TYPES?.SQUARE ?? 1;
+  let distance;
+
+  if (grid?.type !== squareGridType) {
+    const measurement = grid?.measurePath?.([
+      { x: tokenNumber(sourceToken, "x"), y: tokenNumber(sourceToken, "y"), elevation: sourceElevation },
+      { x: tokenNumber(targetToken, "x"), y: tokenNumber(targetToken, "y"), elevation: targetElevation },
+    ]);
+    distance = Math.round(measurement?.distance);
+  } else {
+    const gridWidth = Number(grid.sizeX ?? grid.size);
+    const gridDistance = Number(scene.dimensions?.distance ?? grid.distance);
+    const sourceBounds = tokenBounds(sourceToken, scene);
+    const targetBounds = tokenBounds(targetToken, scene);
+    const { dx, dy } = boundsSeparation(sourceBounds, targetBounds, gridWidth);
+    const dz = elevationSeparation(sourceToken, targetToken, sourceBounds, targetBounds, scene, gridWidth);
+    const [smallest, middle, largest] = [dx, dy, dz]
+      .map((pixels) => Math.ceil(Math.abs(pixels / gridWidth)))
+      .sort((first, second) => first - second);
+    const doubleDiagonal = smallest;
+    const diagonal = middle - smallest;
+    const straight = largest - middle;
+    distance = Math.floor(doubleDiagonal * 1.75 + diagonal * 1.5 + straight) * gridDistance;
   }
-  const distance = sourceToken.object.distanceTo?.(targetToken.object);
+
   if (!Number.isFinite(distance)) throw new Error("The distance to the Taunt target could not be measured.");
   return distance;
 }
@@ -160,7 +297,7 @@ export async function executeShieldingTaunt({ sourceTokenUuid, targetTokenUuid }
     }
 
     await ChatMessage.create({
-      speaker: ChatMessage.getSpeaker({ actor: guardian, token: sourceToken.object }),
+      speaker: ChatMessage.getSpeaker({ actor: guardian, scene: sourceToken.parent, token: sourceToken }),
       style: CONST.CHAT_MESSAGE_STYLES.OTHER,
       content: `<p><strong>Shielding Taunt</strong>: ${escapeHtml(guardian.name)} raises ${escapeHtml(shield.name)} and taunts <strong>${escapeHtml(targetToken.name)}</strong>.</p><p><em>The Taunt has the auditory trait.</em></p>`
     });
