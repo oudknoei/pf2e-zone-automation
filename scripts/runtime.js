@@ -833,11 +833,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const actor = token.actor;
           if (!actor) return false;
 
-          const duplicate = actor.items.find((item) => {
+          const matches = Array.from(actor.items.values()).filter((item) => {
             const flag = this.zoneItemFlag(item);
             return flag?.kind === "effect" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.originalUuid === effect.uuid;
           });
-          if (duplicate) return true;
+          // PF2e can keep expired effects on the Actor, but their rules no longer apply.
+          // A live match still represents this zone result; expired matches must be replaced.
+          if (matches.some((item) => item.isExpired !== true && item.system?.expired !== true)) return true;
 
           const template = await fromUuid(effect.uuid);
           if (!template || template.documentName !== "Item" || template.type !== "effect") {
@@ -870,6 +872,22 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             originalUuid: effect.uuid,
             removal: effect.removal
           });
+
+          for (const expired of matches) {
+            try {
+              await this.deleteOwnedItem(expired, "expired zone Effect replacement");
+            } catch (error) {
+              console.error("PF2e Zone: expired Effect Item replacement failed", expired, error);
+              ui.notifications.error(`PF2e Zone: failed to replace an expired Effect Item on ${actor.name}. See console.`);
+              return false;
+            }
+            // Only forget a prior application after its embedded Item is gone.
+            for (const [recordId, record] of Object.entries(payload.state.applied)) {
+              if (record?.kind === "effect" && record.actorUuid === actor.uuid && record.itemId === expired.id) {
+                delete payload.state.applied[recordId];
+              }
+            }
+          }
 
           let created = null;
           try {
