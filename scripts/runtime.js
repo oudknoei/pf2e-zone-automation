@@ -1032,18 +1032,50 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return this.addOwnedCondition(region, payload, block, token, condition);
         },
 
-        /** Copies Effect Items with cleanup metadata so their removal follows the zone configuration. */
-        async addEffectItem(region, payload, block, token, effect) {
+        /** Gives pre-outcome Effect Items a durable identity without duplicating an active legacy application. */
+        async adoptLegacyEffectOutcome(item, payload, outcomeKey) {
+          const flag = this.zoneItemFlag(item);
+          if (!flag || flag.outcomeKey) return true;
+          try {
+            const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}.outcomeKey`;
+            if (typeof item.update === "function") await item.update({ [path]: outcomeKey });
+            else fu.setProperty(item, path, outcomeKey);
+          } catch (error) {
+            console.error("PF2e Zone: legacy Effect Item identity migration failed", item, error);
+            ui.notifications.error(`PF2e Zone: failed to update an existing Effect Item on ${item.parent?.name ?? "the target"}. See console.`);
+            return false;
+          }
+          for (const record of Object.values(payload.state.applied)) {
+            if (record?.kind === "effect" && record.actorUuid === item.parent?.uuid && record.itemId === item.id) {
+              record.outcomeKey = outcomeKey;
+            }
+          }
+          return true;
+        },
+
+        /** Copies Effect Items with outcome and cleanup metadata so distinct result lifecycles cannot collide. */
+        async addEffectItem(region, payload, block, token, effect, outcomeKey = "noSave") {
           const actor = token.actor;
           if (!actor) return false;
 
-          const matches = Array.from(actor.items.values()).filter((item) => {
+          const candidates = Array.from(actor.items.values()).filter((item) => {
             const flag = this.zoneItemFlag(item);
             return flag?.kind === "effect" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.originalUuid === effect.uuid;
+          });
+          const matches = candidates.filter((item) => {
+            const flag = this.zoneItemFlag(item);
+            return flag.removal === effect.removal && flag.outcomeKey === outcomeKey;
+          });
+          const legacyMatches = candidates.filter((item) => {
+            const flag = this.zoneItemFlag(item);
+            return flag.removal === effect.removal && !flag.outcomeKey;
           });
           // PF2e can keep expired effects on the Actor, but their rules no longer apply.
           // A live match still represents this zone result; expired matches must be replaced.
           if (matches.some((item) => item.isExpired !== true && item.system?.expired !== true)) return true;
+          const liveLegacy = legacyMatches.find((item) => item.isExpired !== true && item.system?.expired !== true);
+          if (liveLegacy) return this.adoptLegacyEffectOutcome(liveLegacy, payload, outcomeKey);
+          const expiredMatches = matches.length ? matches : legacyMatches;
 
           const template = await fromUuid(effect.uuid);
           if (!template || template.documentName !== "Item" || template.type !== "effect") {
@@ -1097,10 +1129,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             blockId: block.id,
             tokenUuid: token.uuid,
             originalUuid: effect.uuid,
-            removal: effect.removal
+            removal: effect.removal,
+            outcomeKey
           });
 
-          for (const expired of matches) {
+          for (const expired of expiredMatches) {
             try {
               await this.deleteOwnedItem(expired, "expired zone Effect replacement");
             } catch (error) {
@@ -1141,7 +1174,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             itemId: created.id,
             blockId: block.id,
             originalUuid: effect.uuid,
-            removal: effect.removal
+            removal: effect.removal,
+            outcomeKey
           };
           return true;
         },
@@ -1270,7 +1304,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
           for (const effect of outcome.effects ?? []) {
             if (effect.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
-            const applied = await this.addEffectItem(region, payload, block, token, effect);
+            const applied = await this.addEffectItem(region, payload, block, token, effect, outcomeKey);
             if (effect.removal === "on-exit") exitBoundAffected = applied || exitBoundAffected;
             else affected = applied || affected;
           }

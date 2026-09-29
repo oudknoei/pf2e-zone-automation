@@ -46,6 +46,9 @@ function effectFixture(templateSource = { type: "effect", system: { duration: { 
           id,
           parent: actor,
           get isExpired() { return Boolean(this.system.expired); },
+          async update(changes) {
+            for (const [path, value] of Object.entries(changes)) foundry.utils.setProperty(this, path, value);
+          },
           async delete() {
             if (failDeletion) throw new Error("Simulated deletion failure");
             items.delete(id);
@@ -157,6 +160,47 @@ test("an expired tracked Effect Item is replaced and only the new application re
 
   assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect), true);
   assert.equal(f.creations, 2, "an active matching Item is not recreated");
+});
+
+test("Effect Item identity separates outcomes and cleanup policies", async () => {
+  const f = effectFixture();
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "failure"), true);
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "failure"), true);
+  assert.equal(f.creations, 1, "the same outcome and removal policy reuse one Item");
+
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "success"), true);
+  f.effect.removal = "on-exit";
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "success"), true);
+  assert.equal(f.creations, 3);
+
+  const flags = [...f.actor.items.values()].map((item) => item.flags.world.pf2eZone);
+  assert.deepEqual(flags.map(({ outcomeKey, removal }) => [outcomeKey, removal]), [
+    ["failure", "item-duration"],
+    ["success", "item-duration"],
+    ["success", "on-exit"]
+  ]);
+  assert.deepEqual(Object.values(f.payload.state.applied).map(({ outcomeKey, removal }) => [outcomeKey, removal]), [
+    ["failure", "item-duration"],
+    ["success", "item-duration"],
+    ["success", "on-exit"]
+  ]);
+});
+
+test("an active legacy Effect Item adopts the first matching outcome identity", async () => {
+  const f = effectFixture();
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect), true);
+  const [item] = f.actor.items.values();
+  delete item.flags.world.pf2eZone.outcomeKey;
+  const [record] = Object.values(f.payload.state.applied);
+  delete record.outcomeKey;
+
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "failure"), true);
+  assert.equal(f.creations, 1);
+  assert.equal(item.flags.world.pf2eZone.outcomeKey, "failure");
+  assert.equal(record.outcomeKey, "failure");
+
+  assert.equal(await runtime.addEffectItem(f.region, f.payload, f.block, f.token, f.effect, "success"), true);
+  assert.equal(f.creations, 2, "a different outcome no longer collides with the adopted Item");
 });
 
 test("failed expired-Item deletion keeps the old tracking record for a later retry", async () => {
