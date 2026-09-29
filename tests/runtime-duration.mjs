@@ -140,6 +140,81 @@ test("failed Item cleanup retains records and retries after reconnect", async ()
   });
 });
 
+test("deleting an affected unlinked Token clears its synthetic Actor records before exit", async () => {
+  await withFiniteZoneFixture(async ({ region }) => {
+    const targetToken = {
+      uuid: "Scene.scene.Token.deleted-target",
+      actorLink: false
+    };
+    region.getFlag().state.applied = {
+      exit: {
+        actorUuid: "Scene.scene.Token.deleted-target.Actor.synthetic",
+        tokenUuid: targetToken.uuid,
+        itemId: "exit-effect",
+        removal: "on-exit"
+      },
+      end: {
+        actorUuid: "Scene.scene.Token.deleted-target.Actor.synthetic",
+        tokenUuid: targetToken.uuid,
+        itemId: "end-effect",
+        removal: "zone-end"
+      },
+      duration: {
+        actorUuid: "Scene.scene.Token.deleted-target.Actor.synthetic",
+        tokenUuid: targetToken.uuid,
+        itemId: "duration-effect",
+        removal: "item-duration"
+      }
+    };
+
+    await runtime.reconcileDeletedToken(targetToken);
+
+    assert.deepEqual(region.getFlag().state.applied, {});
+  });
+});
+
+test("a deleted target Actor is completed cleanup instead of blocking zone dismissal", async () => {
+  await withFiniteZoneFixture(async ({ scene, region }) => {
+    region.getFlag().state.applied = {
+      deleted: {
+        actorUuid: "Scene.scene.Token.deleted-target.Actor.synthetic",
+        tokenUuid: "Scene.scene.Token.deleted-target",
+        itemId: "owned-effect",
+        removal: "zone-end"
+      }
+    };
+
+    await runtime.endZone(region, "target deleted before dismissal");
+
+    assert.equal(scene.regions.has(region.id), false);
+    assert.deepEqual(region.getFlag().state.applied, {});
+  });
+});
+
+test("Actor deletion reconciliation removes only records belonging to that Actor", async () => {
+  await withFiniteZoneFixture(async ({ region }) => {
+    const deletedActor = { uuid: "Actor.deleted-target" };
+    region.getFlag().state.applied = {
+      deleted: {
+        actorUuid: deletedActor.uuid,
+        tokenUuid: "Scene.scene.Token.deleted-target",
+        itemId: "deleted-effect",
+        removal: "zone-end"
+      },
+      retained: {
+        actorUuid: "Actor.other-target",
+        tokenUuid: "Scene.scene.Token.other-target",
+        itemId: "retained-effect",
+        removal: "zone-end"
+      }
+    };
+
+    await runtime.reconcileDeletedActor(deletedActor);
+
+    assert.deepEqual(Object.keys(region.getFlag().state.applied), ["retained"]);
+  });
+});
+
 test("failed Region deletion rejects dismissal and remains retryable", async () => {
   await withFiniteZoneFixture(async ({ scene, region }) => {
     const priorUi = globalThis.ui;

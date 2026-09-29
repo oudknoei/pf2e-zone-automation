@@ -1326,17 +1326,84 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Retains the cleanup record until its Actor is available and its Item is gone. */
+        /** Retains the cleanup record for real Item failures but completes when the target no longer exists. */
         async deleteAppliedRecord(payload, recordId) {
           const record = payload.state.applied[recordId];
           if (!record) return;
           const { actor } = await this.resolveTarget(record);
-          if (!actor?.items?.get) {
+          if (!actor) {
+            delete payload.state.applied[recordId];
+            return;
+          }
+          if (!actor.items?.get) {
             throw new Error(`PF2e Zone: target Actor for Item '${record.itemId}' is unavailable; cleanup can be retried.`);
           }
           const item = actor.items.get(record.itemId);
           if (item) await this.deleteOwnedItem(item, "zone-owned Item cleanup");
           delete payload.state.applied[recordId];
+        },
+
+        /** Reconciles effects after a Token deletion, including all records owned by an unlinked synthetic Actor. */
+        async reconcileDeletedToken(token) {
+          if (!this.isAuthority() || !token?.uuid) return;
+          const actorIsLinked = token.actorLink === true;
+          const failures = [];
+          for (const region of this.allZones()) {
+            try {
+              const snapshot = this.readPayload(region);
+              if (snapshot?.config?.mode === "emanation" && snapshot.state.sourceTokenUuid === token.uuid) {
+                await this.endZone(region, "source token deleted");
+                continue;
+              }
+
+              const hasMatchingRecord = Object.values(snapshot?.state?.applied ?? {}).some((record) =>
+                record.tokenUuid === token.uuid && (!actorIsLinked || record.removal === "on-exit")
+              );
+              if (!hasMatchingRecord) continue;
+
+              await this.withState(region, async (payload) => {
+                for (const [recordId, record] of Object.entries(payload.state.applied)) {
+                  if (record.tokenUuid !== token.uuid) continue;
+                  if (actorIsLinked) {
+                    if (record.removal === "on-exit") await this.deleteAppliedRecord(payload, recordId);
+                  } else {
+                    // Deleting an unlinked Token also deletes its synthetic Actor
+                    // and every embedded Item, so only the stale record remains.
+                    delete payload.state.applied[recordId];
+                  }
+                }
+              });
+            } catch (error) { failures.push(error); }
+          }
+          if (failures.length) {
+            throw new AggregateError(failures, `PF2e Zone: deleted Token cleanup failed for ${failures.length} zone(s).`);
+          }
+        },
+
+        /** Reconciles records after Actor deletion because its embedded Items have already been removed by Foundry. */
+        async reconcileDeletedActor(actor) {
+          if (!this.isAuthority() || !actor?.uuid) return;
+          const failures = [];
+          for (const region of this.allZones()) {
+            try {
+              const snapshot = this.readPayload(region);
+              if (snapshot?.state?.sourceActorUuid === actor.uuid) {
+                await this.endZone(region, "source actor deleted");
+                continue;
+              }
+              if (!Object.values(snapshot?.state?.applied ?? {}).some((record) => record.actorUuid === actor.uuid)) {
+                continue;
+              }
+              await this.withState(region, (payload) => {
+                for (const [recordId, record] of Object.entries(payload.state.applied)) {
+                  if (record.actorUuid === actor.uuid) delete payload.state.applied[recordId];
+                }
+              });
+            } catch (error) { failures.push(error); }
+          }
+          if (failures.length) {
+            throw new AggregateError(failures, `PF2e Zone: deleted Actor cleanup failed for ${failures.length} zone(s).`);
+          }
         },
 
         /** Removes only exit-bound effects when a creature leaves while preserving other zone results. */
@@ -2615,13 +2682,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               .catch((e) => console.error("PF2e Zone GM handoff activation", e)), 0));
 
           on("deleteToken", (token) => {
-            if (!runtime.isAuthority()) return;
-            for (const region of runtime.allZones()) {
-              const payload = runtime.readPayload(region);
-              if (payload?.config?.mode === "emanation" && payload.state.sourceTokenUuid === token.uuid) {
-                runtime.endZone(region, "source token deleted").catch((e) => console.error("PF2e Zone source cleanup", e));
-              }
-            }
+            runtime.reconcileDeletedToken(token)
+              .catch((e) => console.error("PF2e Zone token deletion cleanup", e));
+          });
+          on("deleteActor", (actor) => {
+            runtime.reconcileDeletedActor(actor)
+              .catch((e) => console.error("PF2e Zone Actor deletion cleanup", e));
           });
 
           on("createRegion", (region) => runtime.rememberAreaBoundary(region));
