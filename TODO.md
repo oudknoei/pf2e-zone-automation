@@ -1,39 +1,20 @@
 # TODO
 
-## High-priority audit findings (2026-09-28)
-
-### P1 - Correctness and recovery
-
-- [x] **Treat a deleted target as completed cleanup instead of leaving the zone permanently stuck.** Missing target Actors and already-absent Items now complete cleanup, while genuine Item deletion failures retain their records for retry. `deleteToken` and `deleteActor` hooks proactively reconcile stale applied records, including every embedded Item record for a deleted unlinked Token's synthetic Actor. Regression coverage includes deletion before exit cleanup and before zone dismissal. Code: [runtime.js](scripts/runtime.js).
-
-- [x] **Only start condition-recovery immunity when the watched condition was actually applied.** Outcome application now records exact created/reused Condition Item IDs separately from the general affected result. Recovery watchers require the configured condition in the resolved outcome and a live matching Item, then follow that specific Item until it ends; legacy slug-only watchers remain compatible. Validation also requires the recovery condition in at least one active outcome. Code: [runtime.js](scripts/runtime.js), [zone-config.js](scripts/zone-config.js).
-
-- [x] **Make save delivery recoverable when chat creation fails.** Pending saves now persist delivery status, attempt metadata, errors, and the created ChatMessage ID. A failed post visibly warns the active GM while leaving the request queued; startup and active-GM handoff retry missing cards. Recovery searches for the request's unique identifier before posting, so a lost delivery-state write cannot duplicate a successful card, and a deleted card is recreated while its save remains unanswered. Code: [runtime.js](scripts/runtime.js), [save-delivery.mjs](tests/save-delivery.mjs).
-
-- [x] **Honor “Every time this happens” while an earlier save is unanswered.** Save requests still reconcile missed completed rolls first, but an unanswered request suppresses a new one only for limited repeat policies. Blocks configured for every occurrence now retain independent pending IDs, event batch IDs, and chat cards for overlapping Entry, turn, or trait events; once-per-round and once-per-zone behavior remains unchanged. Code: [runtime.js](scripts/runtime.js), [save-delivery.mjs](tests/save-delivery.mjs).
-
-- [x] **Run a full recovery pass when active-GM authority changes.** Startup, `userConnected`, and `updateUser` now share one debounced and serialized coordinator. It repairs linked-condition watches, orphaned Items, unfinished dismissal and exit cleanup, disabled zones, completed and undelivered saves, overdue durations, unfinished activation, and HP baselines in a fixed order; one failed repair is logged without preventing the remaining steps. The live Foundry handoff scenario is no longer marked as an expected failure. Code: [runtime.js](scripts/runtime.js), [runtime-duration.mjs](tests/runtime-duration.mjs), [lifecycle.spec.mjs](tests/foundry/lifecycle.spec.mjs).
-
-- [x] **Fix on-exit ownership for multiple Tokens linked to the same Actor.** On-exit cleanup now evaluates current eligible occupancy by Actor UUID, so a shared Condition or Effect Item survives either linked Token leaving first and is removed only after the Actor's last eligible representation exits. The same rule covers deferred movement recovery, late application, and linked-Token deletion while legacy Token-only records retain their prior behavior. Unit coverage exercises both entry and exit orders, and the real-Foundry lifecycle scenario now verifies retention followed by final cleanup without an expected-failure marker. Code: [runtime.js](scripts/runtime.js), [runtime-duration.mjs](tests/runtime-duration.mjs), [lifecycle.spec.mjs](tests/foundry/lifecycle.spec.mjs).
-
-- [x] **Include cleanup semantics in Effect Item identity.** Effect Item matching now includes outcome and removal policy alongside zone, block, and source UUID. Reusing one Effect in different outcomes or with `item-duration`, `on-exit`, and `zone-end` therefore creates independently tracked applications, while exact repeats still deduplicate. Flags and Region cleanup records persist the outcome identity, and active Items created by older versions adopt the first matching outcome without being duplicated. Code: [runtime.js](scripts/runtime.js), [effect-expiry.mjs](tests/effect-expiry.mjs).
-
-- [x] **Make Shielding Taunt transactional and idempotent.** Each activation now carries a stable operation ID, concurrent and timed-out retries reuse it, and the authoritative GM caches completed responses. The replacement Effect persists the operation identity so interrupted cleanup resumes without creating another Effect; failed cleanup rolls the replacement back when possible, while a failed rollback remains recoverable by retrying the same operation. Completed chat messages also identify the operation, preventing a late retry from reverting a newer Taunt. Chat failure returns mechanical success with a visible warning, and both former real-Foundry expected failures are regression tests. Code: [shielding-taunt-worker.js](scripts/shielding-taunt-worker.js), [shielding-taunt.js](scripts/shielding-taunt.js), [worker.js](scripts/worker.js), [transport.js](scripts/transport.js), [shielding-taunt.mjs](tests/shielding-taunt.mjs), [lifecycle.spec.mjs](tests/foundry/lifecycle.spec.mjs).
-
-### P2 - Functionality and user experience
-
-- [x] **Define and consistently enforce “Creator only” chat visibility — no change required.** Keep the current visibility split: formula-duration messages and configured module chat alerts follow the zone's visibility, while interactive save requests and damage/healing result cards remain public by design. This behavior supports shared table resolution and is functioning as intended; the existing builder and README already describe Creator only as applying to zones and their module chat alerts. Code: [runtime.js](scripts/runtime.js), [duration-chat.js](scripts/duration-chat.js), [builder.js](scripts/builder.js), [README.md](README.md).
-
-- [x] **Validate imported activation-choice damage types against PF2e's current catalog.** Import normalization, editor validation, and final creation now reject shared damage slugs missing from `CONFIG.PF2E.damageTypes`, with an explicit message telling users to update stale presets. `untyped` remains supported consistently with the builder. Activation-choice formulas are validated using every selectable current damage type instead of the unrelated `untyped` fallback, and both direct-GM and worker creation reject invalid imported options before creating a Region. Code: [zone-config.js](scripts/zone-config.js), [zone-creation.js](scripts/zone-creation.js), [config-input.mjs](tests/config-input.mjs), [zone-creation.mjs](tests/zone-creation.mjs).
-
-- [x] **Remove Shielding Taunt's dependency on the active GM viewing the encounter Scene.** Range is now measured from TokenDocument geometry and the owning Scene/grid APIs, retaining the same-scene, footprint, elevation, and range checks without changing the GM's view. Chat speaker attribution also uses the TokenDocument rather than a rendered canvas object. Code: [shielding-taunt-worker.js](scripts/shielding-taunt-worker.js).
-
-- [x] **Audit and remove unused hard module dependencies — no change required.** Keep `advanced-macros`, `pf2e-flatcheck-helper`, and `lib-wrapper` as required dependencies. Although the module's own runtime does not currently call each dependency directly, their functionality improves the overall zone-automation experience and requiring them is intentional. The existing manifest, smoke test, and README already reflect the desired behavior. Code: [module.json](module.json), [module-smoke.mjs](tests/module-smoke.mjs), [README.md](README.md).
-
-- [x] **Add a small real-Foundry integration suite for lifecycle-critical paths.** A Playwright suite now drives four real browser users in a disposable Foundry V14/PF2e world and covers creator-only ChatMessage visibility, authenticated socket sender IDs, synthetic-Actor target deletion and dismissal, genuine PF2e save-roll recovery while unanswered saves remain pending, linked-token exit ordering, remote-GM area movement while the active GM views another Scene, Shielding Taunt deletion/chat partial failures, and active-GM handoff recovery. Lifecycle regressions fail visibly instead of remaining behind expected-failure markers. A Node 24 launcher isolates the licensed Foundry data, and CI provisions current PF2e/dependencies and runs the suite when protected Foundry download/license inputs are configured. Code: [verify.yml](.github/workflows/verify.yml), [foundry tests](tests/foundry), [foundry-integration.mjs](tools/foundry-integration.mjs).
-
-## Existing backlog
-
-1. **Feature: Support for Wall type areas.**
-
-2. [x] **Improvement: Limit retained runtime history and avoid unchanged writes.** Persistence now retains damage/healing roll caches and save tombstones only while a matching pending save can consume them, with a compatibility fallback for legacy pending records that lack batch identity. Deleted or missing embedded Items are removed from the applied-item ledger through Item hooks and active-GM recovery. Region writes compare normalized payloads and skip unchanged snapshots, while condition reconciliation prefilters zones to those watching the changed Actor. Regression coverage verifies bounded save history, stale-record repair, watcher filtering, and zero writes for unchanged transactions. Code: [runtime.js](scripts/runtime.js), [runtime-retention.mjs](tests/runtime-retention.mjs), [save-result-authorization.mjs](tests/save-result-authorization.mjs), [late-save-exit.mjs](tests/late-save-exit.mjs), [lifecycle.spec.mjs](tests/foundry/lifecycle.spec.mjs).
+[ ] **Feature: Support for Wall type areas.** Need to find examples of a wall that needs this type of automation.
+	- https://2e.aonprd.com/Spells.aspx?ID=234
+	- https://2e.aonprd.com/Spells.aspx?ID=37
+	- https://2e.aonprd.com/Spells.aspx?ID=1752
+	- https://2e.aonprd.com/Spells.aspx?ID=2042
+	- https://2e.aonprd.com/Spells.aspx?ID=1748
+	- https://2e.aonprd.com/Spells.aspx?ID=1379
+	- https://2e.aonprd.com/Spells.aspx?ID=1751
+	- https://2e.aonprd.com/Spells.aspx?ID=1127
+	- https://2e.aonprd.com/Spells.aspx?ID=1028
+	- https://2e.aonprd.com/Spells.aspx?ID=1753
+	- https://2e.aonprd.com/Spells.aspx?ID=1749
+	- https://2e.aonprd.com/Spells.aspx?ID=2373
+	- https://2e.aonprd.com/Spells.aspx?ID=2546
+	- https://2e.aonprd.com/Spells.aspx?ID=2372
+	- https://2e.aonprd.com/Spells.aspx?ID=1750
+	- https://2e.aonprd.com/Spells.aspx?ID=1414
+	
