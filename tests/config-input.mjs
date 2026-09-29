@@ -109,6 +109,48 @@ test("unknown imported enum choices are rejected instead of changed to defaults"
   }
 });
 
+test("activation-choice damage types use PF2e's current catalog without hiding stale presets", () => {
+  const previousConfig = globalThis.CONFIG;
+  const checked = [];
+  class DamageRoll {
+    static validate(formula) {
+      checked.push(formula);
+      return true;
+    }
+  }
+  globalThis.CONFIG = {
+    PF2E: { damageTypes: { fire: "PF2E.Damage.RollFlavor.fire", cold: "PF2E.Damage.RollFlavor.cold" } },
+    Dice: { rolls: [DamageRoll] }
+  };
+  try {
+    const config = defaultConfig();
+    config.name = "Elemental import";
+    config.targeting.affects = "enemies";
+    config.activationChoices.damageType = { enabled: true, options: ["fire", "legacy-shadow"] };
+    const block = config.effects[0];
+    block.triggers.activation = true;
+    block.damage = { enabled: true, formula: "2d6", typeMode: "activation-choice", type: "untyped" };
+
+    assert.throws(
+      () => normalizeConfig(config),
+      /legacy-shadow.*unavailable in this PF2e version.*current PF2e damage type/
+    );
+    const stale = validateConfig(config);
+    assert.match(stale.errors.join(" "), /legacy-shadow.*unavailable in this PF2e version/);
+    assert.equal(stale.issues.find((issue) => issue.message.includes("legacy-shadow"))?.target.scope, "activation-damage-choice");
+    assert.deepEqual(checked, ["{(2d6)[fire]}"]);
+
+    config.activationChoices.damageType.options = ["fire", "cold"];
+    const normalized = normalizeConfig(config);
+    assert.deepEqual(validateConfig(normalized).errors, []);
+    assert.deepEqual(checked.slice(-2), ["{(2d6)[fire]}", "{(2d6)[cold]}"]);
+    assert.ok(!checked.some((formula) => formula.includes("[untyped]")));
+  } finally {
+    if (previousConfig === undefined) delete globalThis.CONFIG;
+    else globalThis.CONFIG = previousConfig;
+  }
+});
+
 test("unknown condition and linked-condition slugs remain intact and receive field errors", () => {
   const config = defaultConfig();
   config.name = "Import";

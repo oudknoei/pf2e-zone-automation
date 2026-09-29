@@ -3,7 +3,7 @@ import { combatForZone } from "./scene-combat.js";
 import { resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
-import { normalizeConfig, validateConfig } from "./zone-config.js";
+import { damageTypeAvailable, normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
 
 const RUNTIME_VERSION = "0.5.19";
@@ -127,7 +127,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   const effectValidation = await validateEffectItems(config);
   if (effectValidation.errors.length) throw new Error(effectValidation.errors[0]);
   const choice = config.activationChoices?.damageType;
-  if (choice?.enabled && !choice.options.includes(chosenDamageType)) {
+  if (choice?.enabled && (!choice.options.includes(chosenDamageType) || !damageTypeAvailable(chosenDamageType))) {
     throw new Error("Choose an allowed shared damage type before creating this zone.");
   }
   const durationResolution = await resolveDurationRounds(config.duration);

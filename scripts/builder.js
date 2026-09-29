@@ -1,6 +1,6 @@
 import {
   SCHEMA_VERSION, OUTCOMES, BASIC_MULTIPLIERS, newId, normalizeTraitSlugs,
-  watchedTraitSlugs, isValuedCondition, conditionSlugs, getDcChoices, emptyOutcome, newBlock,
+  watchedTraitSlugs, isValuedCondition, conditionSlugs, damageTypeSlugs, getDcChoices, emptyOutcome, newBlock,
   defaultConfig, normalizeConfig, validateConfig as validateZoneConfig
 } from "./zone-config.js";
 import { parseDurationRounds } from "./duration.js";
@@ -303,11 +303,10 @@ export async function openZoneBuilder() {
   /** Uses PF2e damage types so zone automation does not maintain a stale duplicate list. */
   function getDamageChoices() {
     const config = CONFIG.PF2E?.damageTypes ?? {};
-    const values = Object.entries(config).map(([slug, labelKey]) => ({
+    const values = damageTypeSlugs().map((slug) => ({
       slug,
-      label: typeof labelKey === "string" ? localize(labelKey, titleCase(slug)) : titleCase(slug)
+      label: typeof config[slug] === "string" ? localize(config[slug], titleCase(slug)) : titleCase(slug)
     }));
-    if (!values.some((x) => x.slug === "untyped")) values.push({ slug: "untyped", label: "Untyped" });
     return values.sort((a, b) => a.label.localeCompare(b.label));
   }
 

@@ -53,6 +53,23 @@ function conditionSlugs() {
     .filter((slug) => slug !== "persistent-damage");
 }
 
+/** Follows PF2e's installed damage catalog while retaining its supported untyped roll annotation. */
+function damageTypeSlugs() {
+  const configured = Object.keys(globalThis.CONFIG?.PF2E?.damageTypes ?? {});
+  return [...new Set([...configured, "untyped"])];
+}
+
+/** Defers catalog checks only in non-Foundry contexts where PF2e has not populated CONFIG yet. */
+function damageTypeAvailable(slug) {
+  const configured = Object.keys(globalThis.CONFIG?.PF2E?.damageTypes ?? {});
+  return !configured.length || slug === "untyped" || configured.includes(slug);
+}
+
+/** Explains stale preset values without silently replacing their mechanical meaning. */
+function unavailableDamageTypeMessage(slug) {
+  return `Shared activation damage type '${slug}' is unavailable in this PF2e version. Update this preset to use a current PF2e damage type.`;
+}
+
 const DURATION_TYPES = new Set(["custom-rounds", "1-minute", "10-minutes", "unlimited"]);
 const LEGACY_DURATION_TYPES = new Set(["1-round", "until-dismissed"]);
 
@@ -263,6 +280,12 @@ function validateSuppliedChoices(cfg) {
   check(cfg.areaShape, ["circle", "square"], "Area shape");
   check(cfg.visibility, ["all", "creator", "gm"], "Visibility");
   check(cfg.targeting?.affects, ["enemies", "allies", "both", "none"], "Affects");
+  for (const option of (Array.isArray(cfg.activationChoices?.damageType?.options)
+    ? cfg.activationChoices.damageType.options
+    : [])) {
+    const slug = String(option ?? "").trim();
+    if (slug && !damageTypeAvailable(slug)) throw new Error(unavailableDamageTypeMessage(slug));
+  }
   for (const [index, block] of (Array.isArray(cfg.effects) ? cfg.effects : []).entries()) {
     const prefix = `Effect Block ${index + 1}`;
     check(block?.repeat, ["every", "once-per-round", "once-per-zone", "once-per-activation"], `${prefix} repeat setting`);
@@ -520,8 +543,15 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
   if (sharedDamageChoice?.enabled) {
     if (!sharedDamageChoice.options.length) {
       error("Shared activation damage type is enabled but no allowed damage types are selected.", { scope: "activation-damage-choice" });
-    } else if (sharedDamageChoice.options.length === 1) {
-      warnings.push("Shared activation damage type has only one allowed type; a fixed damage type may be simpler.");
+    } else {
+      for (const slug of sharedDamageChoice.options) {
+        if (!damageTypeAvailable(slug)) {
+          error(unavailableDamageTypeMessage(slug), { scope: "activation-damage-choice" });
+        }
+      }
+      if (sharedDamageChoice.options.length === 1) {
+        warnings.push("Shared activation damage type has only one allowed type; a fixed damage type may be simpler.");
+      }
     }
   }
 
@@ -568,9 +598,16 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
     }
 
     if (block.damage.enabled) {
-      const type = block.damage.typeMode === "activation-choice" ? "untyped" : (block.damage.type ?? "untyped");
-      const formulaError = pf2eFormulaError(block.damage.formula, type);
-      if (formulaError) error(`${prefix} damage: ${formulaError}`, blockTarget(index, "damage-formula"));
+      const types = block.damage.typeMode === "activation-choice"
+        ? (sharedDamageChoice?.options ?? []).filter((slug) => damageTypeAvailable(slug))
+        : [block.damage.type ?? "untyped"];
+      for (const type of (types.length ? types : ["untyped"])) {
+        const formulaError = pf2eFormulaError(block.damage.formula, type);
+        if (!formulaError) continue;
+        const selectedType = block.damage.typeMode === "activation-choice" ? ` for '${type}'` : "";
+        error(`${prefix} damage${selectedType}: ${formulaError}`, blockTarget(index, "damage-formula"));
+        break;
+      }
     }
     if (block.healing?.enabled) {
       const formulaError = pf2eFormulaError(block.healing.formula, "healing");
@@ -648,6 +685,6 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
 
 export {
   OUTCOMES, BASIC_MULTIPLIERS, newId, normalizeTraitSlugs, watchedTraitSlugs,
-  isValuedCondition, conditionSlugs, getDcChoices, emptyOutcome, newBlock, defaultConfig,
+  isValuedCondition, conditionSlugs, damageTypeSlugs, damageTypeAvailable, getDcChoices, emptyOutcome, newBlock, defaultConfig,
   normalizeConfig, validateConfig
 };

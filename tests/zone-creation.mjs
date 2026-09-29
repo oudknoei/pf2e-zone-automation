@@ -36,6 +36,15 @@ globalThis.CONST = {
   DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0, OBSERVER: 2 }
 };
 globalThis.CONFIG = {
+  PF2E: {
+    conditionTypes: {},
+    damageTypes: {
+      bludgeoning: "PF2E.Damage.RollFlavor.bludgeoning",
+      piercing: "PF2E.Damage.RollFlavor.piercing",
+      slashing: "PF2E.Damage.RollFlavor.slashing",
+      fire: "PF2E.Damage.RollFlavor.fire"
+    }
+  },
   Region: { documentClass: { async createTokenEmanation(_token, _radius, data) { return makeRegion(data); } } }
 };
 globalThis.game = {
@@ -164,14 +173,17 @@ test("GM and worker reject a saved spell DC that the source Actor does not have"
   assert.equal(created.length, before);
 });
 
-test("GM and worker reject unknown imported durations and condition slugs", async () => {
+test("GM and worker reject unknown imported durations, conditions, and damage types", async () => {
   const invalid = [
     [(config) => { config.duration.type = "1-hour"; }, /Duration type.*1-hour/],
     [(config) => {
       config.effects[0].outcomes.noSave.conditions.push({
         slug: "not-a-condition", value: 1, removal: "normal", condition: null
       });
-    }, /not-a-condition.*unavailable/]
+    }, /not-a-condition.*unavailable/],
+    [(config) => {
+      config.activationChoices.damageType = { enabled: true, options: ["fire", "legacy-shadow"] };
+    }, /legacy-shadow.*unavailable in this PF2e version/]
   ];
   for (const [mutate, message] of invalid) {
     const config = validConfig();
