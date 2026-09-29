@@ -42,6 +42,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
       .map((part) => String(part ?? "").replace(/[^A-Za-z0-9_-]/g, "_"))
       .join("__");
 
+    /** Produces an order-independent signature for JSON-compatible persisted flag data. */
+    const dataSignature = (value) => JSON.stringify(value, (_key, nested) => {
+      if (!nested || Array.isArray(nested) || typeof nested !== "object") return nested;
+      return Object.fromEntries(Object.keys(nested).sort().map((key) => [key, nested[key]]));
+    });
+
     /** Allows saved zones to be migrated safely when runtime behavior changes between releases. */
     const compareVersions = (a, b) => {
       const pa = String(a ?? "0").split(".").map((n) => Number(n) || 0);
@@ -145,6 +151,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async writePayload(region, payload) {
           if (!this.isLiveRegion(region)) return false;
 
+          this.pruneRuntimeHistory(payload);
+          const current = region.getFlag?.(FLAG_SCOPE, FLAG_KEY);
+          if (current && dataSignature(current) === dataSignature(payload)) return true;
+
           const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}`;
           /** Recognizes deletion races so a completed zone cleanup is not reported as an actionable error. */
           const staleRegionError = (error) =>
@@ -175,6 +185,43 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (staleRegionError(error)) return false;
             throw error;
           }
+        },
+
+        /** Retains roll and save history only while an unanswered save can still consume it. */
+        pruneRuntimeHistory(payload) {
+          const state = payload?.state;
+          if (!state) return false;
+          let changed = false;
+          const pendingEntries = Object.entries(state.pendingSaves ?? {})
+            .filter(([, entry]) => entry && typeof entry === "object");
+          const pending = pendingEntries.map(([, entry]) => entry);
+          const pendingById = new Map(pendingEntries);
+          const damageKeys = new Set();
+          const healingKeys = new Set();
+          const hasUnscopedPending = pending.some((entry) => !entry.blockId || !entry.batchId);
+          for (const entry of pending) {
+            if (!entry.blockId || !entry.batchId) continue;
+            damageKeys.add(stateKey("damage", entry.blockId, entry.batchId));
+            healingKeys.add(stateKey("healing", entry.blockId, entry.batchId));
+          }
+
+          for (const key of Object.keys(state.damageRolls ?? {})) {
+            if (hasUnscopedPending || damageKeys.has(key)) continue;
+            delete state.damageRolls[key];
+            changed = true;
+          }
+          for (const key of Object.keys(state.healingRolls ?? {})) {
+            if (hasUnscopedPending || healingKeys.has(key)) continue;
+            delete state.healingRolls[key];
+            changed = true;
+          }
+          for (const [pendingId, record] of Object.entries(state.resolvedSaves ?? {})) {
+            const unresolved = pendingById.get(pendingId);
+            if (unresolved?.identifier === record?.identifier) continue;
+            delete state.resolvedSaves[pendingId];
+            changed = true;
+          }
+          return changed;
         },
 
         /** Defers outward side effects until their state record is safely persisted. */
@@ -316,6 +363,68 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const token = record?.tokenUuid ? await fromUuid(record.tokenUuid) : null;
           const actor = token?.actor ?? (record?.actorUuid ? await fromUuid(record.actorUuid) : null);
           return { token, actor };
+        },
+
+        /** Removes cleanup records whose target Actor or embedded Item no longer exists. */
+        async pruneStaleAppliedRecords(payload) {
+          let changed = false;
+          for (const [recordId, record] of Object.entries(payload?.state?.applied ?? {})) {
+            let actor;
+            try {
+              ({ actor } = await this.resolveTarget(record));
+            } catch (error) {
+              console.warn("PF2e Zone: stale applied-record lookup failed", record, error);
+              continue;
+            }
+            if (!actor) {
+              delete payload.state.applied[recordId];
+              changed = true;
+              continue;
+            }
+            const item = actor.items?.get?.(record.itemId)
+              ?? actor.items?.find?.((candidate) => candidate.id === record.itemId)
+              ?? null;
+            if (item || !actor.items) continue;
+            delete payload.state.applied[recordId];
+            changed = true;
+          }
+          return changed;
+        },
+
+        /** Prunes accumulated history and stale Item references after reloads or GM handoff. */
+        async reconcileRuntimeHistory() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            const snapshot = this.readPayload(region);
+            const state = snapshot?.state;
+            if (!state) continue;
+            const hasHistory = Object.keys(state.damageRolls ?? {}).length
+              || Object.keys(state.healingRolls ?? {}).length
+              || Object.keys(state.resolvedSaves ?? {}).length
+              || Object.keys(state.applied ?? {}).length;
+            if (!hasHistory) continue;
+            await this.withState(region, async (payload) => {
+              this.pruneRuntimeHistory(payload);
+              await this.pruneStaleAppliedRecords(payload);
+            });
+          }
+        },
+
+        /** Removes one deleted embedded Item from its owning Region's cleanup ledger. */
+        async forgetDeletedAppliedItem(item) {
+          if (!this.isAuthority() || !item?.id) return;
+          const flag = this.zoneItemFlag(item);
+          if (!flag?.zoneUuid) return;
+          const region = await fromUuid(flag.zoneUuid);
+          if (!this.isLiveRegion(region)) return;
+          const actorUuid = item.actor?.uuid ?? item.parent?.uuid ?? null;
+          await this.withState(region, (payload) => {
+            for (const [recordId, record] of Object.entries(payload.state.applied ?? {})) {
+              if (record.itemId !== item.id) continue;
+              if (actorUuid && record.actorUuid && record.actorUuid !== actorUuid) continue;
+              delete payload.state.applied[recordId];
+            }
+          });
         },
 
         /** Applies targeting rules in one place so every trigger treats allies, enemies, and the source consistently. */
@@ -2243,8 +2352,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (pending.actorUuid && pending.actorUuid !== token.actor.uuid) return false;
           if (message && this.saveResultFromMessage(message, pending, token) !== outcome) return false;
 
-          // A persisted tombstone prevents duplicate results if a later hook
-          // or reconciliation finds the same chat message again.
+          // A transaction-local tombstone protects overlapping resolution work.
+          // Persistence prunes it once the matching pending request is gone.
           delete payload.state.pendingSaves[pendingId];
           payload.state.resolvedSaves[pendingId] = {
             identifier,
@@ -2324,7 +2433,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (resolved && this.isLiveRegion(region)) {
             const persisted = this.readPayload(region);
             const persistedPending = persisted?.state?.pendingSaves?.[pendingId] ?? null;
-            const resolvedRecord = persisted?.state?.resolvedSaves?.[pendingId] ?? null;
             const immunityRecords = Object.entries(persisted?.state?.immunities ?? {}).map(
               ([storageId, record]) => ({
                 storageId,
@@ -2342,7 +2450,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               regionUuid: region.uuid,
               pendingId,
               pendingStillPresent: Boolean(persistedPending),
-              resolvedRecordPresent: Boolean(resolvedRecord),
               immunityRecords
             });
           }
@@ -2419,6 +2526,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
 
           for (const region of this.allZones()) {
+            const snapshot = this.readPayload(region);
+            if (!this.isOperational(region, snapshot)) continue;
+            if (!Object.values(snapshot.state.recoveryWatchers ?? {})
+              .some((watcher) => watcher.actorUuid === actor.uuid)) continue;
             await this.withState(region, async (payload) => {
               if (!this.isOperational(region, payload)) return;
               for (const [key, watcher] of Object.entries(payload.state.recoveryWatchers)) {
@@ -2827,6 +2938,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const steps = [
               ["linked conditions", () => this.reconcileAllLinkedConditions()],
               ["orphaned Items", () => this.reconcileOrphanedZoneItems()],
+              ["runtime history", () => this.reconcileRuntimeHistory()],
               ["unfinished zone ends", () => this.reconcileUnfinishedZoneEnds()],
               ["disabled zones", () => this.reconcileDisabledZones()],
               ["unfinished exit cleanup", () => this.reconcileUnfinishedExitCleanup()],
@@ -2953,7 +3065,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
 
           on("updateItem", itemChanged);
-          on("deleteItem", itemChanged);
+          on("deleteItem", (item) => {
+            runtime.forgetDeletedAppliedItem(item)
+              .catch((e) => console.error("PF2e Zone deleted-Item history hook", e));
+            itemChanged(item);
+          });
 
           on("updateCombat", async (combat) => {
             try {

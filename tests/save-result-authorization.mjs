@@ -122,7 +122,7 @@ test("the target owner and a GM can resolve the pending save exactly once", asyn
       await runtime.handleSaveResult(message);
       assert.equal(fixture.applications, 1);
       assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
-      assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+      assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
     });
   }
 });
@@ -143,7 +143,7 @@ test("a GM reroll may retain the original owner's CheckRoll", async () => {
     message.rolls[0].options.rollerId = owner.id;
     await runtime.handleSaveResult(message);
     assert.equal(fixture.applications, 1);
-    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
   });
 });
 
@@ -161,7 +161,7 @@ test("a missed authorized save is applied before a later save request replaces i
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.immunities, 1);
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
-    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
 
     await runtime.handleSaveResult(valid);
     assert.equal(fixture.applications, 1, "the delayed live hook cannot apply the same result twice");
@@ -189,7 +189,7 @@ test("pending scan reconciles later completed requests even when an earlier save
     assert.equal(fixture.applications, 1);
     assert.ok(fixture.stored.state.pendingSaves.pending);
     assert.equal(fixture.stored.state.pendingSaves.second, undefined);
-    assert.equal(fixture.stored.state.resolvedSaves.second.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.second, undefined);
   });
 });
 
@@ -206,7 +206,7 @@ test("GM startup replays completed saves but leaves forged or unanswered saves p
     await runtime.reconcileCompletedSaves();
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.immunities, 1);
-    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
   });
 });
@@ -241,6 +241,7 @@ test("cancelling a stale pending record keeps an already resolved save spent", a
     assert.equal(result.status, "resolved");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
     assert.deepEqual(fixture.stored.state.repeat[key], { zone: true });
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
     assert.equal(fixture.applications, 0, "the already resolved result is not applied twice");
   });
 });
@@ -266,7 +267,7 @@ test("GM cancellation applies a completed save found in chat instead of discardi
     assert.deepEqual(fixture.stored.state.repeat[key], { zone: true }, "a completed save keeps its repeat allowance spent");
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
-    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
   });
 });
 

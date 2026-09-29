@@ -169,7 +169,7 @@ test("late save skips exit-bound items but keeps lasting results and damage", as
     assert.equal(fixture.damage, 1);
     assert.equal(fixture.healing, 1);
     assert.deepEqual(fixture.stored.state.pendingSaves, {});
-    assert.equal(fixture.stored.state.resolvedSaves.pending.outcome, "failure");
+    assert.equal(fixture.stored.state.resolvedSaves.pending, undefined);
   });
 });
 

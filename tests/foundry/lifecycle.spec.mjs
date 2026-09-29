@@ -175,12 +175,12 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
       const payload = runtime.readPayload(region);
       return {
         pending: Object.keys(payload.state.pendingSaves).sort(),
-        resolved: payload.state.resolvedSaves[completedId]?.identifier ?? null
+        resolvedHistoryRetained: Boolean(payload.state.resolvedSaves[completedId])
       };
     });
 
     expect(result.pending).toEqual(["unanswered"]);
-    expect(result.resolved).toMatch(/^pf2e-zone:/);
+    expect(result.resolvedHistoryRetained).toBe(false);
   });
 
   test("an on-exit item remains while another linked token for the same actor is inside", async ({ sessions }) => {
