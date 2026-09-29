@@ -70,6 +70,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         areaBoundaryBefore: new Map(),
         areaBoundarySnapshots: new Map(),
         areaBoundarySuppression: new Map(),
+        saveDeliveryRecovery: null,
 
         /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
         isAuthority() {
@@ -84,6 +85,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const payload = clone(raw);
           payload.state ??= {};
           payload.state.pendingSaves ??= {};
+          for (const pending of Object.values(payload.state.pendingSaves)) {
+            if (!pending || typeof pending !== "object") continue;
+            if (!pending.delivery || typeof pending.delivery !== "object") pending.delivery = {};
+            pending.delivery.status = pending.delivery.status === "delivered" ? "delivered" : "undelivered";
+            pending.delivery.attempts = Number.isSafeInteger(pending.delivery.attempts)
+              ? Math.max(0, pending.delivery.attempts) : 0;
+            pending.delivery.messageId ??= null;
+            pending.delivery.lastAttemptWorldTime ??= null;
+            pending.delivery.lastError ??= null;
+          }
           payload.state.resolvedSaves ??= {};
           payload.state.repeat ??= {};
           payload.state.hpObserved ??= {};
@@ -621,6 +632,21 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return null;
         },
 
+        /** Finds an existing request card so a retry after an uncertain write cannot post a duplicate. */
+        saveRequestMessageForPending(pending) {
+          /** Restricts recovery to the chat card for this exact pending-save identifier. */
+          const matches = (message) =>
+            Boolean(message?.author?.isGM)
+            && message.flags?.world?.pf2eZoneSaveRequest?.identifier === pending?.identifier;
+          const messageId = pending?.delivery?.messageId;
+          if (messageId) {
+            const byId = game.messages?.get?.(messageId)
+              ?? (game.messages?.contents ?? []).find((message) => message?.id === messageId);
+            if (matches(byId)) return byId;
+          }
+          return [...(game.messages?.contents ?? [])].reverse().find(matches) ?? null;
+        },
+
         /** Replays a missed result before deciding whether the creature still has an unanswered save. */
         async hasPending(region, payload, tokenUuid, blockId) {
           for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
@@ -673,11 +699,115 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             ? `<p><b>${escHtml(target?.name ?? "Target")}</b>: choose a save before rolling.</p>`
             : `<p><b>${escHtml(target?.name ?? "Target")}</b>: roll ${escHtml(titleCaseLocal(pending.saveTypes[0]))}.</p>`;
 
-          await ChatMessage.create({
+          return await ChatMessage.create({
             speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
             content: `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${buttons}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`,
             flags: { world: { pf2eZoneSaveRequest: { identifier: pending.identifier } } }
           });
+        },
+
+        /** Posts or rediscovers one pending request while its Region state lock is held. */
+        async deliverPendingSaveUnlocked(region, payload, pendingId, identifier) {
+          const pending = payload.state.pendingSaves?.[pendingId];
+          if (!pending || pending.identifier !== identifier || !this.isOperational(region, payload)) {
+            return { status: "missing", changed: false, pending: null };
+          }
+
+          const existing = this.saveRequestMessageForPending(pending);
+          if (existing) {
+            const messageId = existing.id ?? existing._id ?? null;
+            const changed = pending.delivery?.status !== "delivered"
+              || pending.delivery?.messageId !== messageId
+              || pending.delivery?.lastError != null;
+            pending.delivery = {
+              ...(pending.delivery ?? {}),
+              status: "delivered",
+              messageId,
+              lastError: null
+            };
+            return { status: "delivered", changed, pending, message: existing };
+          }
+
+          const attempts = Math.max(0, Number(pending.delivery?.attempts) || 0) + 1;
+          pending.delivery = {
+            ...(pending.delivery ?? {}),
+            status: "undelivered",
+            attempts,
+            messageId: null,
+            lastAttemptWorldTime: nowWorld(),
+            lastError: null
+          };
+
+          try {
+            const message = await this.postSaveRequest(region, payload, pending);
+            pending.delivery.status = "delivered";
+            pending.delivery.messageId = message?.id ?? message?._id ?? null;
+            return { status: "delivered", changed: true, pending, message };
+          } catch (error) {
+            pending.delivery.lastError = String(error?.message ?? error).slice(0, 1000);
+            return { status: "undelivered", changed: true, pending, error };
+          }
+        },
+
+        /** Makes a failed request visible while retaining its durable retry record. */
+        reportSaveDeliveryFailure(region, result) {
+          if (result?.status !== "undelivered") return;
+          console.error("PF2e Zone: save request delivery failed; it remains queued for retry", {
+            region,
+            pendingId: result.pending?.id ?? null,
+            error: result.error ?? result.pending?.delivery?.lastError ?? null
+          });
+          try {
+            globalThis.ui?.notifications?.error?.(
+              `PF2e Zone: could not post the ${result.pending?.blockName ?? "pending"} save request in '${region.name}'. It remains queued and will retry when a GM reconnects or authority changes.`
+            );
+          } catch (error) {
+            console.error("PF2e Zone: failed to display the save delivery warning", error);
+          }
+        },
+
+        /** Retries one persisted request through the normal serialized Region state path. */
+        async deliverPendingSave(region, pendingId, identifier) {
+          if (!this.isAuthority()) return { status: "not-authority", changed: false, pending: null };
+          let result = { status: "missing", changed: false, pending: null };
+          try {
+            await this.withState(region, async (payload) => {
+              result = await this.deliverPendingSaveUnlocked(region, payload, pendingId, identifier);
+            });
+          } catch (error) {
+            this.reportSaveDeliveryFailure(region, result);
+            throw error;
+          }
+          this.reportSaveDeliveryFailure(region, result);
+          return result;
+        },
+
+        /** Recovers every request whose card is absent, coalescing duplicate startup and handoff hooks. */
+        async reconcileUndeliveredSaveRequests() {
+          if (!this.isAuthority()) return;
+          if (this.saveDeliveryRecovery) return await this.saveDeliveryRecovery;
+
+          const recovery = (async () => {
+            for (const region of this.allZones()) {
+              const payload = this.readPayload(region);
+              if (!this.isOperational(region, payload)) continue;
+              for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
+                if (payload.state.resolvedSaves?.[pendingId]?.identifier === pending.identifier) continue;
+                if (pending.delivery?.status === "delivered" && this.saveRequestMessageForPending(pending)) continue;
+                try {
+                  await this.deliverPendingSave(region, pendingId, pending.identifier);
+                } catch (error) {
+                  console.error("PF2e Zone: save request delivery recovery failed", region, pendingId, error);
+                }
+              }
+            }
+          })();
+          this.saveDeliveryRecovery = recovery;
+          try {
+            return await recovery;
+          } finally {
+            if (this.saveDeliveryRecovery === recovery) this.saveDeliveryRecovery = null;
+          }
         },
 
         /** Records a pending save before chat output so late or duplicate clicks remain safe to handle. */
@@ -718,7 +848,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             dc,
             saveTypes,
             eventContext: clone(eventContext ?? {}),
-            createdWorldTime: nowWorld()
+            createdWorldTime: nowWorld(),
+            delivery: {
+              status: "undelivered",
+              attempts: 0,
+              messageId: null,
+              lastAttemptWorldTime: null,
+              lastError: null
+            }
           };
           payload.state.pendingSaves[id] = pending;
           this.markRepeat(payload, token.uuid, block);
@@ -730,10 +867,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!liveRegion) return;
 
             const committed = this.readPayload(liveRegion);
-            const committedPending = committed?.state?.pendingSaves?.[id];
-            if (!committedPending || committedPending.identifier !== identifier) return;
-
-            await this.postSaveRequest(liveRegion, committed, committedPending);
+            if (!this.isOperational(liveRegion, committed)) return;
+            const result = await this.deliverPendingSaveUnlocked(liveRegion, committed, id, identifier);
+            let persistError = null;
+            try {
+              if (result.changed && this.isLiveRegion(liveRegion)) await this.writePayload(liveRegion, committed);
+            } catch (error) {
+              persistError = error;
+            }
+            this.reportSaveDeliveryFailure(liveRegion, result);
+            if (persistError) throw persistError;
           });
           return true;
         },
@@ -2714,13 +2857,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
 
           // A different connected GM can become authoritative without loading a
-          // new module instance. Resume any timer abandoned by the former GM.
-          on("userConnected", () => setTimeout(() =>
+          // new module instance. Resume abandoned timers and undelivered save cards.
+          /** Starts the handoff-safe work that this runtime can currently recover immediately. */
+          const resumeAuthorityWork = () => setTimeout(() => {
+            runtime.reconcileUndeliveredSaveRequests()
+              .catch((e) => console.error("PF2e Zone GM handoff save delivery", e));
             runtime.reconcileUnfinishedActivations()
-              .catch((e) => console.error("PF2e Zone GM handoff activation", e)), 0));
-          on("updateUser", () => setTimeout(() =>
-            runtime.reconcileUnfinishedActivations()
-              .catch((e) => console.error("PF2e Zone GM handoff activation", e)), 0));
+              .catch((e) => console.error("PF2e Zone GM handoff activation", e));
+          }, 0);
+          on("userConnected", resumeAuthorityWork);
+          on("updateUser", resumeAuthorityWork);
 
           on("deleteToken", (token) => {
             runtime.reconcileDeletedToken(token)
@@ -2890,6 +3036,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.reconcileDisabledZones();
               await this.reconcileUnfinishedExitCleanup();
               await this.reconcileCompletedSaves();
+              await this.reconcileUndeliveredSaveRequests();
               await this.checkAllDurations();
               await this.reconcileUnfinishedActivations();
               for (const region of this.allZones()) {
