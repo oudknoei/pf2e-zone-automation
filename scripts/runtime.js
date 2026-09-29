@@ -71,6 +71,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         areaBoundarySnapshots: new Map(),
         areaBoundarySuppression: new Map(),
         saveDeliveryRecovery: null,
+        authorityRecovery: null,
+        authorityRecoveryTimer: null,
 
         /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
         isAuthority() {
@@ -284,6 +286,17 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!keys.has(key)) delete payload.state.hpObserved[key];
           }
           for (const token of inside) this.seedHpBaseline(payload, token, { replace });
+        },
+
+        /** Refreshes HP threshold baselines for every operational zone after authority changes. */
+        async reconcileAllHpBaselines() {
+          if (!this.isAuthority()) return;
+          for (const region of this.allZones()) {
+            if (!this.isOperational(region)) continue;
+            await this.withState(region, (payload) =>
+              this.reconcileHpBaselinesUnlocked(region, payload, { replace: true })
+            );
+          }
         },
 
         /** Checks current geometry because a save may resolve after its target has left. */
@@ -2750,6 +2763,52 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Runs the complete startup repair set once for concurrent active-GM handoff signals. */
+        async reconcileAuthorityState(reason = "authority recovery") {
+          if (!this.isAuthority()) return;
+          if (this.authorityRecovery) return await this.authorityRecovery;
+
+          const recovery = Promise.resolve().then(async () => {
+            const steps = [
+              ["linked conditions", () => this.reconcileAllLinkedConditions()],
+              ["orphaned Items", () => this.reconcileOrphanedZoneItems()],
+              ["unfinished zone ends", () => this.reconcileUnfinishedZoneEnds()],
+              ["disabled zones", () => this.reconcileDisabledZones()],
+              ["unfinished exit cleanup", () => this.reconcileUnfinishedExitCleanup()],
+              ["completed saves", () => this.reconcileCompletedSaves()],
+              ["save delivery", () => this.reconcileUndeliveredSaveRequests()],
+              ["durations", () => this.checkAllDurations()],
+              ["unfinished activations", () => this.reconcileUnfinishedActivations()],
+              ["HP baselines", () => this.reconcileAllHpBaselines()]
+            ];
+
+            for (const [label, run] of steps) {
+              if (!this.isAuthority()) return;
+              try {
+                await run();
+              } catch (error) {
+                console.error(`PF2e Zone: ${reason} ${label} failed`, error);
+              }
+            }
+          });
+          this.authorityRecovery = recovery;
+          try {
+            return await recovery;
+          } finally {
+            if (this.authorityRecovery === recovery) this.authorityRecovery = null;
+          }
+        },
+
+        /** Debounces Foundry user hooks before starting the serialized authority recovery pass. */
+        scheduleAuthorityRecovery(reason = "authority recovery") {
+          if (this.authorityRecoveryTimer !== null) return;
+          this.authorityRecoveryTimer = setTimeout(() => {
+            this.authorityRecoveryTimer = null;
+            this.reconcileAuthorityState(reason)
+              .catch((error) => console.error(`PF2e Zone: ${reason} coordinator failed`, error));
+          }, 0);
+        },
+
         /** Releases hooks and timers so a replaced runtime cannot process events twice. */
         teardownHooks() {
           const registry = globalThis.PF2EZoneRuntimeHookRegistry;
@@ -2771,6 +2830,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.areaBoundarySnapshots.clear();
           for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);
           this.areaBoundarySuppression.clear();
+          if (this.authorityRecoveryTimer !== null) clearTimeout(this.authorityRecoveryTimer);
+          this.authorityRecoveryTimer = null;
 
           if (registry.clickHandler) {
             document.removeEventListener("click", registry.clickHandler);
@@ -2859,14 +2920,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
 
           // A different connected GM can become authoritative without loading a
-          // new module instance. Resume abandoned timers and undelivered save cards.
-          /** Starts the handoff-safe work that this runtime can currently recover immediately. */
-          const resumeAuthorityWork = () => setTimeout(() => {
-            runtime.reconcileUndeliveredSaveRequests()
-              .catch((e) => console.error("PF2e Zone GM handoff save delivery", e));
-            runtime.reconcileUnfinishedActivations()
-              .catch((e) => console.error("PF2e Zone GM handoff activation", e));
-          }, 0);
+          // new module instance. Both signals share one debounced full recovery pass.
+          /** Defers authority inspection until Foundry has updated its active-GM selection. */
+          const resumeAuthorityWork = () => runtime.scheduleAuthorityRecovery("active-GM handoff");
           on("userConnected", resumeAuthorityWork);
           on("updateUser", resumeAuthorityWork);
 
@@ -3024,31 +3080,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.hooksInstalled = true;
           for (const region of this.allZones()) this.rememberAreaBoundary(region);
 
-          // Catch any linked-condition records left from a zone that ended earlier.
-          setTimeout(() =>
-            this.reconcileAllLinkedConditions()
-              .catch((e) => console.error("PF2e Zone initial condition reconcile", e)), 0
-          );
-
-          // Recover disabled behavior state and overdue zones after a GM reconnect.
-          setTimeout(async () => {
-            try {
-              await this.reconcileOrphanedZoneItems();
-              await this.reconcileUnfinishedZoneEnds();
-              await this.reconcileDisabledZones();
-              await this.reconcileUnfinishedExitCleanup();
-              await this.reconcileCompletedSaves();
-              await this.reconcileUndeliveredSaveRequests();
-              await this.checkAllDurations();
-              await this.reconcileUnfinishedActivations();
-              for (const region of this.allZones()) {
-                if (!this.isOperational(region)) continue;
-                await this.withState(region, (payload) => this.reconcileHpBaselinesUnlocked(region, payload, { replace: true }));
-              }
-            } catch (error) {
-              console.error("PF2e Zone initial zone reconcile", error);
-            }
-          }, 0);
+          // Startup and later active-GM changes use the exact same repair set.
+          this.scheduleAuthorityRecovery("startup recovery");
         },
 
         /** Receives Region behavior events through the module API so existing zones use updated runtime code. */

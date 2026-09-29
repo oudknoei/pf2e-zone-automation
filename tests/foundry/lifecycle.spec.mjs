@@ -395,7 +395,6 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
 
     await sessions.primary.goto(`${FOUNDRY_URL}/join`, { waitUntil: "domcontentloaded" });
     await sessions.remote.waitForFunction(() => game.users.activeGM?.name === "Remote GM", { timeout: 15_000 });
-    test.fail(true, "Known P1: authority handoff currently resumes only unfinished activation, not the full startup recovery pass.");
     await expect.poll(() => sessions.remote.evaluate(({ sceneId, regionId }) => (
       Boolean(game.scenes.get(sceneId)?.regions.get(regionId))
     ), fixture), { timeout: 5_000 }).toBe(false);

@@ -970,3 +970,64 @@ test("immunity keeps its original turn as the expiration point", async () => {
     assert.equal(runtime.isImmune(payload, sourceToken.uuid, "stench"), false);
   });
 });
+
+test("active-GM recovery coalesces hook bursts and continues after an individual repair fails", async () => {
+  const stepNames = [
+    "reconcileAllLinkedConditions",
+    "reconcileOrphanedZoneItems",
+    "reconcileUnfinishedZoneEnds",
+    "reconcileDisabledZones",
+    "reconcileUnfinishedExitCleanup",
+    "reconcileCompletedSaves",
+    "reconcileUndeliveredSaveRequests",
+    "checkAllDurations",
+    "reconcileUnfinishedActivations",
+    "reconcileAllHpBaselines"
+  ];
+  const originals = new Map(stepNames.map((name) => [name, runtime[name]]));
+  const previousUser = game.user;
+  const previousUsers = game.users;
+  const previousError = console.error;
+  const calls = [];
+  const errors = [];
+  let markStarted;
+  let releaseFirstStep;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const firstStepReleased = new Promise((resolve) => { releaseFirstStep = resolve; });
+  const authority = { id: "handoff-gm", isGM: true };
+
+  for (const name of stepNames) {
+    runtime[name] = async () => {
+      calls.push(name);
+      if (name === stepNames[0]) {
+        markStarted();
+        await firstStepReleased;
+      }
+      if (name === "reconcileUnfinishedZoneEnds") throw new Error("injected recovery failure");
+    };
+  }
+  game.user = authority;
+  game.users = { activeGM: authority };
+  console.error = (...args) => errors.push(args);
+
+  try {
+    runtime.scheduleAuthorityRecovery("test handoff");
+    runtime.scheduleAuthorityRecovery("duplicate hook");
+    await started;
+    const joined = runtime.reconcileAuthorityState("in-flight hook");
+    releaseFirstStep();
+    await joined;
+
+    assert.deepEqual(calls, stepNames, "every repair runs exactly once and in startup order");
+    assert.equal(errors.length, 1, "one failed repair does not prevent later repairs");
+    assert.match(String(errors[0][0]), /test handoff unfinished zone ends failed/);
+    assert.equal(runtime.authorityRecovery, null);
+    assert.equal(runtime.authorityRecoveryTimer, null);
+  } finally {
+    releaseFirstStep();
+    for (const [name, original] of originals) runtime[name] = original;
+    game.user = previousUser;
+    game.users = previousUsers;
+    console.error = previousError;
+  }
+});
