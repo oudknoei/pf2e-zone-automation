@@ -649,6 +649,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Replays a missed result before deciding whether the creature still has an unanswered save. */
         async hasPending(region, payload, tokenUuid, blockId) {
+          let hasUnansweredSave = false;
           for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
             if (pending.tokenUuid !== tokenUuid || pending.blockId !== blockId) continue;
 
@@ -667,9 +668,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (resolved || !payload.state.pendingSaves[pendingId]) continue;
             }
 
-            return true;
+            hasUnansweredSave = true;
           }
-          return false;
+          return hasUnansweredSave;
         },
 
         /** Uses the source statistic at resolution time while protecting combined Class-or-Spell DCs from PF2e fallback data. */
@@ -812,7 +813,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Records a pending save before chat output so late or duplicate clicks remain safe to handle. */
         async requestSave(region, payload, block, token, trigger, batchId, eventContext = {}) {
-          if (await this.hasPending(region, payload, token.uuid, block.id)) {
+          const hasUnansweredSave = await this.hasPending(region, payload, token.uuid, block.id);
+          if (block.repeat !== "every" && hasUnansweredSave) {
             console.info("PF2e Zone save suppressed: pending save already exists", {
               zone: payload.config.name,
               block: block.name,

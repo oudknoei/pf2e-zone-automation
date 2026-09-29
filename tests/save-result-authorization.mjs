@@ -168,6 +168,31 @@ test("a missed authorized save is applied before a later save request replaces i
   });
 });
 
+test("pending scan reconciles later completed requests even when an earlier save is unanswered", async () => {
+  await withPendingSave(async (fixture) => {
+    const secondIdentifier = "pf2e-zone:scene:zone:second";
+    fixture.stored.state.pendingSaves.second = {
+      ...fixture.pending,
+      id: "second",
+      identifier: secondIdentifier,
+      batchId: "second-event"
+    };
+    const completed = fixture.makeMessage();
+    completed.flags.pf2e.context.identifier = secondIdentifier;
+    completed.rolls[0].options.identifier = secondIdentifier;
+    game.messages.contents = [completed];
+
+    const stillPending = await runtime.withState(fixture.region, (payload) =>
+      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId)
+    );
+    assert.equal(stillPending, true);
+    assert.equal(fixture.applications, 1);
+    assert.ok(fixture.stored.state.pendingSaves.pending);
+    assert.equal(fixture.stored.state.pendingSaves.second, undefined);
+    assert.equal(fixture.stored.state.resolvedSaves.second.outcome, "failure");
+  });
+});
+
 test("GM startup replays completed saves but leaves forged or unanswered saves pending", async () => {
   await withPendingSave(async (fixture) => {
     game.messages.contents = [fixture.makeMessage(stranger)];

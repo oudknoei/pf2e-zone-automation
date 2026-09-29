@@ -159,3 +159,39 @@ test("recovery replaces a deleted save card while the save is still pending", as
   assert.notEqual(recovered.delivery.messageId, deletedMessageId);
   assert.equal(recovered.delivery.messageId, messages[0].id);
 });
+
+test("Every time this happens queues a separate save while an earlier request is unanswered", async () => {
+  const fixture = saveFixture();
+  fixture.block.repeat = "every";
+
+  const first = await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "first-event")
+  );
+  const second = await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "second-event")
+  );
+
+  const pending = Object.values(fixture.stored.state.pendingSaves);
+  assert.equal(first, true);
+  assert.equal(second, true);
+  assert.equal(pending.length, 2);
+  assert.deepEqual(pending.map((request) => request.batchId), ["first-event", "second-event"]);
+  assert.equal(new Set(pending.map((request) => request.identifier)).size, 2);
+  assert.equal(messages.length, 2);
+});
+
+test("limited repeat policies still suppress another request while one is unanswered", async () => {
+  const fixture = saveFixture();
+
+  const first = await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "first-event")
+  );
+  const second = await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "second-event")
+  );
+
+  assert.equal(first, true);
+  assert.equal(second, false);
+  assert.equal(Object.keys(fixture.stored.state.pendingSaves).length, 1);
+  assert.equal(messages.length, 1);
+});
