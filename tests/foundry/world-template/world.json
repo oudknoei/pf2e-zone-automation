@@ -1,0 +1,13 @@
+{
+  "id": "pf2e-zone-e2e",
+  "title": "PF2e Zone Automation E2E",
+  "system": "pf2e",
+  "coreVersion": "14",
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14"
+  },
+  "systemVersion": "8.5.1",
+  "description": "Disposable world for PF2e Zone Automation real-Foundry lifecycle tests.",
+  "flags": {}
+}

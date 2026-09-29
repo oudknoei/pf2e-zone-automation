@@ -4,3 +4,6 @@ packs/**/LOG
 packs/**/LOG.old
 dist/
 .vs/
+.foundry-integration/
+test-results/
+playwright-report/

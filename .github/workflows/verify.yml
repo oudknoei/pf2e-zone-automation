@@ -5,6 +5,7 @@ on:
     branches:
       - "**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,3 +28,87 @@ jobs:
         run: pnpm run lint
       - name: Run module tests
         run: pnpm test
+
+  foundry-integration:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FOUNDRY_RELEASE_URL: ${{ secrets.FOUNDRY_RELEASE_URL }}
+      FOUNDRY_LICENSE_JSON_B64: ${{ secrets.FOUNDRY_LICENSE_JSON_B64 }}
+      PF2E_MANIFEST_URL: https://github.com/foundryvtt/pf2e/releases/latest/download/system.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Explain unavailable protected Foundry inputs
+        if: env.FOUNDRY_RELEASE_URL == '' || env.FOUNDRY_LICENSE_JSON_B64 == ''
+        run: |
+          echo "::notice::Real-Foundry tests were skipped. Configure FOUNDRY_RELEASE_URL and FOUNDRY_LICENSE_JSON_B64 repository secrets to enable them."
+      - name: Build module compendia
+        if: env.FOUNDRY_RELEASE_URL != '' && env.FOUNDRY_LICENSE_JSON_B64 != ''
+        run: pnpm run build:packs
+      - name: Install Chromium
+        if: env.FOUNDRY_RELEASE_URL != '' && env.FOUNDRY_LICENSE_JSON_B64 != ''
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Prepare Foundry V14 and PF2e
+        if: env.FOUNDRY_RELEASE_URL != '' && env.FOUNDRY_LICENSE_JSON_B64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$RUNNER_TEMP/pza-foundry"
+          data_root="$RUNNER_TEMP/pza-foundry-data"
+          mkdir -p "$install_root" "$data_root/Config" "$data_root/Data/systems" "$data_root/Data/modules"
+          curl --fail --location --silent --show-error "$FOUNDRY_RELEASE_URL" -o "$RUNNER_TEMP/foundry.zip"
+          unzip -q "$RUNNER_TEMP/foundry.zip" -d "$install_root"
+          printf '%s' "$FOUNDRY_LICENSE_JSON_B64" | base64 --decode > "$data_root/Config/license.json"
+
+          install_package() {
+            local package_id="$1"
+            local manifest_url="$2"
+            local package_kind="$3"
+            local manifest_file="$RUNNER_TEMP/$package_id-manifest.json"
+            local archive_file="$RUNNER_TEMP/$package_id.zip"
+            local staging="$RUNNER_TEMP/$package_id-unpacked"
+            local manifest_name="module.json"
+            if [ "$package_kind" = "systems" ]; then manifest_name="system.json"; fi
+            curl --fail --location --silent --show-error "$manifest_url" -o "$manifest_file"
+            local download_url
+            download_url="$(node -e 'const fs=require("node:fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).download)' "$manifest_file")"
+            curl --fail --location --silent --show-error "$download_url" -o "$archive_file"
+            mkdir -p "$staging"
+            unzip -q "$archive_file" -d "$staging"
+            local package_manifest
+            package_manifest="$(find "$staging" -name "$manifest_name" -print -quit)"
+            test -n "$package_manifest"
+            local package_root
+            package_root="$(dirname "$package_manifest")"
+            local destination="$data_root/Data/$package_kind/$package_id"
+            mkdir -p "$destination"
+            cp -a "$package_root/." "$destination/"
+          }
+
+          install_package pf2e "$PF2E_MANIFEST_URL" systems
+          install_package advanced-macros https://github.com/mclemente/fvtt-advanced-macros/releases/latest/download/module.json modules
+          install_package pf2e-flatcheck-helper https://github.com/oWave/pf2e-flatcheck-helper/releases/latest/download/module.json modules
+          install_package lib-wrapper https://github.com/ruipin/fvtt-lib-wrapper/releases/latest/download/module.json modules
+          echo "FOUNDRY_INSTALL_PATH=$install_root" >> "$GITHUB_ENV"
+          echo "FOUNDRY_DATA_PATH=$data_root" >> "$GITHUB_ENV"
+      - name: Run real-Foundry lifecycle tests
+        if: env.FOUNDRY_RELEASE_URL != '' && env.FOUNDRY_LICENSE_JSON_B64 != ''
+        run: pnpm test:foundry
+      - name: Upload Foundry diagnostics
+        if: always() && env.FOUNDRY_RELEASE_URL != '' && env.FOUNDRY_LICENSE_JSON_B64 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundry-integration-diagnostics
+          if-no-files-found: ignore
+          path: |
+            .foundry-integration/foundry.log
+            playwright-report/
+            test-results/

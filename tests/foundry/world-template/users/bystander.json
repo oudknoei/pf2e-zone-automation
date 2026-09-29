@@ -1,0 +1,14 @@
+{
+  "_id": "pzaE2eBystander0",
+  "name": "Bystander",
+  "role": 1,
+  "password": "",
+  "avatar": null,
+  "character": null,
+  "color": "#b8862f",
+  "pronouns": "",
+  "hotbar": {},
+  "permissions": {},
+  "flags": {},
+  "_key": "!users!pzaE2eBystander0"
+}
