@@ -282,3 +282,169 @@ test("overlapping Shielding Taunts leave only the latest target affected", async
     }
   }
 });
+
+test("Shielding Taunt rolls back failed cleanup, resumes a partial rollback, and isolates chat failure", async () => {
+  const prior = Object.fromEntries([
+    "ChatMessage", "CONST", "fromUuid", "game"
+  ].map((key) => [key, globalThis[key]]));
+  const priorConsoleWarn = console.warn;
+  const tauntUuid = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
+  const action = { uuid: "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb" };
+  const effect = {
+    type: "effect",
+    toObject: () => ({ system: { traits: { value: [] }, context: {} } })
+  };
+  const scene = {
+    id: "transaction-scene",
+    tokens: [],
+    grid: { type: 1, size: 100, sizeX: 100, sizeY: 100, distance: 5 },
+    dimensions: { size: 100, distance: 5 }
+  };
+  const guardian = {
+    uuid: "Actor.transaction-guardian", name: "Guardian",
+    items: [{ slug: "shielding-taunt", name: "Shielding Taunt" }],
+    itemTypes: { effect: [] },
+    heldShield: { name: "Steel Shield", isBroken: false, isDestroyed: false },
+    dimensions: { height: 5 },
+    system: { attributes: { shield: { raised: true } } }
+  };
+  let failOldDelete = true;
+  let failReplacementDelete = false;
+  let failChat = false;
+  let creationCount = 0;
+  const oldTarget = {
+    uuid: "Actor.old-target", name: "Old target", dimensions: { height: 5 },
+    itemTypes: { effect: [{
+      id: "old-taunt", sourceId: tauntUuid,
+      system: { context: { origin: { actor: guardian.uuid } } }
+    }] },
+    async deleteEmbeddedDocuments(type, ids) {
+      assert.equal(type, "Item");
+      if (failOldDelete) throw new Error("injected old cleanup failure");
+      this.itemTypes.effect = this.itemTypes.effect.filter((item) => !ids.includes(item.id));
+    }
+  };
+  const newTarget = {
+    uuid: "Actor.new-target", name: "New target", dimensions: { height: 5 },
+    itemTypes: { effect: [] },
+    async createEmbeddedDocuments(type, [source]) {
+      assert.equal(type, "Item");
+      creationCount += 1;
+      const item = {
+        ...structuredClone(source),
+        id: `replacement-${creationCount}`,
+        sourceId: tauntUuid
+      };
+      this.itemTypes.effect.push(item);
+      return [item];
+    },
+    async deleteEmbeddedDocuments(type, ids) {
+      assert.equal(type, "Item");
+      if (failReplacementDelete) throw new Error("injected rollback failure");
+      this.itemTypes.effect = this.itemTypes.effect.filter((item) => !ids.includes(item.id));
+    }
+  };
+  const sourceToken = {
+    documentName: "Token", uuid: "Scene.transaction-scene.Token.guardian", name: "Guardian",
+    actor: guardian, parent: scene, x: 0, y: 0, width: 1, height: 1, elevation: 0
+  };
+  const oldToken = {
+    documentName: "Token", uuid: "Scene.transaction-scene.Token.old", name: "Old target",
+    actor: oldTarget, parent: scene, x: 100, y: 0, width: 1, height: 1, elevation: 0
+  };
+  const newToken = {
+    documentName: "Token", uuid: "Scene.transaction-scene.Token.new", name: "New target",
+    actor: newTarget, parent: scene, x: 200, y: 0, width: 1, height: 1, elevation: 0
+  };
+  scene.tokens.push(sourceToken, oldToken, newToken);
+  const messages = [];
+  const documents = new Map([
+    [sourceToken.uuid, sourceToken], [newToken.uuid, newToken],
+    [action.uuid, action], [tauntUuid, effect]
+  ]);
+  const request = {
+    requesterUserId: "gm-user",
+    sourceTokenUuid: sourceToken.uuid,
+    targetTokenUuid: newToken.uuid
+  };
+  const countTaunts = () => [oldTarget, newTarget]
+    .flatMap((actor) => actor.itemTypes.effect)
+    .filter((item) => item.sourceId === tauntUuid && item.system?.context?.origin?.actor === guardian.uuid)
+    .length;
+
+  try {
+    console.warn = () => {};
+    globalThis.CONST = { GRID_TYPES: { SQUARE: 1 }, CHAT_MESSAGE_STYLES: { OTHER: 0 } };
+    globalThis.game = {
+      user: { id: "gm-user", isGM: true },
+      actors: [guardian, oldTarget, newTarget], scenes: [scene],
+      messages: { contents: messages }
+    };
+    globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
+    globalThis.ChatMessage = {
+      getSpeaker: () => ({}),
+      async create(source) {
+        if (failChat) throw new Error("injected chat failure");
+        messages.push(source);
+        return source;
+      }
+    };
+
+    await assert.rejects(
+      executeShieldingTaunt({ ...request, operationId: "operation-rollback-001" }),
+      /previous Taunt could not be replaced/
+    );
+    assert.equal(countTaunts(), 1);
+    assert.equal(oldTarget.itemTypes.effect.length, 1);
+    assert.equal(newTarget.itemTypes.effect.length, 0);
+
+    failReplacementDelete = true;
+    await assert.rejects(
+      executeShieldingTaunt({ ...request, operationId: "operation-resume-0001" }),
+      /replacement could not be rolled back/
+    );
+    assert.equal(countTaunts(), 2);
+    assert.equal(creationCount, 2);
+
+    failOldDelete = false;
+    failReplacementDelete = false;
+    failChat = true;
+    const recovered = await executeShieldingTaunt({ ...request, operationId: "operation-resume-0001" });
+    assert.equal(recovered.mechanicalSuccess, true);
+    assert.match(recovered.warnings.join(" "), /chat message could not be posted/i);
+    assert.equal(countTaunts(), 1);
+    assert.equal(oldTarget.itemTypes.effect.length, 0);
+    assert.equal(newTarget.itemTypes.effect.length, 1);
+    assert.equal(creationCount, 2);
+    assert.equal(
+      newTarget.itemTypes.effect[0].flags.world.pf2eZoneShieldingTaunt.operationId,
+      "operation-resume-0001"
+    );
+
+    failChat = false;
+    const delivered = await executeShieldingTaunt({ ...request, operationId: "operation-resume-0001" });
+    assert.equal(delivered.mechanicalSuccess, true);
+    assert.equal(messages.length, 1);
+    assert.equal(creationCount, 2);
+
+    const duplicate = await executeShieldingTaunt({ ...request, operationId: "operation-resume-0001" });
+    assert.equal(duplicate.mechanicalSuccess, true);
+    assert.equal(messages.length, 1);
+    assert.equal(creationCount, 2);
+
+    await assert.rejects(
+      executeShieldingTaunt({
+        ...request,
+        operationId: "operation-resume-0001",
+        targetTokenUuid: "Scene.transaction-scene.Token.different"
+      }),
+      /reused with different request details/
+    );
+  } finally {
+    console.warn = priorConsoleWarn;
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
+});

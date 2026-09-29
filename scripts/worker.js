@@ -8,6 +8,8 @@ import { validateEffectItems } from "./effect-items.js";
 let libraryOperationTail = Promise.resolve();
 const creationRequests = new Map();
 const CREATION_REQUEST_TTL_MS = 10 * 60 * 1000;
+const shieldingTauntRequests = new Map();
+const SHIELDING_TAUNT_REQUEST_TTL_MS = 10 * 60 * 1000;
 
 /** Joins concurrent retries and remembers a completed result while a late socket reply is possible. */
 function oncePerCreationRequest(request, create) {
@@ -37,6 +39,37 @@ function oncePerCreationRequest(request, create) {
   entry.promise.then(
     () => { entry.completedAt = Date.now(); },
     () => { if (creationRequests.get(key) === entry) creationRequests.delete(key); }
+  );
+  return entry.promise;
+}
+
+/** Joins duplicate Taunt requests and retains success while a socket response can arrive late. */
+function oncePerShieldingTauntRequest(request, execute) {
+  const operationId = request.operationId;
+  if (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(operationId)) {
+    throw new Error("Shielding Taunt operation ID is invalid.");
+  }
+  const now = Date.now();
+  for (const [key, entry] of shieldingTauntRequests) {
+    if (entry.completedAt && now - entry.completedAt > SHIELDING_TAUNT_REQUEST_TTL_MS) shieldingTauntRequests.delete(key);
+  }
+  const key = `${request.requesterUserId}:${operationId}`;
+  const fingerprint = JSON.stringify({
+    sourceTokenUuid: request.sourceTokenUuid,
+    targetTokenUuid: request.targetTokenUuid
+  });
+  const prior = shieldingTauntRequests.get(key);
+  if (prior) {
+    if (prior.fingerprint !== fingerprint) {
+      throw new Error("Shielding Taunt operation ID was reused with different request details.");
+    }
+    return prior.promise;
+  }
+  const entry = { fingerprint, promise: Promise.resolve().then(execute), completedAt: null };
+  shieldingTauntRequests.set(key, entry);
+  entry.promise.then(
+    () => { entry.completedAt = Date.now(); },
+    () => { if (shieldingTauntRequests.get(key) === entry) shieldingTauntRequests.delete(key); }
   );
   return entry.promise;
 }
@@ -71,7 +104,9 @@ export async function handleWorkerRequest(request) {
   };
 
   /** Returns worker errors in one predictable shape so clients can present them safely. */
-  const fail = (message) => ({ ok: false, workerVersion: WORKER_VERSION, error: String(message) });
+  const fail = (message, details = {}) => ({
+    ok: false, workerVersion: WORKER_VERSION, error: String(message), ...details
+  });
   /** Returns worker results in one predictable shape so the socket bridge can resolve requests consistently. */
   const succeed = (data = {}) => ({ ok: true, workerVersion: WORKER_VERSION, ...data });
 
@@ -482,7 +517,10 @@ export async function handleWorkerRequest(request) {
           throw new Error("The Guardian token was not found.");
         }
         assertSourcePermission(sourceToken.actor, requester);
-        return succeed(await executeShieldingTaunt(request));
+        return await oncePerShieldingTauntRequest(
+          request,
+          async () => succeed(await executeShieldingTaunt(request))
+        );
       }
       case "library-list": return await serializeLibraryOperation(listLibrary);
       case "library-save": return await serializeLibraryOperation(saveLibraryPreset);
@@ -492,6 +530,9 @@ export async function handleWorkerRequest(request) {
     }
   } catch (error) {
     console.error("PF2e Zone GM Worker failed", { request, error });
-    return fail(error?.message ?? error);
+    return fail(error?.message ?? error, {
+      ...(typeof error?.code === "string" ? { errorCode: error.code } : {}),
+      ...(error?.retryable === true ? { retryable: true } : {})
+    });
   }
 }

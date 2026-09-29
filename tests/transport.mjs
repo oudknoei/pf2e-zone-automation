@@ -7,7 +7,8 @@ const gm = { id: "gm", name: "GM", isGM: true, active: true };
 const player = { id: "player", name: "Player", isGM: false, active: true };
 const users = new Map([[gm.id, gm], [player.id, player]]);
 users.activeGM = gm;
-globalThis.foundry = { utils: { randomID: () => "request-id" } };
+let randomId = 0;
+globalThis.foundry = { utils: { randomID: () => `request-${String(++randomId).padStart(12, "0")}` } };
 globalThis.game = {
   system: { id: "pf2e" },
   user: player,
@@ -26,6 +27,7 @@ globalThis.game = {
 };
 
 const { registerZoneSocket, requestGMWorker } = await import("../scripts/transport.js");
+const { requestShieldingTaunt } = await import("../scripts/shielding-taunt.js");
 registerZoneSocket();
 
 test("player request reaches the module GM Worker without a world macro", async () => {
@@ -93,6 +95,50 @@ test("a secondary GM routes save cancellation to the authoritative GM", async ()
     users.delete(otherGM.id);
     game.user = player;
   }
+});
+
+test("Shielding Taunt sends one operation ID for concurrent client retries", async () => {
+  game.user = player;
+  const sourceTokenUuid = "Scene.scene.Token.guardian";
+  const targetTokenUuid = "Scene.scene.Token.target";
+  const first = requestShieldingTaunt(sourceTokenUuid, targetTokenUuid);
+  const second = requestShieldingTaunt(sourceTokenUuid, targetTokenUuid);
+  assert.equal(sent.length, 1);
+  const request = sent.shift();
+  assert.equal(request.request.action, "shielding-taunt");
+  assert.match(request.request.operationId, /^[a-zA-Z0-9_-]{12,64}$/);
+
+  await listener({
+    kind: "response", id: request.id, gmId: gm.id,
+    recipientUserId: player.id,
+    response: { ok: true, action: "shielding-taunt", mechanicalSuccess: true, warnings: [] }
+  }, gm.id);
+  assert.equal((await first).mechanicalSuccess, true);
+  assert.equal((await second).mechanicalSuccess, true);
+
+  const failed = requestShieldingTaunt(sourceTokenUuid, targetTokenUuid);
+  const failedRequest = sent.shift();
+  await listener({
+    kind: "response", id: failedRequest.id, gmId: gm.id,
+    recipientUserId: player.id,
+    response: {
+      ok: false,
+      error: "Cleanup is incomplete.",
+      errorCode: "PF2E_ZONE_TAUNT_CLEANUP_INCOMPLETE",
+      retryable: true
+    }
+  }, gm.id);
+  await assert.rejects(failed, /Cleanup is incomplete/);
+
+  const retry = requestShieldingTaunt(sourceTokenUuid, targetTokenUuid);
+  const retryRequest = sent.shift();
+  assert.equal(retryRequest.request.operationId, failedRequest.request.operationId);
+  await listener({
+    kind: "response", id: retryRequest.id, gmId: gm.id,
+    recipientUserId: player.id,
+    response: { ok: true, action: "shielding-taunt", mechanicalSuccess: true, warnings: [] }
+  }, gm.id);
+  assert.equal((await retry).mechanicalSuccess, true);
 });
 
 test("GM rejects a forged requester id supplied in the socket payload", async () => {

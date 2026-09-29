@@ -314,7 +314,6 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
       };
     });
 
-    test.fail(true, "Known P1: Shielding Taunt is not yet transactional when old-effect deletion fails.");
     const result = await sessions.primary.evaluate(async ({ guardianUuid, sourceTokenUuid, oldActorId, newActorId, newTokenUuid, tauntEffectUuid }) => {
       const oldActor = game.actors.get(oldActorId);
       let owner = oldActor;
@@ -332,6 +331,7 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
           protocol: 1,
           action: "shielding-taunt",
           requesterUserId: game.user.id,
+          operationId: foundry.utils.randomID(20),
           sourceTokenUuid,
           targetTokenUuid: newTokenUuid
         });
@@ -359,7 +359,6 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
       };
     });
 
-    test.fail(true, "Known P1: a Shielding Taunt chat failure currently reports the completed action as failed.");
     const result = await sessions.primary.evaluate(async ({ guardianUuid, sourceTokenUuid, targetActorId, targetTokenUuid, tauntEffectUuid }) => {
       const original = ChatMessage.create;
       ChatMessage.create = async () => { throw new Error("injected chat failure"); };
@@ -370,6 +369,7 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
           protocol: 1,
           action: "shielding-taunt",
           requesterUserId: game.user.id,
+          operationId: foundry.utils.randomID(20),
           sourceTokenUuid,
           targetTokenUuid
         });

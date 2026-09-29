@@ -31,4 +31,4 @@ The `foundry-integration` workflow job runs after normal verification when both 
 
 Without both secrets, the job emits a notice and succeeds without claiming that the real-Foundry suite ran. CI downloads the latest PF2e release and the module's declared dependencies, so compatibility drift is exercised instead of hidden by a developer's long-lived world.
 
-Two scenarios are currently marked as Playwright expected failures because they reproduce the open Shielding Taunt partial-failure P1s. An unexpected pass fails the suite, signaling that the marker and corresponding TODO should be removed together.
+Shielding Taunt's deletion-rollback and chat-warning scenarios run as ordinary regression tests. The suite should not carry expected-failure markers for known lifecycle bugs; a newly reproduced defect belongs in the TODO and should fail visibly until fixed.
