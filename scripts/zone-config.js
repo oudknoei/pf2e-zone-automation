@@ -631,6 +631,10 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
         error(`${prefix} choose a recovery condition for condition-based immunity.`, blockTarget(index, "recovery-condition"));
       } else if (!supportedConditions.has(block.immunity.recoveryCondition)) {
         error(`${prefix} recovery condition '${block.immunity.recoveryCondition}' is unavailable. Choose a supported PF2e condition.`, blockTarget(index, "recovery-condition"));
+      } else if (!activeOutcomeKeys(block).some((key) =>
+        (block.outcomes[key]?.conditions ?? []).some((condition) => condition.slug === block.immunity.recoveryCondition)
+      )) {
+        error(`${prefix} must apply recovery condition '${block.immunity.recoveryCondition}' in at least one active outcome.`, blockTarget(index, "recovery-condition"));
       }
     }
     if (block.triggers.continuous && (block.damage.enabled || block.healing?.enabled)) {

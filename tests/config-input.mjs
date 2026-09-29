@@ -129,3 +129,26 @@ test("unknown condition and linked-condition slugs remain intact and receive fie
   condition.condition = "sickened";
   assert.deepEqual(validateConfig(normalized).errors, []);
 });
+
+test("condition-recovery immunity requires its condition in an active outcome", () => {
+  const config = defaultConfig();
+  config.name = "Recovery validation";
+  config.targeting.affects = "enemies";
+  const block = config.effects[0];
+  block.triggers.activation = true;
+  block.immunity.duration = "1-round";
+  block.immunity.starts = ["condition-recovery"];
+  block.immunity.recoveryCondition = "sickened";
+  block.outcomes.noSave.conditions.push({
+    slug: "frightened", value: 1, removal: "normal", condition: ""
+  });
+
+  const missing = validateConfig(config);
+  assert.match(missing.errors.join(" "), /must apply recovery condition 'sickened'.*active outcome/);
+  assert.equal(missing.issues.find((issue) => issue.message.includes("must apply recovery condition"))?.target.field, "recovery-condition");
+
+  block.outcomes.noSave.conditions.push({
+    slug: "sickened", value: 1, removal: "normal", condition: ""
+  });
+  assert.deepEqual(validateConfig(config).errors, []);
+});

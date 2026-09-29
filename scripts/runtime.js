@@ -794,15 +794,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
+        /** Finds one exact zone-owned Condition so applications and recovery watches share an identity. */
+        ownedConditionItem(region, block, token, condition) {
+          return token.actor?.items?.find?.((item) => {
+            const flag = this.zoneItemFlag(item);
+            return item.type === "condition" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.slug === condition.slug && flag?.removal === condition.removal;
+          }) ?? null;
+        },
+
         /** Gives each zone result its own Condition Item so cleanup cannot affect another source. */
         async addOwnedCondition(region, payload, block, token, condition) {
           const actor = token.actor;
           if (!actor) return false;
 
-          const duplicate = actor.items.find((item) => {
-            const flag = this.zoneItemFlag(item);
-            return item.type === "condition" && flag?.zoneUuid === region.uuid && flag?.blockId === block.id && flag?.slug === condition.slug && flag?.removal === condition.removal;
-          });
+          const duplicate = this.ownedConditionItem(region, block, token, condition);
           if (duplicate) {
             if (condition.value != null && Number(duplicate.system?.value?.value ?? 0) < Number(condition.value)) {
               await duplicate.update({ "system.value.value": Number(condition.value) });
@@ -1088,15 +1093,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Applies results while letting continuous refreshes restore items without replaying limited rolls. */
-        async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}, { maintainedOnly = false } = {}) {
+        async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}, { maintainedOnly = false, application = null } = {}) {
           const outcome = block.outcomes?.[outcomeKey];
           if (!outcome) return false;
           let affected = false;
           let exitBoundAffected = false;
+          if (application) application.conditions = [];
 
           for (const condition of outcome.conditions ?? []) {
             if (condition.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
             const applied = await this.addCondition(region, payload, block, token, condition);
+            const item = applied ? this.ownedConditionItem(region, block, token, condition) : null;
+            if (item && application) {
+              application.conditions.push({ slug: condition.slug, itemId: item.id });
+            }
             if (condition.removal === "on-exit") exitBoundAffected = applied || exitBoundAffected;
             else affected = applied || affected;
           }
@@ -1121,23 +1131,38 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return affected;
         },
 
-        /** Tracks conditions that must end before a zone grants temporary immunity. */
-        registerRecoveryWatcher(payload, block, token) {
+        /** Tracks the exact applied Condition that must end before a zone grants temporary immunity. */
+        registerRecoveryWatcher(payload, block, token, outcomeKey, application = null) {
           if (!block.immunity?.starts?.includes("condition-recovery")) return;
           const condition = block.immunity.recoveryCondition;
           if (!condition) return;
+          const outcomeHasCondition = (block.outcomes?.[outcomeKey]?.conditions ?? [])
+            .some((entry) => entry.slug === condition);
+          if (!outcomeHasCondition) return;
+          const applied = application?.conditions?.find((entry) => entry.slug === condition);
+          if (!applied?.itemId) return;
+          const item = token.actor?.items?.get?.(applied.itemId)
+            ?? token.actor?.items?.find?.((entry) => entry.id === applied.itemId);
+          if (!item) return;
+          if (Object.values(payload.state.recoveryWatchers).some((watcher) =>
+            watcher.actorUuid === token.actor?.uuid
+            && watcher.blockId === block.id
+            && watcher.itemId === item.id
+          )) return;
           const key = randomId();
           payload.state.recoveryWatchers[key] = {
             tokenUuid: token.uuid,
             actorUuid: token.actor?.uuid ?? null,
             blockId: block.id,
             condition,
+            itemId: item.id,
+            outcomeKey,
             duration: block.immunity.duration
           };
         },
 
         /** Applies immunity only for the selected outcome conditions rather than whenever a block runs. */
-        applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave) {
+        applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave, application = null) {
           const starts = block.immunity?.starts ?? [];
           let startNow = false;
           if (hadSave && starts.includes("after-save")) startNow = true;
@@ -1145,7 +1170,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (hadSave && starts.includes("failure-or-worse") && this.outcomeIsFailureOrWorse(outcomeKey)) startNow = true;
           if (starts.includes("affected") && affected) startNow = true;
           if (startNow) this.setImmunity(payload, token.uuid, block);
-          if (affected) this.registerRecoveryWatcher(payload, block, token);
+          this.registerRecoveryWatcher(payload, block, token, outcomeKey, application);
         },
 
         /** Coordinates eligibility, frequency, saves, and results so every trigger follows the same safeguards. */
@@ -1202,8 +1227,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // the maintenance path for effects such as Courageous Anthem.
           if (continuous) {
             this.markRepeat(payload, token.uuid, block);
-            const affected = await this.applyOutcome(region, payload, block, token, "noSave", batchId, resolvedEventContext);
-            this.applyImmunityStarts(payload, block, token, "noSave", affected, false);
+            const application = {};
+            const affected = await this.applyOutcome(
+              region, payload, block, token, "noSave", batchId, resolvedEventContext, { application }
+            );
+            this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application);
             return;
           }
 
@@ -1213,8 +1241,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
 
           this.markRepeat(payload, token.uuid, block);
-          const affected = await this.applyOutcome(region, payload, block, token, "noSave", batchId, resolvedEventContext);
-          this.applyImmunityStarts(payload, block, token, "noSave", affected, false);
+          const application = {};
+          const affected = await this.applyOutcome(
+            region, payload, block, token, "noSave", batchId, resolvedEventContext, { application }
+          );
+          this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application);
         },
 
         /** Runs all matching blocks while the caller already holds the Region state lock. */
@@ -2008,6 +2039,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             resolvedWorldTime: nowWorld()
           };
 
+          const application = {};
           const affected = await this.applyOutcome(
             region,
             payload,
@@ -2015,9 +2047,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             token,
             outcome,
             pending.batchId,
-            pending.eventContext ?? { trigger: pending.trigger }
+            pending.eventContext ?? { trigger: pending.trigger },
+            { application }
           );
-          this.applyImmunityStarts(payload, block, token, outcome, affected, true);
+          this.applyImmunityStarts(payload, block, token, outcome, affected, true, application);
 
           console.info("PF2e Zone save resolved", {
             zone: payload.config.name,
@@ -2177,8 +2210,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (!this.isOperational(region, payload)) return;
               for (const [key, watcher] of Object.entries(payload.state.recoveryWatchers)) {
                 if (watcher.actorUuid !== actor.uuid) continue;
-                const remaining = actor.conditions?.bySlug?.(watcher.condition, { active: true }) ?? [];
-                if (remaining.length) continue;
+                if (watcher.itemId) {
+                  const watched = actor.items?.get?.(watcher.itemId)
+                    ?? actor.items?.find?.((item) => item.id === watcher.itemId);
+                  if (watched) continue;
+                } else {
+                  // Legacy watchers did not persist an Item identity, so retain
+                  // their broader slug-based behavior until they are consumed.
+                  const remaining = actor.conditions?.bySlug?.(watcher.condition, { active: true }) ?? [];
+                  if (remaining.length) continue;
+                }
                 const block = payload.config.effects?.find((b) => b.id === watcher.blockId);
                 if (block) this.setImmunity(payload, watcher.tokenUuid, block);
                 delete payload.state.recoveryWatchers[key];

@@ -32,6 +32,7 @@ const runtime = await zoneRuntimeEntrypoint();
 function fixture() {
   const items = new Map();
   items.find = (predicate) => [...items.values()].find(predicate);
+  items.filter = (predicate) => [...items.values()].filter(predicate);
   const actor = {
     uuid: `Actor.target-${++nextId}`,
     name: "Target",
@@ -151,4 +152,91 @@ test("lasting results from separate sources stay separate and repeat within one 
   assert.equal(actor.items.size, 2, "repeating the same source must not create a third Item");
   await first.delete();
   assert.equal(actor.conditions.bySlug("frightened", { active: true })[0].value, 2);
+});
+
+test("damage and unrelated conditions cannot register a condition-recovery watcher", () => {
+  const { token, block, payload } = fixture();
+  const state = payload();
+  state.state.recoveryWatchers = {};
+  state.state.immunities = {};
+  block.immunity = {
+    duration: "1-round",
+    starts: ["condition-recovery"],
+    recoveryCondition: "sickened"
+  };
+  block.outcomes = {
+    noSave: { conditions: [], effects: [], damageMultiplier: 1 }
+  };
+
+  runtime.applyImmunityStarts(
+    state, block, token, "noSave", true, false,
+    { conditions: [{ slug: "frightened", itemId: "unrelated-condition" }] }
+  );
+  assert.deepEqual(state.state.recoveryWatchers, {}, "an unrelated affected result must not create a watcher");
+
+  block.outcomes.noSave.conditions.push({ slug: "sickened", value: 1, removal: "normal" });
+  runtime.applyImmunityStarts(state, block, token, "noSave", true, false, { conditions: [] });
+  assert.deepEqual(state.state.recoveryWatchers, {}, "a failed watched-condition application must not create a watcher");
+});
+
+test("condition recovery tracks the applied Condition Item and starts immunity when it ends", async () => {
+  const { actor, token, block, payload } = fixture();
+  const previousScenes = game.scenes;
+  const previousReplace = globalThis._replace;
+  const regions = new Map();
+  const scene = { id: "scene", regions, tokens: [token] };
+  let stored = payload();
+  block.immunity = {
+    duration: "1-round",
+    starts: ["condition-recovery"],
+    recoveryCondition: "sickened"
+  };
+  block.damage = { enabled: false };
+  block.healing = { enabled: false };
+  block.outcomes = {
+    noSave: {
+      conditions: [{ slug: "sickened", value: 1, removal: "normal" }],
+      effects: [],
+      damageMultiplier: 1
+    }
+  };
+  stored.config.effects = [block];
+  stored.state.recoveryWatchers = {};
+  stored.state.immunities = {};
+  const region = {
+    id: "recovery-zone",
+    uuid: "Scene.scene.Region.recovery-zone",
+    parent: scene,
+    getFlag: () => stored,
+    async update(changes) { stored = changes["flags.world.pf2eZone"]; }
+  };
+  regions.set(region.id, region);
+  token.parent = scene;
+  token.testInsideRegion = (candidate) => candidate === region;
+  game.scenes = { contents: [scene] };
+  globalThis._replace = (value) => value;
+
+  try {
+    const application = {};
+    const affected = await runtime.applyOutcome(
+      region, stored, block, token, "noSave", "batch", {}, { application }
+    );
+    runtime.applyImmunityStarts(stored, block, token, "noSave", affected, false, application);
+
+    const [watcher] = Object.values(stored.state.recoveryWatchers);
+    assert.equal(watcher.itemId, application.conditions[0].itemId);
+    assert.equal(Object.keys(stored.state.immunities).length, 0);
+
+    await actor.items.get(watcher.itemId).delete();
+    await runtime.reconcileActorDependencies(actor);
+
+    assert.deepEqual(stored.state.recoveryWatchers, {});
+    assert.equal(Object.keys(stored.state.immunities).length, 1);
+  } finally {
+    game.scenes = previousScenes;
+    delete token.parent;
+    delete token.testInsideRegion;
+    if (previousReplace === undefined) delete globalThis._replace;
+    else globalThis._replace = previousReplace;
+  }
 });
