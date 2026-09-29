@@ -31,4 +31,4 @@ The `foundry-integration` workflow job runs after normal verification when both 
 
 Without both secrets, the job emits a notice and succeeds without claiming that the real-Foundry suite ran. CI downloads the latest PF2e release and the module's declared dependencies, so compatibility drift is exercised instead of hidden by a developer's long-lived world.
 
-Four scenarios are currently marked as Playwright expected failures because they reproduce open P1 TODOs: shared-Actor on-exit ownership, both Shielding Taunt partial-failure boundaries, and full recovery after active-GM handoff. An unexpected pass fails the suite, signaling that the marker and corresponding TODO should be removed together.
+Two scenarios are currently marked as Playwright expected failures because they reproduce the open Shielding Taunt partial-failure P1s. An unexpected pass fails the suite, signaling that the marker and corresponding TODO should be removed together.

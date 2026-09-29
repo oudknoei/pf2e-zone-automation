@@ -173,6 +173,58 @@ test("deleting an affected unlinked Token clears its synthetic Actor records bef
   });
 });
 
+test("on-exit cleanup follows shared Actor occupancy for either linked-Token order", async () => {
+  const previousFromUuid = globalThis.fromUuid;
+  const previousEligible = runtime.eligible;
+  try {
+    for (const entryOrder of [["first", "second"], ["second", "first"]]) {
+      for (const exitOrder of [["first", "second"], ["second", "first"]]) {
+        const label = `entry ${entryOrder.join("-")}, exit ${exitOrder.join("-")}`;
+        const actor = { uuid: `Actor.shared-${entryOrder.join("-")}-${exitOrder.join("-")}`, items: new Map() };
+        const tokens = {
+          first: { uuid: `${actor.uuid}.Token.first`, actor, actorLink: true },
+          second: { uuid: `${actor.uuid}.Token.second`, actor, actorLink: true }
+        };
+        const item = {
+          id: "shared-effect",
+          parent: actor,
+          async delete() { actor.items.delete(this.id); }
+        };
+        actor.items.set(item.id, item);
+        const payload = {
+          state: {
+            applied: {
+              shared: {
+                recordId: "shared",
+                actorUuid: actor.uuid,
+                tokenUuid: tokens[entryOrder[0]].uuid,
+                itemId: item.id,
+                removal: "on-exit"
+              }
+            }
+          }
+        };
+        const documents = new Map([[actor.uuid, actor], ...Object.values(tokens).map((token) => [token.uuid, token])]);
+        globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
+        runtime.eligible = async (_payload, token) => token.actor?.uuid === actor.uuid;
+
+        const remaining = tokens[exitOrder[1]];
+        await runtime.cleanupExitedItemsUnlocked({}, payload, [remaining]);
+        assert.equal(actor.items.has(item.id), true, `${label}: first exit must retain the shared Item`);
+        assert.ok(payload.state.applied.shared, `${label}: first exit must retain its cleanup record`);
+
+        await runtime.cleanupExitedItemsUnlocked({}, payload, []);
+        assert.equal(actor.items.has(item.id), false, `${label}: last exit must remove the shared Item`);
+        assert.deepEqual(payload.state.applied, {}, `${label}: last exit must complete cleanup`);
+      }
+    }
+  } finally {
+    runtime.eligible = previousEligible;
+    if (previousFromUuid === undefined) delete globalThis.fromUuid;
+    else globalThis.fromUuid = previousFromUuid;
+  }
+});
+
 test("a deleted target Actor is completed cleanup instead of blocking zone dismissal", async () => {
   await withFiniteZoneFixture(async ({ scene, region }) => {
     region.getFlag().state.applied = {

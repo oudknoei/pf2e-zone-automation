@@ -1283,7 +1283,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Item creation and rolls can await Foundry while the token moves.
           // Exit-bound items no longer count as an effect if they are removed.
           if (this.isTokenInside(region, token.uuid)) affected = exitBoundAffected || affected;
-          else await this.cleanupTokenOnExitUnlocked(payload, token.uuid);
+          else await this.cleanupTokenOnExitUnlocked(payload, token.uuid, region);
           // Chat alerts are emitted once per trigger event by processBlock(),
           // independently of whether this outcome affects one or many targets.
           return affected;
@@ -1536,6 +1536,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async reconcileDeletedToken(token) {
           if (!this.isAuthority() || !token?.uuid) return;
           const actorIsLinked = token.actorLink === true;
+          const actorUuid = token.actor?.uuid ?? null;
           const failures = [];
           for (const region of this.allZones()) {
             try {
@@ -1545,21 +1546,25 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 continue;
               }
 
-              const hasMatchingRecord = Object.values(snapshot?.state?.applied ?? {}).some((record) =>
-                record.tokenUuid === token.uuid && (!actorIsLinked || record.removal === "on-exit")
+              const hasMatchingRecord = Object.values(snapshot?.state?.applied ?? {}).some((record) => actorIsLinked
+                ? record.removal === "on-exit" && ((actorUuid && record.actorUuid === actorUuid) || record.tokenUuid === token.uuid)
+                : record.tokenUuid === token.uuid
               );
               if (!hasMatchingRecord) continue;
 
               await this.withState(region, async (payload) => {
+                if (actorIsLinked) {
+                  // The deleted Token may be only one of several scene
+                  // representations of this Actor. Re-evaluate the Actor's
+                  // remaining eligible occupancy before removing its Item.
+                  await this.cleanupExitedItemsUnlocked(region, payload);
+                  return;
+                }
                 for (const [recordId, record] of Object.entries(payload.state.applied)) {
                   if (record.tokenUuid !== token.uuid) continue;
-                  if (actorIsLinked) {
-                    if (record.removal === "on-exit") await this.deleteAppliedRecord(payload, recordId);
-                  } else {
-                    // Deleting an unlinked Token also deletes its synthetic Actor
-                    // and every embedded Item, so only the stale record remains.
-                    delete payload.state.applied[recordId];
-                  }
+                  // Deleting an unlinked Token also deletes its synthetic Actor
+                  // and every embedded Item, so only the stale record remains.
+                  delete payload.state.applied[recordId];
                 }
               });
             } catch (error) { failures.push(error); }
@@ -1595,8 +1600,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Removes only exit-bound effects when a creature leaves while preserving other zone results. */
-        async cleanupTokenOnExitUnlocked(payload, tokenUuid) {
+        /** Rechecks Actor occupancy when an application finishes after its initiating Token has left. */
+        async cleanupTokenOnExitUnlocked(payload, tokenUuid, region = null) {
+          if (region) {
+            await this.cleanupExitedItemsUnlocked(region, payload);
+            return;
+          }
+          // Preserve the helper's legacy targeted form for callers that already
+          // know a specific Token has exited but do not have its Region document.
           const records = Object.entries(payload.state.applied)
             .filter(([, record]) => record.tokenUuid === tokenUuid && record.removal === "on-exit");
           for (const [recordId] of records) await this.deleteAppliedRecord(payload, recordId);
@@ -1692,17 +1703,27 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
         },
 
-        /** Removes temporary Items whose creature is no longer eligible or inside. */
+        /** Removes temporary Items only after every eligible Token for their Actor has left. */
         async cleanupExitedItemsUnlocked(region, payload, insideTokens = this.tokensInside(region)) {
-          const inside = new Set(insideTokens.map((token) => token.uuid));
+          const eligibleTokenUuids = new Set();
+          const eligibleActorUuids = new Set();
+          for (const token of insideTokens) {
+            if (!(await this.eligible(payload, token))) continue;
+            eligibleTokenUuids.add(token.uuid);
+            if (token.actor?.uuid) eligibleActorUuids.add(token.actor.uuid);
+          }
 
           // Remove on-exit zone-owned data from tokens that are no longer both
-          // inside and eligible. This also catches alliance changes on a later reconcile.
+          // inside and eligible. Linked Tokens share one Actor Item, so any
+          // eligible representation of that Actor retains it. This also catches
+          // alliance changes on a later reconcile and supports legacy records
+          // that only contain a Token UUID.
           for (const [recordId, record] of Object.entries(payload.state.applied)) {
             if (record.removal !== "on-exit") continue;
-            const token = record.tokenUuid ? await fromUuid(record.tokenUuid) : null;
-            const eligible = token && inside.has(record.tokenUuid) && await this.eligible(payload, token);
-            if (!eligible) await this.deleteAppliedRecord(payload, recordId);
+            const retained = record.actorUuid
+              ? eligibleActorUuids.has(record.actorUuid)
+              : eligibleTokenUuids.has(record.tokenUuid);
+            if (!retained) await this.deleteAppliedRecord(payload, recordId);
           }
         },
 

@@ -192,7 +192,7 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
       const sharedActor = await helper.createActor("linked tokens target");
       const sourceToken = await helper.createToken(scene, sourceActor, { x: 700, y: 100 });
       const firstToken = await helper.createToken(scene, sharedActor, { x: 100, y: 100 });
-      await helper.createToken(scene, sharedActor, { x: 300, y: 100 });
+      const secondToken = await helper.createToken(scene, sharedActor, { x: 300, y: 100 });
       const config = await helper.defaultConfig("linked tokens zone", (value) => { value.effects = []; });
       const region = await helper.createRegion(
         scene, sourceActor, sourceToken, config,
@@ -214,16 +214,27 @@ test.describe.serial("real Foundry lifecycle coverage", () => {
           removal: "on-exit"
         };
       });
-      return { sceneId: scene.id, actorId: sharedActor.id, firstTokenId: firstToken.id, itemId: item.id };
+      return {
+        sceneId: scene.id,
+        actorId: sharedActor.id,
+        firstTokenId: firstToken.id,
+        secondTokenId: secondToken.id,
+        itemId: item.id
+      };
     });
 
-    test.fail(true, "Known P1: on-exit ownership is still stored against only the first linked Token.");
     await sessions.primary.evaluate(async ({ sceneId, firstTokenId }) => {
       await game.scenes.get(sceneId).tokens.get(firstTokenId).update({ x: 1_000 });
     }, fixture);
     await expect.poll(() => sessions.primary.evaluate(({ actorId, itemId }) => (
       Boolean(game.actors.get(actorId)?.items.get(itemId))
     ), fixture), { timeout: 5_000 }).toBe(true);
+    await sessions.primary.evaluate(async ({ sceneId, secondTokenId }) => {
+      await game.scenes.get(sceneId).tokens.get(secondTokenId).update({ x: 1_000 });
+    }, fixture);
+    await expect.poll(() => sessions.primary.evaluate(({ actorId, itemId }) => (
+      Boolean(game.actors.get(actorId)?.items.get(itemId))
+    ), fixture), { timeout: 5_000 }).toBe(false);
   });
 
   test("a remote GM moving an off-canvas area applies Entry along the swept path", async ({ sessions }) => {
