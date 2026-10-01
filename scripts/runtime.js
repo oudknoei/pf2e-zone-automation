@@ -815,6 +815,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const buttons = pending.saveTypes.map((saveType) =>
             `<button type="button" data-pf2e-zone-save data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" data-save-type="${escHtml(saveType)}"><i class="fa-solid fa-dice-d20"></i> ${escHtml(titleCaseLocal(saveType))}</button>`
           ).join(" ");
+          const pingButton = `<button type="button" data-pf2e-zone-ping data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" title="Ping this target for everyone viewing the Scene"><i class="fa-solid fa-bullseye"></i> Ping target</button>`;
 
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const target = await fromUuid(pending.tokenUuid);
@@ -824,9 +825,32 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           return await ChatMessage.create({
             speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
-            content: `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${buttons}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`,
+            content: `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${buttons} ${pingButton}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`,
             flags: { world: { pf2eZoneSaveRequest: { identifier: pending.identifier } } }
           });
+        },
+
+        /** Uses Foundry's ordinary shared ping at the pending save's current Token position. */
+        async pingSaveTarget(region, pending) {
+          if (!canvas?.ready || canvas.scene?.id !== region.parent.id) {
+            ui.notifications.warn("View the target's Scene before pinging this save request.");
+            return false;
+          }
+
+          const token = await fromUuid(pending.tokenUuid);
+          if (!token || token.parent?.id !== region.parent.id) {
+            ui.notifications.warn("This save request's target Token no longer exists.");
+            return false;
+          }
+
+          const center = canvas.tokens?.get?.(token.id)?.center;
+          if (!center) {
+            ui.notifications.warn("This save request's target Token is not available on the canvas.");
+            return false;
+          }
+
+          await canvas.ping(center);
+          return true;
         },
 
         /** Posts or rediscovers one pending request while its Region state lock is held. */
@@ -3152,9 +3176,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           });
 
-          /** Handles save buttons centrally so chat interactions remain GM-authoritative. */
+          /** Handles save and ping buttons through the request's persisted Token identity. */
           const clickHandler = async (event) => {
-            const button = event.target?.closest?.("button[data-pf2e-zone-save]");
+            const button = event.target?.closest?.("button[data-pf2e-zone-save], button[data-pf2e-zone-ping]");
             if (!button) return;
             event.preventDefault();
 
@@ -3169,6 +3193,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               ui.notifications.warn("This PF2e Zone save request is no longer active.");
               return;
             }
+
+            if (button.dataset.pf2eZonePing !== undefined) {
+              button.disabled = true;
+              try {
+                await runtime.pingSaveTarget(region, pending);
+              } catch (error) {
+                console.error("PF2e Zone: target ping failed", error);
+                ui.notifications.error("PF2e Zone: target ping failed. See console.");
+              } finally {
+                button.disabled = false;
+              }
+              return;
+            }
+
             if (!pending.saveTypes.includes(saveType)) return;
 
             const token = await fromUuid(pending.tokenUuid);

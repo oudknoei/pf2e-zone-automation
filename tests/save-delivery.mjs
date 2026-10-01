@@ -19,7 +19,10 @@ globalThis.game = {
 };
 
 const notices = [];
-globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
+globalThis.ui = { notifications: {
+  error: (message) => notices.push(message),
+  warn: (message) => notices.push(message)
+} };
 
 const messages = [];
 let createCalls = 0;
@@ -47,7 +50,7 @@ function saveFixture() {
 
   const scene = { id: "scene", regions: new Map() };
   const actor = { id: "target", uuid: "Actor.target" };
-  const token = { id: "target-token", uuid: "Scene.scene.Token.target-token", name: "Target", actor };
+  const token = { id: "target-token", uuid: "Scene.scene.Token.target-token", name: "Target", actor, parent: scene };
   const block = {
     id: "block",
     name: "Hazard Save",
@@ -194,4 +197,83 @@ test("limited repeat policies still suppress another request while one is unansw
   assert.equal(second, false);
   assert.equal(Object.keys(fixture.stored.state.pendingSaves).length, 1);
   assert.equal(messages.length, 1);
+});
+
+test("same-named save cards ping their own pending Tokens at current positions", async () => {
+  const fixture = saveFixture();
+  const twin = {
+    id: "twin-token",
+    uuid: "Scene.scene.Token.twin-token",
+    name: fixture.token.name,
+    actor: fixture.actor,
+    parent: fixture.region.parent
+  };
+  const resolveOriginal = globalThis.fromUuid;
+  globalThis.fromUuid = async (uuid) => uuid === twin.uuid ? twin : resolveOriginal(uuid);
+  await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "batch")
+  );
+  await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, twin, "enter", "batch")
+  );
+  const [first, second] = Object.values(fixture.stored.state.pendingSaves);
+  assert.equal(messages.length, 2);
+  assert.ok(messages.every((message) => message.content.includes("data-pf2e-zone-ping")));
+  assert.match(messages[0].content, new RegExp(`data-pending-id="${first.id}"`));
+  assert.match(messages[1].content, new RegExp(`data-pending-id="${second.id}"`));
+
+  const positions = new Map([
+    [fixture.token.id, { x: 300, y: 450 }],
+    [twin.id, { x: 700, y: 450 }]
+  ]);
+  const pings = [];
+  globalThis.canvas = {
+    ready: true,
+    scene: fixture.region.parent,
+    tokens: { get: (id) => positions.has(id) ? { center: positions.get(id) } : null },
+    ping: async (point) => { pings.push(point); return true; }
+  };
+
+  runtime.installHooks();
+  try {
+    const clickPing = async (pending) => {
+      const button = {
+        dataset: { pf2eZonePing: "", sceneId: "scene", regionId: "zone", pendingId: pending.id },
+        disabled: false
+      };
+      let prevented = false;
+      await globalThis.PF2EZoneRuntimeHookRegistry.clickHandler({
+        target: { closest: () => button },
+        preventDefault: () => { prevented = true; }
+      });
+      assert.equal(prevented, true);
+      assert.equal(button.disabled, false);
+    };
+
+    await clickPing(second);
+    positions.set(fixture.token.id, { x: 350, y: 500 });
+    await clickPing(first);
+    assert.deepEqual(pings, [{ x: 700, y: 450 }, { x: 350, y: 500 }]);
+    assert.equal(Object.keys(fixture.stored.state.pendingSaves).length, 2, "pinging does not resolve saves");
+
+    canvas.scene = { id: "other-scene" };
+    await runtime.pingSaveTarget(fixture.region, first);
+    assert.equal(pings.length, 2, "the wrong Scene is not pinged");
+    assert.match(notices.at(-1), /View the target's Scene/);
+
+    canvas.scene = fixture.region.parent;
+    globalThis.fromUuid = async (uuid) => uuid === twin.uuid ? null : resolveOriginal(uuid);
+    await runtime.pingSaveTarget(fixture.region, second);
+    assert.equal(pings.length, 2, "a deleted target is not pinged");
+    assert.match(notices.at(-1), /no longer exists/);
+
+    delete fixture.stored.state.pendingSaves[second.id];
+    await clickPing(second);
+    assert.equal(pings.length, 2, "an expired request is not pinged");
+    assert.match(notices.at(-1), /no longer active/);
+  } finally {
+    runtime.teardownHooks();
+    delete globalThis.canvas;
+    globalThis.fromUuid = resolveOriginal;
+  }
 });

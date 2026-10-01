@@ -1,20 +1,24 @@
 # TODO
 
-[ ] **Feature: Support for Wall type areas.** Need to find examples of a wall that needs this type of automation.
-	- https://2e.aonprd.com/Spells.aspx?ID=234
-	- https://2e.aonprd.com/Spells.aspx?ID=37
-	- https://2e.aonprd.com/Spells.aspx?ID=1752
-	- https://2e.aonprd.com/Spells.aspx?ID=2042
-	- https://2e.aonprd.com/Spells.aspx?ID=1748
-	- https://2e.aonprd.com/Spells.aspx?ID=1379
-	- https://2e.aonprd.com/Spells.aspx?ID=1751
-	- https://2e.aonprd.com/Spells.aspx?ID=1127
-	- https://2e.aonprd.com/Spells.aspx?ID=1028
-	- https://2e.aonprd.com/Spells.aspx?ID=1753
-	- https://2e.aonprd.com/Spells.aspx?ID=1749
-	- https://2e.aonprd.com/Spells.aspx?ID=2373
-	- https://2e.aonprd.com/Spells.aspx?ID=2546
-	- https://2e.aonprd.com/Spells.aspx?ID=2372
-	- https://2e.aonprd.com/Spells.aspx?ID=1750
-	- https://2e.aonprd.com/Spells.aspx?ID=1414
-	
+- [ ] **Feature: Support for Wall type areas.** A wall-shaped Region would be useful mainly for effects on crossing, entering, beginning or ending a turn near a wall, and for cleanup when the spell ends. The module currently supports circular and square areas with entry/turn triggers, saves, damage, and conditions; it does not create Foundry Walls or model blocked movement, sight, cover, difficult terrain, or destructible sections. A wall footprint alone would therefore automate only part of most spells.
+
+  | Spell | Rank (level) | How useful would this module be? |
+  | --- | ---: | --- |
+  | [Prismatic Wall (Legacy)](https://2e.aonprd.com/Spells.aspx?ID=234) | 8 | **High potential, substantial custom work.** A wall boundary and surrounding light area could prompt the initial Will save and track its 1-hour immunity, then request the seven saves when a creature crosses. The ordered color layers, their individual counteracts, and effects blocked by each layer need spell-specific state and interaction handling. |
+  | [Chromatic Wall (Legacy)](https://2e.aonprd.com/Spells.aspx?ID=37) | 5 (7th heightened) | **High potential, substantial custom work.** Crossing detection could deliver the chosen color's save, damage, or condition. The random color, higher-rank options, color-specific counteracts, and selective blocking of ammunition, spells, or other effects are beyond a generic damage zone. |
+  | [Wall of Thorns](https://2e.aonprd.com/Spells.aspx?ID=1752) | 3 | **High.** A wall-shaped footprint could apply piercing damage when a move action enters the brambles. This must be counted once per qualifying move action, not merely once per turn or once per Region entry; cover, difficult terrain, and section HP/breaches need separate support. |
+  | [Wall of Flesh](https://2e.aonprd.com/Spells.aspx?ID=2042) | 5 | **Medium–high.** A 5-foot proximity band plus the existing end-of-turn trigger could request the Arms save and apply grabbed/restrained, or prompt the Mouths Strike. Eyes' remote sight, actual attack rolls, Escape, healing, and per-section HP are not generic zone effects. |
+  | [Wall of Fire](https://2e.aonprd.com/Spells.aspx?ID=1748) | 4 | **Very high; best first example.** Its line or ring can use crossing/entry damage and start-of-turn damage with no save, matching existing effect types once wall geometry and reliable crossing detection exist. Concealment across the wall still requires separate sight handling. |
+  | [Wall of Metal](https://2e.aonprd.com/Spells.aspx?ID=1379) | 6 | **Low.** This is chiefly a material barrier with per-section AC, Hardness, HP, and broken openings, not an occupant effect. It calls for Foundry Wall/object and breach integration more than the current zone runtime. |
+  | [Wall of Stone](https://2e.aonprd.com/Spells.aspx?ID=1751) | 5 | **Low.** Its shaped, potentially nonvertical path, solid obstruction, section damage, and rubble/difficult terrain dominate. A Region could mark the footprint, but wall geometry, destruction, and terrain need other systems. |
+  | [Wall of Virtue (Legacy)](https://2e.aonprd.com/Spells.aspx?ID=1127) | 3 | **High for its crossing/start-of-turn effect.** A line or ring could trigger its two damage components at the prescribed times using separate Effect Blocks. Its light and magical-darkness counteract need separate handling; the printed good/positive damage is Legacy terminology requiring a GM-approved Remaster interpretation before automation. |
+  | [Wall of Water (Legacy)](https://2e.aonprd.com/Spells.aspx?ID=1028) | 3 | **Low–medium.** A wall footprint could warn on traversal or fire entering the wall, but Swim/aquatic combat, projectile restrictions, and counteracting fires require movement, attack, and spell-effect integration rather than ordinary zone damage. |
+  | [Wall of Wind](https://2e.aonprd.com/Spells.aspx?ID=1753) | 3 | **Medium.** Crossing detection could request the Fortitude save for a creature trying to fly through and report the result. Enforcing stopped movement/pushes, ground difficult terrain, gas exclusion, and size-dependent projectile penalties needs dedicated movement and attack handling. |
+  | [Wall of Force](https://2e.aonprd.com/Spells.aspx?ID=1749) | 6 | **Low.** This invisible wall mainly blocks movement and physical effects while allowing visual and teleportation effects, with its own HP/counteract rules. A Region provides lifecycle bookkeeping, but not the barrier behavior. |
+  | [Wall of Shadow](https://2e.aonprd.com/Spells.aspx?ID=2373) | 3 | **Low.** Its effect is conditional visibility across the wall, including darkvision and heightened-rank differences; it has no creature-entry damage or condition for the current runtime to apply. It needs sight-system integration. |
+  | [Wall of Mirrors](https://2e.aonprd.com/Spells.aspx?ID=2546) | 4 | **Medium if wall attacks become events.** Striking the wall calls for mental damage with a basic Will save, which the effect engine could resolve once it can detect a Strike against the wall. The solid barrier, section HP, and concealment across it remain separate features. |
+  | [Wall of Radiance](https://2e.aonprd.com/Spells.aspx?ID=2372) | 3 (4th heightened) | **High.** A wall-crossing event could deliver fire damage with a basic Fortitude save; a separate 5-foot adjacency band could maintain dazzled while adjacent. The heightened concealment effect still needs sight handling. |
+  | [Wall of Ice](https://2e.aonprd.com/Spells.aspx?ID=1750) | 5 | **Medium after breach support.** The module could damage creatures crossing a section destroyed by non-fire means and remove that effect when the spell ends. Tracking which section was destroyed, how it was destroyed, its remaining cold/difficult-terrain mass, and the opaque barrier requires wall-object state. |
+  | [Wall of Shrubs](https://2e.aonprd.com/Spells.aspx?ID=1414) | 1 (3rd/5th heightened) | **Low.** There is no recurring save or damage to automate. Cover is the main effect; higher ranks add difficult terrain and a ring option, so useful support would be wall/terrain placement rather than the zone effect engine. |
+
+  **Scope recommendation:** Start with passable, damaging walls—especially *Wall of Fire* and *Wall of Radiance*—using straight-line and ring footprints, crossing detection, and existing turn/save/damage/condition effects. Treat physical obstruction, cover/sight, difficult terrain, projectile interception, and destructible sections as explicit later integrations, not promises of a generic Wall shape. *Prismatic Wall*, *Chromatic Wall*, *Wall of Virtue*, and *Wall of Water* above are marked Legacy on Archives of Nethys and have no linked Remaster reprint there; this table retains their printed rules instead of inventing a replacement. In particular, do not map *Wall of Virtue*'s good/positive damage to new damage types without an approved rules decision.
