@@ -810,35 +810,69 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return [...slugs];
         },
 
-        /** Creates a single clear chat choice so the affected player can resolve the required save. */
-        async postSaveRequest(region, payload, pending) {
-          const buttons = pending.saveTypes.map((saveType) =>
+        /** Renders the same card before and after a confirmed save, retaining its Token ping. */
+        saveRequestCardContent(region, payload, pending, targetName, completed = false) {
+          const buttons = completed ? "" : pending.saveTypes.map((saveType) =>
             `<button type="button" data-pf2e-zone-save data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" data-save-type="${escHtml(saveType)}"><i class="fa-solid fa-dice-d20"></i> ${escHtml(titleCaseLocal(saveType))}</button>`
           ).join(" ");
           const pingButton = `<button type="button" data-pf2e-zone-ping data-scene-id="${escHtml(region.parent.id)}" data-region-id="${escHtml(region.id)}" data-pending-id="${escHtml(pending.id)}" title="Ping this target for everyone viewing the Scene"><i class="fa-solid fa-bullseye"></i> Ping target</button>`;
+          const name = escHtml(targetName);
+          const choiceText = completed
+            ? `<p><b>${name}</b>: <strong>Save completed.</strong></p>`
+            : pending.saveTypes.length > 1
+              ? `<p><b>${name}</b>: choose a save before rolling.</p>`
+              : `<p><b>${name}</b>: roll ${escHtml(titleCaseLocal(pending.saveTypes[0]))}.</p>`;
+          const controls = buttons ? `${buttons} ${pingButton}` : pingButton;
+          return `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${controls}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`;
+        },
 
+        /** Creates a single clear chat choice so the affected player can resolve the required save. */
+        async postSaveRequest(region, payload, pending) {
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const target = await fromUuid(pending.tokenUuid);
-          const choiceText = pending.saveTypes.length > 1
-            ? `<p><b>${escHtml(target?.name ?? "Target")}</b>: choose a save before rolling.</p>`
-            : `<p><b>${escHtml(target?.name ?? "Target")}</b>: roll ${escHtml(titleCaseLocal(pending.saveTypes[0]))}.</p>`;
+          const targetName = target?.name ?? "Target";
 
           return await ChatMessage.create({
             speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
-            content: `<div class="pf2e-zone-save-request"><h4>${escHtml(payload.config.name)} — ${escHtml(pending.blockName)}</h4>${choiceText}<p><b>DC ${pending.dc}</b></p><div class="message-buttons">${buttons} ${pingButton}</div><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`,
-            flags: { world: { pf2eZoneSaveRequest: { identifier: pending.identifier } } }
+            content: this.saveRequestCardContent(region, payload, pending, targetName),
+            flags: { world: { pf2eZoneSaveRequest: {
+              identifier: pending.identifier,
+              tokenUuid: pending.tokenUuid,
+              targetName,
+              status: "pending"
+            } } }
           });
         },
 
+        /** Updates the original request card only after the matching save has committed. */
+        async completeSaveRequestCard(region, payload, pending) {
+          const card = this.saveRequestMessageForPending(pending);
+          if (!card?.update) return false;
+          const flag = card.flags?.world?.pf2eZoneSaveRequest ?? {};
+          if (flag.status === "completed") return false;
+          const target = flag.targetName ?? (await fromUuid(pending.tokenUuid))?.name ?? "Target";
+          await card.update({
+            content: this.saveRequestCardContent(region, payload, pending, target, true),
+            "flags.world.pf2eZoneSaveRequest": {
+              ...flag,
+              identifier: pending.identifier,
+              tokenUuid: pending.tokenUuid,
+              targetName: target,
+              status: "completed"
+            }
+          });
+          return true;
+        },
+
         /** Uses Foundry's ordinary shared ping at the pending save's current Token position. */
-        async pingSaveTarget(region, pending) {
-          if (!canvas?.ready || canvas.scene?.id !== region.parent.id) {
+        async pingSaveTarget(sceneId, tokenUuid) {
+          if (!canvas?.ready || canvas.scene?.id !== sceneId) {
             ui.notifications.warn("View the target's Scene before pinging this save request.");
             return false;
           }
 
-          const token = await fromUuid(pending.tokenUuid);
-          if (!token || token.parent?.id !== region.parent.id) {
+          const token = await fromUuid(tokenUuid);
+          if (!token || token.parent?.id !== sceneId) {
             ui.notifications.warn("This save request's target Token no longer exists.");
             return false;
           }
@@ -2398,6 +2432,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           );
           this.applyImmunityStarts(payload, block, token, outcome, affected, true, application);
 
+          this.queueAfterCommit(payload, () => this.completeSaveRequestCard(region, payload, pending));
+
           console.info("PF2e Zone save resolved", {
             zone: payload.config.name,
             regionUuid: region.uuid,
@@ -3189,21 +3225,32 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const region = game.scenes.get(sceneId)?.regions.get(regionId);
             const payload = region ? runtime.readPayload(region) : null;
             const pending = payload?.state?.pendingSaves?.[pendingId];
-            if (!region || !runtime.isOperational(region, payload) || !pending) {
-              ui.notifications.warn("This PF2e Zone save request is no longer active.");
-              return;
-            }
 
             if (button.dataset.pf2eZonePing !== undefined) {
+              const identifier = `${SAVE_PREFIX}:${sceneId}:${regionId}:${pendingId}`;
+              const card = runtime.saveRequestMessageForPending({ identifier });
+              const flag = card?.flags?.world?.pf2eZoneSaveRequest;
+              const active = region && runtime.isOperational(region, payload) && pending?.identifier === identifier;
+              const tokenUuid = active ? pending.tokenUuid
+                : flag?.status === "completed" ? flag.tokenUuid : null;
+              if (!tokenUuid) {
+                ui.notifications.warn("This PF2e Zone save request is no longer active.");
+                return;
+              }
               button.disabled = true;
               try {
-                await runtime.pingSaveTarget(region, pending);
+                await runtime.pingSaveTarget(sceneId, tokenUuid);
               } catch (error) {
                 console.error("PF2e Zone: target ping failed", error);
                 ui.notifications.error("PF2e Zone: target ping failed. See console.");
               } finally {
                 button.disabled = false;
               }
+              return;
+            }
+
+            if (!region || !runtime.isOperational(region, payload) || !pending) {
+              ui.notifications.warn("This PF2e Zone save request is no longer active.");
               return;
             }
 

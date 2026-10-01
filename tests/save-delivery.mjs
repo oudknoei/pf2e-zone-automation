@@ -32,7 +32,14 @@ globalThis.ChatMessage = {
   async create(data) {
     createCalls++;
     if (failCreation) throw new Error("injected chat creation failure");
-    const message = { id: `message-${createCalls}`, author: gm, ...data };
+    const message = {
+      id: `message-${createCalls}`, author: gm, ...data,
+      async update(changes) {
+        this.content = changes.content;
+        this.flags.world.pf2eZoneSaveRequest = changes["flags.world.pf2eZoneSaveRequest"];
+        return this;
+      }
+    };
     messages.push(message);
     return message;
   }
@@ -199,7 +206,48 @@ test("limited repeat policies still suppress another request while one is unansw
   assert.equal(messages.length, 1);
 });
 
-test("same-named save cards ping their own pending Tokens at current positions", async () => {
+test("recovery removes save buttons only after an authentic missed roll is applied", async () => {
+  const fixture = saveFixture();
+  await runtime.withState(fixture.region, (payload) =>
+    runtime.requestSave(fixture.region, payload, fixture.block, fixture.token, "enter", "batch")
+  );
+  const [pending] = Object.values(fixture.stored.state.pendingSaves);
+  const card = messages[0];
+  assert.match(card.content, /data-pf2e-zone-save/);
+
+  const result = {
+    author: gm,
+    actor: fixture.actor,
+    token: fixture.token,
+    flags: { pf2e: { context: {
+      type: "saving-throw", identifier: pending.identifier,
+      actor: fixture.actor.id, token: fixture.token.id,
+      dc: { value: pending.dc }, domains: ["saving-throw", "reflex"], outcome: "failure"
+    } } },
+    rolls: [{ degreeOfSuccess: 1, options: {
+      type: "saving-throw", identifier: pending.identifier, rollerId: gm.id
+    } }]
+  };
+  messages.push(result);
+
+  const applyOutcome = runtime.applyOutcome;
+  const applyImmunityStarts = runtime.applyImmunityStarts;
+  runtime.applyOutcome = async () => true;
+  runtime.applyImmunityStarts = () => {};
+  try {
+    await runtime.reconcileCompletedSaves();
+  } finally {
+    runtime.applyOutcome = applyOutcome;
+    runtime.applyImmunityStarts = applyImmunityStarts;
+  }
+
+  assert.equal(fixture.stored.state.pendingSaves[pending.id], undefined);
+  assert.doesNotMatch(card.content, /data-pf2e-zone-save/);
+  assert.match(card.content, /Save completed/);
+  assert.match(card.content, /data-pf2e-zone-ping/);
+});
+
+test("same-named cards retire only the completed save button and keep its Token ping", async () => {
   const fixture = saveFixture();
   const twin = {
     id: "twin-token",
@@ -256,20 +304,58 @@ test("same-named save cards ping their own pending Tokens at current positions",
     assert.deepEqual(pings, [{ x: 700, y: 450 }, { x: 350, y: 500 }]);
     assert.equal(Object.keys(fixture.stored.state.pendingSaves).length, 2, "pinging does not resolve saves");
 
+    const applyOutcome = runtime.applyOutcome;
+    const applyImmunityStarts = runtime.applyImmunityStarts;
+    runtime.applyOutcome = async () => true;
+    runtime.applyImmunityStarts = () => {};
+    try {
+      assert.equal(await runtime.resolvePendingSave(
+        fixture.region, second.id, second.identifier, "success", "Actor.wrong"
+      ), false);
+      assert.match(messages[1].content, /data-pf2e-zone-save/);
+      const updateCard = messages[1].update;
+      messages[1].update = async function (changes) {
+        assert.equal(fixture.stored.state.pendingSaves[second.id], undefined,
+          "the request is committed before its save buttons disappear");
+        return updateCard.call(this, changes);
+      };
+      assert.equal(await runtime.resolvePendingSave(
+        fixture.region, second.id, second.identifier, "success", fixture.actor.uuid
+      ), true);
+    } finally {
+      runtime.applyOutcome = applyOutcome;
+      runtime.applyImmunityStarts = applyImmunityStarts;
+    }
+    assert.match(messages[0].content, /data-pf2e-zone-save/, "the other Token still needs its save");
+    assert.doesNotMatch(messages[1].content, /data-pf2e-zone-save/);
+    assert.match(messages[1].content, /Save completed/);
+    assert.match(messages[1].content, /data-pf2e-zone-ping/);
+    assert.equal(messages[1].flags.world.pf2eZoneSaveRequest.status, "completed");
+    assert.equal(fixture.stored.state.pendingSaves[second.id], undefined);
+
+    positions.set(twin.id, { x: 750, y: 500 });
+    await clickPing(second);
+    assert.deepEqual(pings.at(-1), { x: 750, y: 500 }, "completed cards ping the current Token location");
+
+    fixture.region.parent.regions.delete(fixture.region.id);
+    await clickPing(second);
+    assert.deepEqual(pings.at(-1), { x: 750, y: 500 }, "completed-card ping survives zone removal");
+    fixture.region.parent.regions.set(fixture.region.id, fixture.region);
+
     canvas.scene = { id: "other-scene" };
-    await runtime.pingSaveTarget(fixture.region, first);
-    assert.equal(pings.length, 2, "the wrong Scene is not pinged");
+    await runtime.pingSaveTarget(fixture.region.parent.id, first.tokenUuid);
+    assert.equal(pings.length, 4, "the wrong Scene is not pinged");
     assert.match(notices.at(-1), /View the target's Scene/);
 
     canvas.scene = fixture.region.parent;
     globalThis.fromUuid = async (uuid) => uuid === twin.uuid ? null : resolveOriginal(uuid);
-    await runtime.pingSaveTarget(fixture.region, second);
-    assert.equal(pings.length, 2, "a deleted target is not pinged");
+    await runtime.pingSaveTarget(fixture.region.parent.id, second.tokenUuid);
+    assert.equal(pings.length, 4, "a deleted target is not pinged");
     assert.match(notices.at(-1), /no longer exists/);
 
-    delete fixture.stored.state.pendingSaves[second.id];
-    await clickPing(second);
-    assert.equal(pings.length, 2, "an expired request is not pinged");
+    delete fixture.stored.state.pendingSaves[first.id];
+    await clickPing(first);
+    assert.equal(pings.length, 4, "an expired request is not pinged");
     assert.match(notices.at(-1), /no longer active/);
   } finally {
     runtime.teardownHooks();
