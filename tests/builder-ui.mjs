@@ -31,6 +31,8 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /Player creation available/);
   assert.match(builder, /Source token changed/);
   assert.doesNotMatch(builder, /data-action="load-config"/);
+  assert.match(builder, /data-action="load"><i class="fa-solid fa-folder-open"><\/i> Load<\/button>/);
+  assert.doesNotMatch(builder, /Load Config/);
   assert.match(builder, /data-action="end"/);
   assert.match(builder, /const savedPresetId = operation\.preset\?\.id \?\? null/);
   assert.match(builder, /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/);

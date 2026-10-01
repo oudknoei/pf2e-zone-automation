@@ -48,8 +48,8 @@ test("module Regions render two outlined boundaries without any fill", () => {
   const outline = graphics[0];
   assert.equal(outline.eventMode, "none");
   assert.deepEqual(outline.calls.filter(([name]) => name === "lineStyle"), [
-    ["lineStyle", 6, 0x000000, 0.9],
-    ["lineStyle", 3, 0x336699, 1]
+    ["lineStyle", 7, 0x000000, 0.9],
+    ["lineStyle", 4, 0x336699, 1]
   ]);
   assert.equal(outline.calls.filter(([name]) => name === "closePath").length, 4);
   assert.equal(outline.calls.some(([name]) => name.toLowerCase().includes("fill")), false);
@@ -67,11 +67,11 @@ test("Foundry Color objects and numeric colors draw without restoring the fill",
   const colorObjectZone = zone(new FoundryColor(0x336699));
   drawZoneOutline(colorObjectZone);
   assert.deepEqual(graphics.at(-1).calls.filter(([name]) => name === "lineStyle").at(-1),
-    ["lineStyle", 3, 0x336699, 1]);
+    ["lineStyle", 4, 0x336699, 1]);
   const numericZone = zone(0xabcdef);
   drawZoneOutline(numericZone);
   assert.deepEqual(graphics.at(-1).calls.filter(([name]) => name === "lineStyle").at(-1),
-    ["lineStyle", 3, 0xabcdef, 1]);
+    ["lineStyle", 4, 0xabcdef, 1]);
 });
 
 test("unrelated Regions keep their ordinary Foundry rendering", async () => {

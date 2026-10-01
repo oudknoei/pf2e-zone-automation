@@ -1457,7 +1457,7 @@ export async function openZoneBuilder() {
         <div>
           <b>${esc(presetLabel(record))}</b>
         </div>
-        <button type="button" data-action="load"><i class="fa-solid fa-folder-open"></i> Load Config</button>
+        <button type="button" data-action="load"><i class="fa-solid fa-folder-open"></i> Load</button>
         ${canDelete ? `<button type="button" data-action="delete" class="danger"><i class="fa-solid fa-trash"></i> Delete</button>` : `<span></span>`}
       </div>`;
     }).join("");
