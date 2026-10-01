@@ -60,14 +60,29 @@ test("module Regions render two outlined boundaries without any fill", () => {
   assert.equal(graphics.length, 2, "a native redraw replaces a destroyed line object");
 });
 
+test("Foundry Color objects and numeric colors draw without restoring the fill", () => {
+  class FoundryColor extends Number {
+    toString() { return "#336699"; }
+  }
+  const colorObjectZone = zone(new FoundryColor(0x336699));
+  drawZoneOutline(colorObjectZone);
+  assert.deepEqual(graphics.at(-1).calls.filter(([name]) => name === "lineStyle").at(-1),
+    ["lineStyle", 3, 0x336699, 1]);
+  const numericZone = zone(0xabcdef);
+  drawZoneOutline(numericZone);
+  assert.deepEqual(graphics.at(-1).calls.filter(([name]) => name === "lineStyle").at(-1),
+    ["lineStyle", 3, 0xabcdef, 1]);
+});
+
 test("unrelated Regions keep their ordinary Foundry rendering", async () => {
   const ordinary = zone();
   ordinary.document.getFlag = () => null;
+  const before = graphics.length;
   drawZoneOutline(ordinary);
-  assert.equal(graphics.length, 2);
+  assert.equal(graphics.length, before);
   canvas.regions.placeables = [ordinary, zone()];
   installZoneOutlines();
-  assert.equal(graphics.length, 3, "an already viewed zone gets its line");
+  assert.equal(graphics.length, before + 1, "an already viewed zone gets its line");
   assert.equal(hooks.has("canvasReady"), true);
   let nativeRenders = 0;
   const render = registrations.get("foundry.canvas.placeables.regions.RegionMesh.prototype._render");
@@ -83,11 +98,11 @@ test("unrelated Regions keep their ordinary Foundry rendering", async () => {
   assert.equal(drawn.mode, "WRAPPER");
   const newZone = zone();
   await drawn.wrapper.call(newZone, async () => undefined);
-  assert.equal(graphics.length, 4);
+  assert.equal(graphics.length, before + 2);
   const refreshed = registrations.get("CONFIG.Region.objectClass.prototype._refreshGeometry");
   newZone.document.polygonTree = [{ path: [{ x: 10, y: 20 }, { x: 30, y: 20 }] }];
   refreshed.wrapper.call(newZone, () => undefined);
-  assert.equal(graphics.length, 4);
-  assert.ok(graphics[3].calls.some((call) => call[0] === "moveTo" && call[1] === 10));
+  assert.equal(graphics.length, before + 2);
+  assert.ok(graphics.at(-1).calls.some((call) => call[0] === "moveTo" && call[1] === 10));
   assert.ok(registrations.has("CONFIG.Region.objectClass.prototype._onTokenAnimationFrame"));
 });

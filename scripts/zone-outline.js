@@ -6,6 +6,15 @@ function isZoneRegion(region) {
   return Boolean(region?.document?.getFlag?.("world", "pf2eZone"));
 }
 
+/** Accepts Foundry's Number-based Color objects as well as saved CSS strings. */
+function outlineColor(value) {
+  const numeric = Number(value);
+  if (Number.isInteger(numeric) && numeric >= 0 && numeric <= 0xffffff) return numeric;
+  const text = String(value ?? "").trim();
+  const match = /^#?([0-9a-f]{6})$/i.exec(text);
+  return match ? Number.parseInt(match[1], 16) : 0xffffff;
+}
+
 /** Draws the resolved boundary, including holes and wall-clipped edges, without a fill. */
 export function drawZoneOutline(region) {
   if (!isZoneRegion(region) || !region.document?.polygonTree || !region.addChild) return;
@@ -21,9 +30,7 @@ export function drawZoneOutline(region) {
     region.addChild(outline);
   }
   outline.clear();
-  const color = /^#[0-9a-f]{6}$/i.test(region.document.color ?? "")
-    ? Number.parseInt(region.document.color.slice(1), 16)
-    : 0xffffff;
+  const color = outlineColor(region.document.color);
   for (const [width, stroke, alpha] of [[6, 0x000000, 0.9], [3, color, 1]]) {
     outline.lineStyle(width, stroke, alpha);
     for (const path of paths) {
