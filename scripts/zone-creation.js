@@ -18,7 +18,7 @@ export function requireValidConfig(raw, sourceActor) {
   return config;
 }
 
-/** Keeps the Region border visible against its fill for both GM and player requests. */
+/** Gives the outline a legible color for both GM and player requests. */
 function lightenZoneColor(value, amount = 0.1) {
   const raw = String(value ?? "#999999").trim();
   const short = raw.match(/^#?([0-9a-f]{3})$/i);

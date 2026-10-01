@@ -5,6 +5,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 ## Features
 
 - Create token-following emanations and fixed circular or square areas. Drag a fixed area to apply Entry effects to creatures it crosses, including those outside its final position.
+- Show zones as colored outlines without an interior fill, so overlapping zones remain easy to distinguish. Existing zones use the same outline display after the Scene loads.
 - Configure one or more Effect Blocks for each zone.
 - Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, when a watched trait is used, or when an occupant crosses an HP threshold.
 - Resolve saves and outcome-specific damage, healing, conditions, chat alerts, and PF2e Effect Items.
