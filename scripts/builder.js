@@ -805,6 +805,13 @@ export async function openZoneBuilder() {
                   <label class="zb-check"><input data-zone="affects-self" type="checkbox" ${targetChoices.self ? "checked" : ""}> Self (Source Actor)</label>
                 </div>
               </fieldset>
+              <label>Line of effect
+                <select data-zone="line-of-effect">
+                  <option value="respect" ${state.targeting.lineOfEffect === "respect" ? "selected" : ""}>Respect line of effect</option>
+                  <option value="ignore" ${state.targeting.lineOfEffect === "ignore" ? "selected" : ""}>Ignore line of effect</option>
+                </select>
+                <span class="notes">Closed physical walls block affected creatures.</span>
+              </label>
             </div>
           </section>
 
@@ -910,11 +917,14 @@ export async function openZoneBuilder() {
       radius: editableZoneSize(field(root, '[data-zone="radius"]').value),
       sideLength: editableZoneSize(field(root, '[data-zone="side-length"]').value),
       visibility: field(root, '[data-zone="visibility"]').value,
-      targeting: storedTargeting({
-        allies: field(root, '[data-zone="affects-allies"]').checked,
-        enemies: field(root, '[data-zone="affects-enemies"]').checked,
-        self: field(root, '[data-zone="affects-self"]').checked
-      }),
+      targeting: {
+        ...storedTargeting({
+          allies: field(root, '[data-zone="affects-allies"]').checked,
+          enemies: field(root, '[data-zone="affects-enemies"]').checked,
+          self: field(root, '[data-zone="affects-self"]').checked
+        }),
+        lineOfEffect: field(root, '[data-zone="line-of-effect"]').value
+      },
       traits: [...new Set([...commonTraits, ...customTraits])],
       duration: {
         type: field(root, '[data-zone="duration-type"]').value,

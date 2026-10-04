@@ -3,6 +3,7 @@ import { combatDurationDeadline } from "./duration-clock.js";
 import { combatForZone, combatForZoneState, recordedCombatForZoneState } from "./scene-combat.js";
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
+import { hasLineOfEffect, tokenCenter, zoneOrigin } from "./line-of-effect.js";
 
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
@@ -76,6 +77,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         areaBoundaryBefore: new Map(),
         areaBoundarySnapshots: new Map(),
         areaBoundarySuppression: new Map(),
+        effectiveOccupants: new Map(),
         saveDeliveryRecovery: null,
         authorityRecovery: null,
         authorityRecoveryTimer: null,
@@ -351,6 +353,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return this.tokensInside(region).some((candidate) => candidate.uuid === tokenUuid);
         },
 
+        /** Treats a wall-blocked occupant as outside for exit-bound result handling. */
+        async isTokenEffectivelyInside(region, payload, token) {
+          return this.isTokenInside(region, token?.uuid) && await this.lineOfEffectAllows(payload, token, region);
+        },
+
         /** Resolves the stored source only when needed so a deleted source does not invalidate unrelated cleanup. */
         async resolveSource(payload) {
           const token = payload?.state?.sourceTokenUuid ? await fromUuid(payload.state.sourceTokenUuid) : null;
@@ -427,8 +434,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
         },
 
-        /** Applies targeting rules in one place so every trigger treats allies, enemies, and the source consistently. */
-        async eligible(payload, token) {
+        /** Applies targeting and line-of-effect rules consistently for every zone trigger. */
+        async eligible(payload, token, region = null) {
           const targetActor = token?.actor;
           if (!targetActor?.isOfType?.("creature")) return false;
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
@@ -437,19 +444,56 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const isSource = token.uuid === sourceToken?.uuid || targetActor.uuid === sourceActor.uuid;
           if (isSource) return Boolean(payload.config?.targeting?.includeSelf);
 
+          let matchesTargeting = false;
           switch (payload.config?.targeting?.affects) {
             case "allies":
-              return Boolean(targetActor.isAllyOf?.(sourceActor));
+              matchesTargeting = Boolean(targetActor.isAllyOf?.(sourceActor));
+              break;
             case "enemies":
-              return Boolean(targetActor.isEnemyOf?.(sourceActor));
+              matchesTargeting = Boolean(targetActor.isEnemyOf?.(sourceActor));
+              break;
             case "both":
               // Keep the stored "both" value's existing unrestricted behavior for older zones.
-              return true;
+              matchesTargeting = true;
+              break;
             case "none":
-              return false;
+              break;
             default:
-              return false;
+              break;
           }
+          if (!matchesTargeting) return false;
+          return this.lineOfEffectAllows(payload, token, region, sourceToken);
+        },
+
+        /** Checks only the physical path so delayed exit-bound results do not depend on source or alliance state. */
+        async lineOfEffectAllows(payload, token, region, knownSourceToken = null) {
+          if (payload.config?.targeting?.lineOfEffect === "ignore") return true;
+          const sourceToken = knownSourceToken ?? (await this.resolveSource(payload)).token;
+          const scene = region?.parent ?? token?.parent ?? sourceToken?.parent;
+          const origin = zoneOrigin(region, payload, sourceToken);
+          return hasLineOfEffect(scene, origin, tokenCenter(token));
+        },
+
+        /** Replaces the transient effective-occupant snapshot without producing Entry triggers. */
+        async rememberEffectiveOccupants(region, payload = this.readPayload(region)) {
+          if (!this.isOperational(region, payload)) {
+            this.effectiveOccupants.delete(region?.uuid);
+            return;
+          }
+          const occupants = new Set();
+          for (const token of this.tokensInside(region)) {
+            if (await this.eligible(payload, token, region)) occupants.add(token.uuid);
+          }
+          this.effectiveOccupants.set(region.uuid, occupants);
+        },
+
+        /** Updates one Region snapshot after Foundry reports a geometric enter or exit. */
+        noteEffectiveOccupant(region, token, inside) {
+          if (!region?.uuid || !token?.uuid) return;
+          const occupants = this.effectiveOccupants.get(region.uuid) ?? new Set();
+          if (inside) occupants.add(token.uuid);
+          else occupants.delete(token.uuid);
+          this.effectiveOccupants.set(region.uuid, occupants);
         },
 
         /** Prefers the creation-time duration result so dice formulas never reroll during later checks. */
@@ -1460,7 +1504,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (application) application.conditions = [];
 
           for (const condition of outcome.conditions ?? []) {
-            if (condition.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
+            if (condition.removal === "on-exit" && !(await this.isTokenEffectivelyInside(region, payload, token))) continue;
             const applied = await this.addCondition(region, payload, block, token, condition);
             const item = applied ? this.ownedConditionItem(region, block, token, condition) : null;
             if (item && application) {
@@ -1470,7 +1514,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             else affected = applied || affected;
           }
           for (const effect of outcome.effects ?? []) {
-            if (effect.removal === "on-exit" && !this.isTokenInside(region, token.uuid)) continue;
+            if (effect.removal === "on-exit" && !(await this.isTokenEffectivelyInside(region, payload, token))) continue;
             const applied = await this.addEffectItem(region, payload, block, token, effect, outcomeKey);
             if (effect.removal === "on-exit") exitBoundAffected = applied || exitBoundAffected;
             else affected = applied || affected;
@@ -1483,7 +1527,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
           // Item creation and rolls can await Foundry while the token moves.
           // Exit-bound items no longer count as an effect if they are removed.
-          if (this.isTokenInside(region, token.uuid)) affected = exitBoundAffected || affected;
+          if (await this.isTokenEffectivelyInside(region, payload, token)) affected = exitBoundAffected || affected;
           else await this.cleanupTokenOnExitUnlocked(payload, token.uuid, region);
           // Chat alerts are emitted once per trigger event by processBlock(),
           // independently of whether this outcome affects one or many targets.
@@ -1538,7 +1582,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Older saved zones may contain a combination now rejected by the builder.
           // Never apply its No Save result or spend its repeat limit before a save trigger runs.
           if (continuous && block.save?.enabled) return;
-          if (!skipEligibility && !(await this.eligible(payload, token))) {
+          if (!skipEligibility && !(await this.eligible(payload, token, region))) {
             console.info("PF2e Zone trigger blocked: ineligible target", {
               zone: payload.config.name, block: block.name, trigger, token: token?.name
             });
@@ -1631,9 +1675,47 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             : null;
         },
 
+        /** Resolves the master whose combat turn a linked familiar or Eidolon shares. */
+        linkedTurnMaster(actor) {
+          if (!actor) return null;
+
+          // PF2e familiars expose their selected master directly.
+          if (actor.master) return actor.master;
+
+          // PF2e Toolbelt Shared Data exposes a supported API when enabled.
+          const shareData = game.modules?.get?.("pf2e-toolbelt")?.api?.shareData
+            ?? game.toolbelt?.shareData;
+          try {
+            const master = shareData?.getMasterInMemory?.(actor);
+            if (master) return master;
+          } catch (_error) {
+            // An optional compatibility API must never stop ordinary turn processing.
+          }
+
+          // PF2e Eidolon Helper stores the linked Summoner's world Actor id.
+          const summonerId = actor.getFlag?.("pf2e-eidolon-helper", "summoner")
+            ?? actor.flags?.["pf2e-eidolon-helper"]?.summoner;
+          return summonerId ? game.actors?.get?.(summonerId) ?? null : null;
+        },
+
+        /** Compares world and synthetic Actor documents without relying only on object identity. */
+        sameActor(first, second) {
+          if (!first || !second) return false;
+          return first === second
+            || Boolean(first.uuid && second.uuid && first.uuid === second.uuid)
+            || Boolean(first.id && second.id && first.id === second.id);
+        },
+
+        /** Treats a master and its linked familiar or Eidolon as sharing one combat turn. */
+        actorsShareTurn(first, second) {
+          const firstAnchor = this.linkedTurnMaster(first) ?? first;
+          const secondAnchor = this.linkedTurnMaster(second) ?? second;
+          return this.sameActor(firstAnchor, secondAnchor);
+        },
+
         /** Processes occupant turn effects inside an existing state lock to prevent duplicate applications. */
         async processTurnStartUnlocked(region, payload, token, batchPrefix = "turnStart") {
-          if (!(await this.eligible(payload, token))) return;
+          if (!(await this.eligible(payload, token, region))) return;
 
           // Region reshaping can transiently drop and re-add token membership.
           // Both Foundry's Region behavior and our combat-hook fallback can
@@ -1669,12 +1751,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // Geometry is authoritative here. This intentionally does not rely on
           // RegionDocument.tokens because moving/resizing a Region can make that
           // membership collection transiently stale.
-          if (!this.tokensInside(region).some((candidate) => candidate.uuid === token.uuid)) return;
+          const activeActor = active.actor ?? token.actor;
+          const turnTokens = this.tokensInside(region).filter((candidate) =>
+            candidate.uuid === token.uuid
+            || (!this.sameActor(candidate.actor, activeActor)
+              && this.actorsShareTurn(candidate.actor, activeActor))
+          );
+          if (!turnTokens.length) return;
 
           await this.withState(region, async (payload) => {
             if (!this.isOperational(region, payload)) return;
             if (!(payload.config.effects ?? []).some((block) => block.triggers?.turnStart)) return;
-            await this.processTurnStartUnlocked(region, payload, token, "combatTurnStart");
+            for (const turnToken of turnTokens) {
+              await this.processTurnStartUnlocked(region, payload, turnToken, "combatTurnStart");
+            }
           });
         },
 
@@ -1909,7 +1999,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const eligibleTokenUuids = new Set();
           const eligibleActorUuids = new Set();
           for (const token of insideTokens) {
-            if (!(await this.eligible(payload, token))) continue;
+            if (!(await this.eligible(payload, token, region))) continue;
             eligibleTokenUuids.add(token.uuid);
             if (token.actor?.uuid) eligibleActorUuids.add(token.actor.uuid);
           }
@@ -1936,12 +2026,27 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           const eligibleTokens = [];
           for (const token of insideTokens) {
-            if (await this.eligible(payload, token)) eligibleTokens.push(token);
+            if (await this.eligible(payload, token, region)) eligibleTokens.push(token);
           }
+          const previousOccupants = this.effectiveOccupants.get(region.uuid);
+          const currentOccupants = new Set(eligibleTokens.map((token) => token.uuid));
+          this.effectiveOccupants.set(region.uuid, currentOccupants);
+
           const batch = `continuous:${this.roundStamp(payload)}:${randomId()}`;
           const count = eligibleTokens.length;
           for (const token of eligibleTokens) {
             await this.processContinuousUnlocked(region, payload, token, batch, { count });
+          }
+
+          // A wall or closed door can end or restore the effective zone without
+          // changing Foundry's geometric Region membership. Treat only the
+          // blocked -> clear transition as Entry, and seed the first snapshot
+          // silently during activation or startup.
+          if (!previousOccupants) return;
+          for (const token of eligibleTokens) {
+            if (previousOccupants.has(token.uuid)) continue;
+            this.seedHpBaseline(payload, token, { replace: true });
+            await this.processTriggerUnlocked(region, payload, token, "enter", `lineOfEffectEnter:${token.uuid}:${randomId()}`);
           }
         },
 
@@ -2018,7 +2123,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             if (!this.isOperational(region, payload)) return;
             for (const token of affected) {
               if (this.isTokenInside(region, token.uuid)) this.seedHpBaseline(payload, token, { replace: true });
-              if (!(await this.eligible(payload, token))) continue;
+              if (!(await this.eligible(payload, token, region))) continue;
+              if (this.isTokenInside(region, token.uuid)) this.noteEffectiveOccupant(region, token, true);
               await this.processTriggerUnlocked(region, payload, token, "enter", batch + ":" + token.uuid);
             }
           });
@@ -2054,7 +2160,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Handles initial occupants once so activation effects cannot be duplicated by Foundry membership reconciliation. */
         async processActivationTokenUnlocked(region, payload, token, batchSeed = randomId()) {
           if (payload.state.activationProcessed) return;
-          if (!(await this.eligible(payload, token))) return;
+          if (!(await this.eligible(payload, token, region))) return;
 
           for (const block of payload.config.effects ?? []) {
             if (!block.triggers?.activation) continue;
@@ -2065,7 +2171,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             // requestSave() creates the pending workflow before returning.
             let count = 0;
             for (const candidate of this.tokensInside(region)) {
-              if (!(await this.eligible(payload, candidate))) continue;
+              if (!(await this.eligible(payload, candidate, region))) continue;
               if (this.isImmune(payload, candidate.uuid, block.id)) continue;
               if (this.repeatBlocked(payload, candidate.uuid, block)) continue;
               count += 1;
@@ -2865,7 +2971,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (troopGroup?.size > 1) {
                 const eligibleSegments = [];
                 for (const token of occupants) {
-                  if (troopGroup.has(token.actor?.uuid) && await this.eligible(payload, token)) eligibleSegments.push(token);
+                  if (troopGroup.has(token.actor?.uuid) && await this.eligible(payload, token, region)) eligibleSegments.push(token);
                 }
                 representative = eligibleSegments.sort((a, b) => a.uuid.localeCompare(b.uuid))[0] ?? null;
               }
@@ -2876,7 +2982,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 payload.state.hpObserved[key] = currentHp;
                 if (!Number.isFinite(previousHp) || previousHp === currentHp) continue;
                 if (troopGroup?.size > 1 && token.uuid !== representative?.uuid) continue;
-                if (!(await this.eligible(payload, token))) continue;
+                if (!(await this.eligible(payload, token, region))) continue;
 
                 for (const block of payload.config.effects ?? []) {
                   if (!block.triggers?.hpThreshold) continue;
@@ -3057,6 +3163,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.areaBoundarySnapshots.clear();
           for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);
           this.areaBoundarySuppression.clear();
+          this.effectiveOccupants.clear();
           if (this.authorityRecoveryTimer !== null) clearTimeout(this.authorityRecoveryTimer);
           this.authorityRecoveryTimer = null;
 
@@ -3088,6 +3195,15 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const hookId = Hooks.on(hookName, fn);
             hookIds.push([hookName, hookId]);
             return hookId;
+          };
+
+          /** Rechecks every zone on a Scene after token movement or physical-wall changes. */
+          const reconcileSceneZones = (document, delay = 100) => {
+            const scene = document?.parent;
+            if (!scene?.regions) return;
+            for (const region of scene.regions.values?.() ?? scene.regions) {
+              if (runtime.isOperational(region)) runtime.scheduleRegionReconcile(region, delay);
+            }
           };
 
           on("createChatMessage", (message) => {
@@ -3157,18 +3273,32 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           on("userConnected", resumeAuthorityWork);
           on("updateUser", resumeAuthorityWork);
 
+          on("createToken", (token) => reconcileSceneZones(token));
+          on("updateToken", (token) => reconcileSceneZones(token));
           on("deleteToken", (token) => {
+            reconcileSceneZones(token);
             runtime.reconcileDeletedToken(token)
               .catch((e) => console.error("PF2e Zone token deletion cleanup", e));
           });
+          for (const hookName of ["createWall", "updateWall", "deleteWall"]) {
+            on(hookName, (wall) => reconcileSceneZones(wall));
+          }
           on("deleteActor", (actor) => {
             runtime.reconcileDeletedActor(actor)
               .catch((e) => console.error("PF2e Zone Actor deletion cleanup", e));
           });
 
-          on("createRegion", (region) => runtime.rememberAreaBoundary(region));
+          on("createRegion", (region) => {
+            runtime.rememberAreaBoundary(region);
+            runtime.rememberEffectiveOccupants(region)
+              .catch((e) => console.error("PF2e Zone effective-occupant initialization", e));
+          });
           on("createScene", (scene) => {
-            for (const region of scene.regions ?? []) runtime.rememberAreaBoundary(region);
+            for (const region of scene.regions ?? []) {
+              runtime.rememberAreaBoundary(region);
+              runtime.rememberEffectiveOccupants(region)
+                .catch((e) => console.error("PF2e Zone effective-occupant initialization", e));
+            }
           });
 
           on("preUpdateRegion", (region, changes) => {
@@ -3201,6 +3331,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             runtime.activationFinalizeTimers.delete(region.uuid);
             runtime.areaBoundaryBefore.delete(region.uuid);
             runtime.areaBoundarySnapshots.delete(region.uuid);
+            runtime.effectiveOccupants.delete(region.uuid);
             const suppression = runtime.areaBoundarySuppression.get(region.uuid);
             if (suppression) clearTimeout(suppression.timer);
             runtime.areaBoundarySuppression.delete(region.uuid);
@@ -3334,7 +3465,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             clickHandler
           };
           this.hooksInstalled = true;
-          for (const region of this.allZones()) this.rememberAreaBoundary(region);
+          for (const region of this.allZones()) {
+            this.rememberAreaBoundary(region);
+            this.rememberEffectiveOccupants(region)
+              .catch((e) => console.error("PF2e Zone effective-occupant initialization", e));
+          }
 
           // Startup and later active-GM changes use the exact same repair set.
           this.scheduleAuthorityRecovery("startup recovery");
@@ -3389,8 +3524,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               this.noteAreaBoundaryOccupant(region, token, true, event?.data?.movement);
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload)) return;
+                if (!this.effectiveOccupants.has(region.uuid)) await this.rememberEffectiveOccupants(region, payload);
                 this.seedHpBaseline(payload, token, { replace: true });
-                if (!(await this.eligible(payload, token))) return;
+                if (!(await this.eligible(payload, token, region))) {
+                  this.noteEffectiveOccupant(region, token, false);
+                  return;
+                }
+                this.noteEffectiveOccupant(region, token, true);
                 const batch = `enter:${token.uuid}:${randomId()}`;
                 const initialKey = stateKey("initial", token.uuid);
                 const isInitialOccupant =
@@ -3421,6 +3561,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             case "tokenExit":
               if (!token) break;
               this.noteAreaBoundaryOccupant(region, token, false, event?.data?.movement);
+              this.noteEffectiveOccupant(region, token, false);
               // Do not delete on-exit state immediately. Region moves/resizes
               // can report a transient exit for a token that is still inside the
               // new geometry. The deferred reconcile removes true exits and
@@ -3437,7 +3578,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             case "tokenTurnEnd":
               if (!token) break;
               await this.withState(region, async (payload) => {
-                if (!this.isOperational(region, payload) || !(await this.eligible(payload, token))) return;
+                if (!this.isOperational(region, payload) || !(await this.eligible(payload, token, region))) return;
                 await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp(payload)}:${randomId()}`);
               });
               break;

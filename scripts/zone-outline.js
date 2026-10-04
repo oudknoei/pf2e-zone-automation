@@ -31,7 +31,7 @@ export function drawZoneOutline(region) {
   }
   outline.clear();
   const color = outlineColor(region.document.color);
-  for (const [width, stroke, alpha] of [[7, 0x000000, 0.9], [4, color, 1]]) {
+  for (const [width, stroke, alpha] of [[7, 0x000000, 0.9], [6, color, 1]]) {
     outline.lineStyle(width, stroke, alpha);
     for (const path of paths) {
       outline.moveTo(path[0].x, path[0].y);

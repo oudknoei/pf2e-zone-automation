@@ -6,7 +6,7 @@ import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
 import { editableHpThreshold } from "./hp-threshold.js";
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 /** Keeps saved trait labels and validation messages readable. */
 const titleCase = (slug) => String(slug ?? "").replaceAll("-", " ").replace(/\b\w/g, (m) => m.toUpperCase());
 /** Uses PF2e translations when the system provides one. */
@@ -219,7 +219,8 @@ function defaultConfig() {
     visibility: "all",
     targeting: {
       affects: "none",
-      includeSelf: false
+      includeSelf: false,
+      lineOfEffect: "respect"
     },
     traits: [],
     duration: {
@@ -280,6 +281,7 @@ function validateSuppliedChoices(cfg) {
   check(cfg.areaShape, ["circle", "square"], "Area shape");
   check(cfg.visibility, ["all", "creator", "gm"], "Visibility");
   check(cfg.targeting?.affects, ["enemies", "allies", "both", "none"], "Affects");
+  check(cfg.targeting?.lineOfEffect, ["respect", "ignore"], "Line of effect");
   for (const option of (Array.isArray(cfg.activationChoices?.damageType?.options)
     ? cfg.activationChoices.damageType.options
     : [])) {
@@ -363,7 +365,10 @@ function normalizeConfig(input, { strict = false } = {}) {
       affects: ["enemies", "allies", "both", "none"].includes(cfg.targeting?.affects)
         ? cfg.targeting.affects
         : base.targeting.affects,
-      includeSelf: Boolean(cfg.targeting?.includeSelf)
+      includeSelf: Boolean(cfg.targeting?.includeSelf),
+      lineOfEffect: ["respect", "ignore"].includes(cfg.targeting?.lineOfEffect)
+        ? cfg.targeting.lineOfEffect
+        : base.targeting.lineOfEffect
     },
     traits,
     duration: {
@@ -520,6 +525,9 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
     error("Side length must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "side-length" });
   }
   if (!hasTargetSelection(cfg.targeting)) error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
+  if (!["respect", "ignore"].includes(cfg.targeting?.lineOfEffect)) {
+    error("Choose whether the zone respects or ignores line of effect.", { scope: "zone", field: "line-of-effect" });
+  }
   if (!DURATION_TYPES.has(cfg.duration?.type)) {
     error(`Duration type '${String(cfg.duration?.type ?? "")}' is unavailable. Choose a supported duration.`, { scope: "zone", field: "duration-type" });
   } else if (cfg.duration.type === "custom-rounds") {

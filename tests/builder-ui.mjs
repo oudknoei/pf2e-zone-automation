@@ -67,6 +67,9 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(zoneMarkup, /data-zone="affects-allies"/);
   assert.match(zoneMarkup, /data-zone="affects-enemies"/);
   assert.match(zoneMarkup, /data-zone="affects-self"/);
+  assert.match(zoneMarkup, /data-zone="line-of-effect"/);
+  assert.match(zoneMarkup, /Respect line of effect/);
+  assert.match(zoneMarkup, /Ignore line of effect/);
   assert.doesNotMatch(zoneMarkup, /<select data-zone="affects">/);
   assert.doesNotMatch(zoneMarkup, /Include source actor/);
   assert.match(zoneMarkup, /option value="area-circle"/);

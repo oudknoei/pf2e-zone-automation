@@ -451,6 +451,93 @@ test("self-only and legacy both targeting remain compatible", async () => {
   }
 });
 
+test("target eligibility respects closed walls by default and allows the zone override", async () => {
+  const previousConst = globalThis.CONST;
+  const originalResolveSource = runtime.resolveSource;
+  globalThis.CONST = {
+    WALL_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
+    WALL_DOOR_TYPES: { NONE: 0, DOOR: 1 },
+    WALL_DOOR_STATES: { CLOSED: 0, OPEN: 1 }
+  };
+  const wall = { c: [150, 0, 150, 100], move: 20, door: 1, ds: 0 };
+  const scene = { walls: [wall] };
+  const sourceActor = { uuid: "Actor.source", isOfType: () => true };
+  const targetActor = {
+    uuid: "Actor.target", isOfType: () => true,
+    isEnemyOf: () => true, isAllyOf: () => false
+  };
+  const sourceToken = {
+    uuid: "Token.source", actor: sourceActor, parent: scene,
+    x: 0, y: 0, getSize: () => ({ width: 100, height: 100 })
+  };
+  const targetToken = {
+    uuid: "Token.target", actor: targetActor, parent: scene,
+    x: 200, y: 0, getSize: () => ({ width: 100, height: 100 })
+  };
+  const region = { parent: scene };
+  const payload = {
+    config: { mode: "emanation", targeting: { affects: "enemies", includeSelf: false } }
+  };
+  runtime.resolveSource = async () => ({ token: sourceToken, actor: sourceActor });
+  try {
+    assert.equal(await runtime.eligible(payload, targetToken, region), false, "missing legacy setting uses the new default");
+    payload.config.targeting.lineOfEffect = "ignore";
+    assert.equal(await runtime.eligible(payload, targetToken, region), true);
+    payload.config.targeting.lineOfEffect = "respect";
+    wall.ds = 1;
+    assert.equal(await runtime.eligible(payload, targetToken, region), true, "an open door restores line of effect");
+  } finally {
+    runtime.resolveSource = originalResolveSource;
+    if (previousConst === undefined) delete globalThis.CONST;
+    else globalThis.CONST = previousConst;
+  }
+});
+
+test("runtime watches token and wall changes for effective-zone reconciliation", () => {
+  const hooks = globalThis.PF2EZoneRuntimeHookRegistry?.hookIds?.map(([name]) => name) ?? [];
+  assert.ok(hooks.includes("updateToken"));
+  assert.ok(hooks.includes("createWall"));
+  assert.ok(hooks.includes("updateWall"));
+  assert.ok(hooks.includes("deleteWall"));
+});
+
+test("effective occupancy fires Entry once when line of effect is restored", async () => {
+  const originalInside = runtime.tokensInside;
+  const originalEligible = runtime.eligible;
+  const originalTrigger = runtime.processTriggerUnlocked;
+  const region = { uuid: "Scene.scene.Region.line-of-effect", parent: { tokens: [] } };
+  const token = { uuid: "Scene.scene.Token.target", actor: { uuid: "Actor.target" } };
+  const payload = {
+    config: { effects: [] },
+    state: { applied: {}, hpObserved: {} }
+  };
+  const entries = [];
+  let clear = false;
+  runtime.tokensInside = () => [token];
+  runtime.eligible = async () => clear;
+  runtime.processTriggerUnlocked = async (_region, _payload, target, trigger) => {
+    if (trigger === "enter") entries.push(target.uuid);
+  };
+  runtime.effectiveOccupants.set(region.uuid, new Set());
+  try {
+    clear = true;
+    await runtime.reconcileContinuousUnlocked(region, payload);
+    await runtime.reconcileContinuousUnlocked(region, payload);
+    assert.deepEqual(entries, [token.uuid], "ordinary movement with unchanged line of effect does not retrigger Entry");
+
+    clear = false;
+    await runtime.reconcileContinuousUnlocked(region, payload);
+    clear = true;
+    await runtime.reconcileContinuousUnlocked(region, payload);
+    assert.deepEqual(entries, [token.uuid, token.uuid], "losing then restoring line of effect creates a new Entry");
+  } finally {
+    runtime.tokensInside = originalInside;
+    runtime.eligible = originalEligible;
+    runtime.processTriggerUnlocked = originalTrigger;
+    runtime.effectiveOccupants.delete(region.uuid);
+  }
+});
+
 /** Creates persisted Region state so duration checks exercise real locking and deletion. */
 async function withFiniteZoneFixture(run) {
   const saved = {
@@ -909,6 +996,90 @@ test("another Scene's combat update cannot start this zone's source or occupant 
       runtime.processSourceTurnStartUnlocked = original.source;
       runtime.processTurnStartUnlocked = original.occupant;
       runtime.tokensInside = original.inside;
+    }
+  });
+});
+
+test("a Summoner turn starts an inside Eidolon's zone effects even when the Summoner is outside", async () => {
+  await withFiniteZoneFixture(async ({ scene, region, sourceActor }) => {
+    sourceActor.id = "summoner";
+    const eidolonActor = {
+      id: "eidolon",
+      uuid: "Actor.eidolon",
+      getFlag: (scope, key) => scope === "pf2e-eidolon-helper" && key === "summoner"
+        ? sourceActor.id
+        : null
+    };
+    const eidolonToken = {
+      uuid: "Scene.scene.Token.eidolon",
+      actor: eidolonActor,
+      parent: scene
+    };
+    const unrelatedToken = {
+      uuid: "Scene.scene.Token.unrelated",
+      actor: { id: "unrelated", uuid: "Actor.unrelated" },
+      parent: scene
+    };
+    const previousActors = game.actors;
+    const originalInside = runtime.tokensInside;
+    const originalTurnStart = runtime.processTurnStartUnlocked;
+    const processed = [];
+    game.actors = {
+      get: (id) => id === sourceActor.id ? sourceActor : null,
+      contents: [sourceActor, eidolonActor]
+    };
+    region.getFlag().config.effects = [{ triggers: { turnStart: true } }];
+    runtime.tokensInside = () => [eidolonToken, unrelatedToken];
+    runtime.processTurnStartUnlocked = async (_region, _payload, token) => {
+      processed.push(token.uuid);
+    };
+
+    try {
+      await runtime.processActiveTurnStart(region);
+      assert.deepEqual(processed, [eidolonToken.uuid]);
+    } finally {
+      game.actors = previousActors;
+      runtime.tokensInside = originalInside;
+      runtime.processTurnStartUnlocked = originalTurnStart;
+    }
+  });
+});
+
+test("PF2e Toolbelt-linked turn bodies are processed once with their master", async () => {
+  await withFiniteZoneFixture(async ({ scene, region, sourceActor, sourceToken }) => {
+    const eidolonActor = { id: "eidolon", uuid: "Actor.eidolon" };
+    const eidolonToken = {
+      uuid: "Scene.scene.Token.eidolon",
+      actor: eidolonActor,
+      parent: scene
+    };
+    const duplicateSummonerToken = {
+      uuid: "Scene.scene.Token.duplicate-summoner",
+      actor: sourceActor,
+      parent: scene
+    };
+    const previousModules = game.modules;
+    const originalInside = runtime.tokensInside;
+    const originalTurnStart = runtime.processTurnStartUnlocked;
+    const processed = [];
+    game.modules = {
+      get: (id) => id === "pf2e-toolbelt" ? {
+        api: { shareData: { getMasterInMemory: (actor) => actor === eidolonActor ? sourceActor : null } }
+      } : null
+    };
+    region.getFlag().config.effects = [{ triggers: { turnStart: true } }];
+    runtime.tokensInside = () => [sourceToken, duplicateSummonerToken, eidolonToken];
+    runtime.processTurnStartUnlocked = async (_region, _payload, token) => {
+      processed.push(token.uuid);
+    };
+
+    try {
+      await runtime.processActiveTurnStart(region);
+      assert.deepEqual(processed, [sourceToken.uuid, eidolonToken.uuid]);
+    } finally {
+      game.modules = previousModules;
+      runtime.tokensInside = originalInside;
+      runtime.processTurnStartUnlocked = originalTurnStart;
     }
   });
 });

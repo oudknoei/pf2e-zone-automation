@@ -242,6 +242,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(builderDialog.title, `PF2e Zone Automation v${moduleVersion}`);
     let root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
     assert.ok(root);
+    assert.equal(root.querySelector('[data-zone="line-of-effect"]').value, "respect");
     assert.deepEqual(
       [...root.querySelector('[data-field="dc-source"]').options].map((option) => option.textContent),
       ["Custom DC"],
@@ -400,6 +401,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.equal(regions.size, 1, "two clicks before validation finishes create only one Region");
     const region = [...regions][0];
     assert.equal(region.name, "Smoke Zone");
+    assert.equal(region.getFlag("world", "pf2eZone").config.targeting.lineOfEffect, "respect");
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.noSave.effects[0].uuid, effectUuid);
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.failure.effects[0].uuid, "Item.deleted");
     assert.deepEqual(runtimeCalls.activated, [region]);

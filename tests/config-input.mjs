@@ -24,6 +24,15 @@ test("missing legacy durations receive a default while cleared custom durations 
   assert.equal(editableDurationRounds("2d4", 1), "2d4");
 });
 
+test("line of effect defaults to respect and preserves the explicit ignore override", () => {
+  const legacy = defaultConfig();
+  delete legacy.targeting.lineOfEffect;
+  assert.equal(normalizeConfig(legacy).targeting.lineOfEffect, "respect");
+
+  legacy.targeting.lineOfEffect = "ignore";
+  assert.equal(normalizeConfig(legacy).targeting.lineOfEffect, "ignore");
+});
+
 test("unknown duration remains visible for validation while known legacy values migrate", () => {
   const config = defaultConfig();
   config.name = "Import";
@@ -97,6 +106,7 @@ test("unknown imported enum choices are rejected instead of changed to defaults"
   const cases = [
     [(config) => { config.mode = "cone"; }, /Zone type.*cone/],
     [(config) => { config.targeting.affects = "foes"; }, /Affects.*foes/],
+    [(config) => { config.targeting.lineOfEffect = "sometimes"; }, /Line of effect.*sometimes/],
     [(config) => { config.effects[0].repeat = "occasionally"; }, /repeat setting.*occasionally/],
     [(config) => { config.effects[0].save.type = "luck"; }, /save type.*luck/],
     [(config) => { config.effects[0].immunity.starts = ["after-save", "whenever"]; }, /immunity start.*whenever/],
