@@ -9,7 +9,9 @@ import { hasLineOfEffect, tokenCenter, zoneOrigin } from "./line-of-effect.js";
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.19";
+    const VERSION = "0.5.20";
+    const MODULE_ID = "pf2e-zone-automation";
+    const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
     const FLAG_SCOPE = "world";
     const FLAG_KEY = "pf2eZone";
     const SAVE_PREFIX = "pf2e-zone";
@@ -78,6 +80,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         areaBoundarySnapshots: new Map(),
         areaBoundarySuppression: new Map(),
         effectiveOccupants: new Map(),
+        sharedImmunityCache: {},
+        sharedImmunityWrite: null,
+        sharedImmunityCancellationTimers: new Map(),
+        sharedResolutionLocks: new Map(),
         saveDeliveryRecovery: null,
         authorityRecovery: null,
         authorityRecoveryTimer: null,
@@ -518,6 +524,107 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return combatForZoneState(payload?.state, recordedCombatId);
         },
 
+        /** Returns the explicit cross-zone key without guessing from Actor names or creature data. */
+        sharedImmunityGroup(block) {
+          if (block?.immunity?.scope !== "shared-group") return null;
+          const group = String(block.immunity.group ?? "").trim().toLowerCase();
+          return group || null;
+        },
+
+        /** Keys shared immunity to the creature rather than one of its Token documents. */
+        sharedImmunityTarget(actorUuid, tokenUuid) {
+          return String(actorUuid || tokenUuid || "") || null;
+        },
+
+        /** Reads hidden world state while retaining a no-setting fallback for tests and startup edges. */
+        readSharedImmunities() {
+          let stored = {};
+          try {
+            const value = game.settings?.get?.(MODULE_ID, SHARED_IMMUNITIES_SETTING);
+            if (value && typeof value === "object" && !Array.isArray(value)) stored = clone(value);
+          } catch (_error) { /* setting is not registered in lightweight test contexts */ }
+          return { ...stored, ...clone(this.sharedImmunityCache ?? {}) };
+        },
+
+        /** Serializes world-setting replacement so two Regions cannot overwrite each other's grants. */
+        async mutateSharedImmunities(mutator) {
+          const prior = this.sharedImmunityWrite ?? Promise.resolve();
+          const next = prior.catch(() => undefined).then(async () => {
+            const records = this.readSharedImmunities();
+            const before = dataSignature(records);
+            const result = await mutator(records);
+            const changed = before !== dataSignature(records);
+            if (changed && game.settings?.set) {
+              await game.settings.set(MODULE_ID, SHARED_IMMUNITIES_SETTING, records);
+            }
+            this.sharedImmunityCache = clone(records);
+            return result;
+          });
+          this.sharedImmunityWrite = next;
+          try {
+            return await next;
+          } finally {
+            if (this.sharedImmunityWrite === next) this.sharedImmunityWrite = null;
+          }
+        },
+
+        /** Reconstructs the original zone clock so shared records use existing duration semantics. */
+        sharedImmunityClockPayload(record, fallbackPayload = null) {
+          const fallback = fallbackPayload?.state ?? {};
+          return {
+            state: {
+              sourceTokenUuid: record?.clock?.sourceTokenUuid ?? fallback.sourceTokenUuid ?? null,
+              sourceActorUuid: record?.clock?.sourceActorUuid ?? fallback.sourceActorUuid ?? null,
+              immunities: { shared: record }
+            }
+          };
+        },
+
+        /** Advances a shared record across world-time and encounter transitions before testing it. */
+        sharedImmunityActive(record, fallbackPayload = null) {
+          if (!record?.expiry) return false;
+          const clockPayload = this.sharedImmunityClockPayload(record, fallbackPayload);
+          this.syncImmunityCombatClock(clockPayload);
+          return this.expiryActive(record.expiry, clockPayload);
+        },
+
+        /** Finds one active Actor/group grant regardless of which aura originally created it. */
+        findSharedImmunityEntry(payload, actorUuid, tokenUuid, group) {
+          const targetUuid = this.sharedImmunityTarget(actorUuid, tokenUuid);
+          if (!targetUuid || !group) return null;
+          for (const [storageId, record] of Object.entries(this.readSharedImmunities())) {
+            if (record?.targetUuid !== targetUuid || record?.group !== group) continue;
+            if (this.sharedImmunityActive(record, payload)) return { storageId, record };
+          }
+          return null;
+        },
+
+        /** Applies both legacy per-block immunity and the optional Actor-wide shared group. */
+        isImmuneFor(payload, token, block) {
+          if (this.isImmune(payload, token?.uuid, block?.id)) return true;
+          const group = this.sharedImmunityGroup(block);
+          if (!group) return false;
+          return Boolean(this.findSharedImmunityEntry(
+            payload,
+            token?.actor?.uuid ?? null,
+            token?.uuid ?? null,
+            group
+          ));
+        },
+
+        /** Prevents concurrent save outcomes for one Actor/group from passing each other. */
+        async withSharedResolutionLock(key, callback) {
+          if (!key) return await callback();
+          const prior = this.sharedResolutionLocks.get(key) ?? Promise.resolve();
+          const next = prior.catch(() => undefined).then(callback);
+          this.sharedResolutionLocks.set(key, next);
+          try {
+            return await next;
+          } finally {
+            if (this.sharedResolutionLocks.get(key) === next) this.sharedResolutionLocks.delete(key);
+          }
+        },
+
         /** Records both combat and world-time limits so temporary immunity behaves across combat transitions. */
         makeExpiry(duration, payload) {
           const rounds = duration === "1-round" ? 1
@@ -685,10 +792,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Records a temporary exclusion immediately after the outcome that should grant it. */
-        setImmunity(payload, tokenUuid, block) {
+        setImmunity(payload, tokenUuid, block, actorUuid = null, sourceRegionUuid = null) {
           if (!block?.immunity || block.immunity.duration === "none") return;
           const expiry = this.makeExpiry(block.immunity.duration, payload);
           if (!expiry) return;
+          const group = this.sharedImmunityGroup(block);
+          const targetUuid = this.sharedImmunityTarget(actorUuid, tokenUuid);
 
           for (const [storageId, record] of Object.entries(payload.state.immunities ?? {})) {
             const sameRecord =
@@ -700,11 +809,37 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const storageId = randomId();
           payload.state.immunities[storageId] = {
             tokenUuid,
+            actorUuid,
             blockId: block.id,
+            scope: group ? "shared-group" : "effect-block",
+            group,
             expiry,
             duration: block.immunity.duration,
             createdWorldTime: nowWorld()
           };
+
+          if (group && targetUuid) {
+            const sharedRecord = {
+              storageId,
+              targetUuid,
+              actorUuid,
+              tokenUuid,
+              group,
+              blockId: block.id,
+              sourceRegionUuid,
+              expiry: clone(expiry),
+              clock: {
+                sourceTokenUuid: payload.state.sourceTokenUuid ?? null,
+                sourceActorUuid: payload.state.sourceActorUuid ?? null
+              },
+              duration: block.immunity.duration,
+              createdWorldTime: nowWorld()
+            };
+            this.queueAfterCommit(payload, async () => {
+              await this.persistSharedImmunity(sharedRecord);
+              this.scheduleSharedPendingCancellation(sharedRecord);
+            });
+          }
           console.info("PF2e Zone temporary immunity started", {
             zone: payload.config.name,
             tokenUuid,
@@ -717,6 +852,67 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             rounds: expiry.rounds,
             worldExpires: expiry.worldExpires
           });
+          return payload.state.immunities[storageId];
+        },
+
+        /** Persists a grant independently of the aura Region that created it. */
+        async persistSharedImmunity(sharedRecord) {
+          if (!sharedRecord?.targetUuid || !sharedRecord?.group) return false;
+          await this.mutateSharedImmunities((records) => {
+            for (const [key, record] of Object.entries(records)) {
+              if (!this.sharedImmunityActive(record)) {
+                delete records[key];
+                continue;
+              }
+              if (record.targetUuid === sharedRecord.targetUuid && record.group === sharedRecord.group) {
+                delete records[key];
+              }
+            }
+            records[sharedRecord.storageId] = clone(sharedRecord);
+          });
+          return true;
+        },
+
+        /** Removes expired shared grants and retires saves that survived an authority handoff. */
+        async reconcileSharedImmunities({ cancelPending = true } = {}) {
+          if (!this.isAuthority()) return;
+          const active = [];
+          await this.mutateSharedImmunities((records) => {
+            for (const [key, record] of Object.entries(records)) {
+              if (!this.sharedImmunityActive(record)) {
+                delete records[key];
+                continue;
+              }
+              active.push(clone(record));
+            }
+          });
+          if (cancelPending) {
+            for (const record of active) this.scheduleSharedPendingCancellation(record);
+          }
+        },
+
+        /** Cleans hidden shared state when its affected Actor no longer exists. */
+        async removeSharedImmunitiesForActor(actorUuid) {
+          if (!actorUuid || !this.isAuthority()) return;
+          await this.mutateSharedImmunities((records) => {
+            for (const [key, record] of Object.entries(records)) {
+              if (record?.actorUuid === actorUuid || record?.targetUuid === actorUuid) delete records[key];
+            }
+          });
+        },
+
+        /** Coalesces one deferred cross-Region cleanup after the granting Region releases its lock. */
+        scheduleSharedPendingCancellation(record) {
+          if (!record?.targetUuid || !record?.group) return;
+          const key = `${record.targetUuid}::${record.group}`;
+          const prior = this.sharedImmunityCancellationTimers.get(key);
+          if (prior) clearTimeout(prior);
+          const timer = setTimeout(() => {
+            this.sharedImmunityCancellationTimers.delete(key);
+            this.cancelSharedPendingSaves(record)
+              .catch((error) => console.error("PF2e Zone: shared-immunity save cleanup failed", error));
+          }, 0);
+          this.sharedImmunityCancellationTimers.set(key, timer);
         },
 
         /** Uses a stable identity so repeat limits are scoped to one creature and Effect Block. */
@@ -908,6 +1104,58 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           return true;
         },
 
+        /** Retires a request that became unnecessary after another matching aura granted immunity. */
+        async cancelSaveRequestCard(pending, zoneName, reason = "Temporarily immune.") {
+          const card = this.saveRequestMessageForPending(pending);
+          if (!card?.update) return false;
+          const flag = card.flags?.world?.pf2eZoneSaveRequest ?? {};
+          if (["completed", "cancelled"].includes(flag.status)) return false;
+          const target = flag.targetName ?? (await fromUuid(pending.tokenUuid))?.name ?? "Target";
+          const content = `<div class="pf2e-zone-save-request"><h4>${escHtml(zoneName)} — ${escHtml(pending.blockName)}</h4><p><b>${escHtml(target)}</b>: <strong>${escHtml(reason)}</strong></p><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`;
+          await card.update({
+            content,
+            "flags.world.pf2eZoneSaveRequest": {
+              ...flag,
+              identifier: pending.identifier,
+              tokenUuid: pending.tokenUuid,
+              targetName: target,
+              status: "cancelled",
+              reason: "shared-immunity"
+            }
+          });
+          return true;
+        },
+
+        /** Removes unanswered saves from every zone that uses the newly granted Actor/group immunity. */
+        async cancelSharedPendingSaves(sharedRecord) {
+          if (!this.isAuthority() || !this.sharedImmunityActive(sharedRecord)) return 0;
+          let cancelled = 0;
+          for (const region of this.allZones()) {
+            await this.withState(region, async (payload) => {
+              if (!this.isOperational(region, payload)) return;
+              const retired = [];
+              for (const [pendingId, pending] of Object.entries(payload.state.pendingSaves ?? {})) {
+                const block = payload.config.effects?.find((entry) => entry.id === pending.blockId);
+                if (this.sharedImmunityGroup(block) !== sharedRecord.group) continue;
+                const targetUuid = this.sharedImmunityTarget(pending.actorUuid, pending.tokenUuid);
+                if (targetUuid !== sharedRecord.targetUuid) continue;
+                delete payload.state.pendingSaves[pendingId];
+                delete payload.state.repeat[this.repeatKey(pending.tokenUuid, pending.blockId)];
+                retired.push(pending);
+                cancelled++;
+              }
+              if (retired.length) {
+                this.queueAfterCommit(payload, async () => {
+                  for (const pending of retired) {
+                    await this.cancelSaveRequestCard(pending, payload.config.name);
+                  }
+                });
+              }
+            });
+          }
+          return cancelled;
+        },
+
         /** Uses Foundry's ordinary shared ping at the pending save's current Token position. */
         async pingSaveTarget(sceneId, tokenUuid) {
           if (!canvas?.ready || canvas.scene?.id !== sceneId) {
@@ -1048,6 +1296,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             });
             return false;
           }
+          if (this.isImmuneFor(payload, token, block)) return false;
           const { actor: sourceActor } = await this.resolveSource(payload);
           const dc = this.resolveDC(payload, block, sourceActor);
           if (!(dc > 0)) {
@@ -1094,6 +1343,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
             const committed = this.readPayload(liveRegion);
             if (!this.isOperational(liveRegion, committed)) return;
+            if (this.isImmuneFor(committed, token, block)) {
+              delete committed.state.pendingSaves[id];
+              delete committed.state.repeat[this.repeatKey(token.uuid, block.id)];
+              await this.writePayload(liveRegion, committed);
+              return;
+            }
             const result = await this.deliverPendingSaveUnlocked(liveRegion, committed, id, identifier);
             let persistError = null;
             try {
@@ -1565,14 +1820,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Applies immunity only for the selected outcome conditions rather than whenever a block runs. */
-        applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave, application = null) {
+        applyImmunityStarts(payload, block, token, outcomeKey, affected, hadSave, application = null, region = null) {
           const starts = block.immunity?.starts ?? [];
           let startNow = false;
           if (hadSave && starts.includes("after-save")) startNow = true;
           if (hadSave && starts.includes("success-or-better") && this.outcomeIsSuccessOrBetter(outcomeKey)) startNow = true;
           if (hadSave && starts.includes("failure-or-worse") && this.outcomeIsFailureOrWorse(outcomeKey)) startNow = true;
           if (starts.includes("affected") && affected) startNow = true;
-          if (startNow) this.setImmunity(payload, token.uuid, block);
+          if (startNow) this.setImmunity(payload, token.uuid, block, token.actor?.uuid ?? null, region?.uuid ?? null);
           this.registerRecoveryWatcher(payload, block, token, outcomeKey, application);
         },
 
@@ -1588,13 +1843,15 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             });
             return;
           }
-          if (this.isImmune(payload, token.uuid, block.id)) {
+          if (this.isImmuneFor(payload, token, block)) {
             console.info("PF2e Zone trigger blocked: temporary immunity", {
               zone: payload.config.name,
               block: block.name,
               trigger,
               token: token.name,
-              immunity: this.findImmunityEntry(payload, token.uuid, block.id)?.record ?? null
+              immunity: this.findImmunityEntry(payload, token.uuid, block.id)?.record
+                ?? this.findSharedImmunityEntry(payload, token.actor?.uuid, token.uuid, this.sharedImmunityGroup(block))?.record
+                ?? null
             });
             return;
           }
@@ -1634,7 +1891,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const affected = await this.applyOutcome(
               region, payload, block, token, "noSave", batchId, resolvedEventContext, { application }
             );
-            this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application);
+            this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application, region);
             return;
           }
 
@@ -1648,7 +1905,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const affected = await this.applyOutcome(
             region, payload, block, token, "noSave", batchId, resolvedEventContext, { application }
           );
-          this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application);
+          this.applyImmunityStarts(payload, block, token, "noSave", affected, false, application, region);
         },
 
         /** Runs all matching blocks while the caller already holds the Region state lock. */
@@ -1869,6 +2126,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async reconcileDeletedActor(actor) {
           if (!this.isAuthority() || !actor?.uuid) return;
           const failures = [];
+          try { await this.removeSharedImmunitiesForActor(actor.uuid); }
+          catch (error) { failures.push(error); }
           for (const region of this.allZones()) {
             try {
               const snapshot = this.readPayload(region);
@@ -2172,7 +2431,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             let count = 0;
             for (const candidate of this.tokensInside(region)) {
               if (!(await this.eligible(payload, candidate, region))) continue;
-              if (this.isImmune(payload, candidate.uuid, block.id)) continue;
+              if (this.isImmuneFor(payload, candidate, block)) continue;
               if (this.repeatBlocked(payload, candidate.uuid, block)) continue;
               count += 1;
             }
@@ -2379,6 +2638,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         async checkAllDurations() {
           if (!this.isAuthority()) return;
           for (const region of this.allZones()) await this.checkSourceAndDuration(region);
+          await this.reconcileSharedImmunities({ cancelPending: false });
         },
 
         /** Provides a locked entry point for source-turn hooks that may arrive concurrently. */
@@ -2516,6 +2776,17 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (pending.actorUuid && pending.actorUuid !== token.actor.uuid) return false;
           if (message && this.saveResultFromMessage(message, pending, token) !== outcome) return false;
 
+          // Another aura can grant the same shared immunity while this request
+          // is still visible. Retire the stale request without applying its roll.
+          if (this.isImmuneFor(payload, token, block)) {
+            delete payload.state.pendingSaves[pendingId];
+            delete payload.state.repeat[this.repeatKey(pending.tokenUuid, pending.blockId)];
+            this.queueAfterCommit(payload, () =>
+              this.cancelSaveRequestCard(pending, payload.config.name)
+            );
+            return false;
+          }
+
           // A transaction-local tombstone protects overlapping resolution work.
           // Persistence prunes it once the matching pending request is gone.
           delete payload.state.pendingSaves[pendingId];
@@ -2536,7 +2807,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             pending.eventContext ?? { trigger: pending.trigger },
             { application }
           );
-          this.applyImmunityStarts(payload, block, token, outcome, affected, true, application);
+          this.applyImmunityStarts(payload, block, token, outcome, affected, true, application, region);
 
           this.queueAfterCommit(payload, () => this.completeSaveRequestCard(region, payload, pending));
 
@@ -2590,10 +2861,18 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           if (!this.isAuthority()) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
           let resolved = false;
-          await this.withState(region, async (payload) => {
-            resolved = await this.resolvePendingSaveUnlocked(
-              region, payload, pendingId, identifier, outcome, rollerActorUuid, message
-            );
+          const snapshot = this.readPayload(region);
+          const pending = snapshot?.state?.pendingSaves?.[pendingId];
+          const block = snapshot?.config?.effects?.find((entry) => entry.id === pending?.blockId);
+          const group = this.sharedImmunityGroup(block);
+          const targetUuid = this.sharedImmunityTarget(pending?.actorUuid ?? rollerActorUuid, pending?.tokenUuid);
+          const sharedLockKey = group && targetUuid ? `${targetUuid}::${group}` : null;
+          await this.withSharedResolutionLock(sharedLockKey, async () => {
+            await this.withState(region, async (payload) => {
+              resolved = await this.resolvePendingSaveUnlocked(
+                region, payload, pendingId, identifier, outcome, rollerActorUuid, message
+              );
+            });
           });
 
           if (resolved && this.isLiveRegion(region)) {
@@ -2711,7 +2990,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                   if (remaining.length) continue;
                 }
                 const block = payload.config.effects?.find((b) => b.id === watcher.blockId);
-                if (block) this.setImmunity(payload, watcher.tokenUuid, block);
+                if (block) this.setImmunity(
+                  payload,
+                  watcher.tokenUuid,
+                  block,
+                  watcher.actorUuid ?? actor.uuid,
+                  region.uuid
+                );
                 delete payload.state.recoveryWatchers[key];
               }
             });
@@ -3104,6 +3389,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const steps = [
               ["linked conditions", () => this.reconcileAllLinkedConditions()],
               ["orphaned Items", () => this.reconcileOrphanedZoneItems()],
+              ["shared immunities", () => this.reconcileSharedImmunities()],
               ["runtime history", () => this.reconcileRuntimeHistory()],
               ["unfinished zone ends", () => this.reconcileUnfinishedZoneEnds()],
               ["disabled zones", () => this.reconcileDisabledZones()],
@@ -3159,6 +3445,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           this.regionReconcileTimers.clear();
           for (const timer of this.activationFinalizeTimers.values()) clearTimeout(timer);
           this.activationFinalizeTimers.clear();
+          for (const timer of this.sharedImmunityCancellationTimers.values()) clearTimeout(timer);
+          this.sharedImmunityCancellationTimers.clear();
+          this.sharedResolutionLocks.clear();
           this.areaBoundaryBefore.clear();
           this.areaBoundarySnapshots.clear();
           for (const entry of this.areaBoundarySuppression.values()) clearTimeout(entry.timer);

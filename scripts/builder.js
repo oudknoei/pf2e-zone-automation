@@ -25,7 +25,7 @@ import { activeOutcomeKeys, inspectEffectItem, validateEffectItems } from "./eff
 export async function openZoneBuilder() {
   "use strict";
 
-  const BUILDER_VERSION = "0.5.19";
+  const BUILDER_VERSION = "0.5.20";
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const DialogV2 = foundry.applications.api.DialogV2;
 
@@ -696,10 +696,20 @@ export async function openZoneBuilder() {
                   <option value="10-minutes" ${block.immunity.duration === "10-minutes" ? "selected" : ""}>10 minutes</option>
                 </select>
               </label>
+              <label>Applies to
+                <select data-field="immunity-scope">
+                  <option value="effect-block" ${block.immunity.scope === "effect-block" ? "selected" : ""}>This Effect Block</option>
+                  <option value="shared-group" ${block.immunity.scope === "shared-group" ? "selected" : ""}>Shared immunity group</option>
+                </select>
+              </label>
               <label class="zb-recovery-condition">Recovery condition
                 <select data-field="recovery-condition">${conditionOptions(block.immunity.recoveryCondition)}</select>
               </label>
+              <label class="zb-immunity-group">Immunity group
+                <input data-field="immunity-group" type="text" value="${esc(block.immunity.group)}" placeholder="e.g. stench:ghonhatine">
+              </label>
             </div>
+            <p class="zb-immunity-group-note notes">Creatures with immunity ignore every zone using this exact group. Use <b>stench</b> for all Stench auras or a narrower key such as <b>stench:ghonhatine</b>.</p>
             <div class="zb-immunity-starts">
               <div class="zb-subhead">Immunity begins when</div>
               <div class="zb-immunity-options">
@@ -998,7 +1008,9 @@ export async function openZoneBuilder() {
         immunity: {
           duration: blockEl.querySelector('[data-field="immunity-duration"]').value,
           starts: [...blockEl.querySelectorAll("[data-immunity-start]:checked")].map((x) => x.dataset.immunityStart),
-          recoveryCondition: blockEl.querySelector('[data-field="recovery-condition"]').value
+          recoveryCondition: blockEl.querySelector('[data-field="recovery-condition"]').value,
+          scope: blockEl.querySelector('[data-field="immunity-scope"]').value,
+          group: blockEl.querySelector('[data-field="immunity-group"]').value
         }
       });
     }
@@ -1022,6 +1034,7 @@ export async function openZoneBuilder() {
     if (target.field === "trait-use-traits") return block.querySelector(".zb-trait-use-options");
     if (target.field === "save-choices") return block.querySelector(".zb-save-choice-options");
     if (target.field === "immunity-starts") return block.querySelector(".zb-immunity-starts");
+    if (target.field === "immunity-group") return block.querySelector(".zb-immunity-group");
     if (target.field === "condition-link" || target.field === "condition-slug") {
       const rows = [...block.querySelectorAll(`[data-outcome="${target.outcomeKey}"] .zb-condition-row`)];
       return rows[target.conditionIndex]?.querySelector(`[data-field="${target.field}"]`) ?? null;
@@ -1213,6 +1226,7 @@ export async function openZoneBuilder() {
       const healingEnabled = blockEl.querySelector('[data-field="healing-enabled"]').checked;
       const damageTypeMode = blockEl.querySelector('[data-field="damage-type-mode"]').value;
       const immunityDuration = blockEl.querySelector('[data-field="immunity-duration"]').value;
+      const immunityScope = blockEl.querySelector('[data-field="immunity-scope"]').value;
       const recoveryChecked = Boolean(blockEl.querySelector('[data-immunity-start="condition-recovery"]:checked'));
       const traitUseEnabled = blockEl.querySelector('[data-trigger="traitUse"]').checked;
       const hpThresholdEnabled = blockEl.querySelector('[data-trigger="hpThreshold"]').checked;
@@ -1237,6 +1251,9 @@ export async function openZoneBuilder() {
         input.disabled = immunityDuration === "none";
       }
       blockEl.querySelector(".zb-recovery-condition").style.display = immunityDuration !== "none" && recoveryChecked ? "flex" : "none";
+      const sharedImmunityVisible = immunityDuration !== "none" && immunityScope === "shared-group";
+      blockEl.querySelector(".zb-immunity-group").style.display = sharedImmunityVisible ? "flex" : "none";
+      blockEl.querySelector(".zb-immunity-group-note").style.display = sharedImmunityVisible ? "block" : "none";
 
       for (const el of blockEl.querySelectorAll(".zb-damage-multiplier")) {
         el.style.display = (damageEnabled || healingEnabled) ? "flex" : "none";
@@ -1850,7 +1867,7 @@ export async function openZoneBuilder() {
         return;
       }
 
-      if (target.matches('[data-zone="mode"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-trigger="hpThreshold"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-immunity-start]')) {
+      if (target.matches('[data-zone="mode"], [data-zone="duration-type"], [data-zone="damage-choice-enabled"], [data-trigger="traitUse"], [data-trigger="spellCast"], [data-trigger="hpThreshold"], [data-field="chat-alert-enabled"], [data-field="save-enabled"], [data-field="save-type"], [data-field="dc-source"], [data-field="basic-save"], [data-field="damage-enabled"], [data-field="healing-enabled"], [data-field="damage-type-mode"], [data-field="immunity-duration"], [data-field="immunity-scope"], [data-immunity-start]')) {
         refreshVisibility(root);
       }
       refreshLiveValidation(root);

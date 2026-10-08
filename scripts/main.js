@@ -5,9 +5,18 @@ import { registerZoneSocket } from "./transport.js";
 import { installZoneOutlines } from "./zone-outline.js";
 
 const MODULE_ID = "pf2e-zone-automation";
+const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
 
 /** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
+  game.settings.register(MODULE_ID, SHARED_IMMUNITIES_SETTING, {
+    name: "Shared temporary immunities",
+    hint: "Internal PF2e Zone Automation state for temporary immunity groups.",
+    scope: "world",
+    config: false,
+    type: Object,
+    default: {}
+  });
   const module = game.modules.get(MODULE_ID);
   module.api = {
     openBuilder: openZoneBuilder,

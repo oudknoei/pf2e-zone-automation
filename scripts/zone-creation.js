@@ -6,7 +6,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { damageTypeAvailable, normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
 
-const RUNTIME_VERSION = "0.5.19";
+const RUNTIME_VERSION = "0.5.20";
 const FLAG_SCOPE = "world";
 const FLAG_KEY = "pf2eZone";
 

@@ -94,7 +94,7 @@ test("player zones retain their saved preset revision and reject stale overwrite
       [sourceActor.uuid]: sourceActor
     })[uuid] ?? null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.19",
+      version: "0.5.20",
       installHooks() {},
       async activateRegion() {},
       async endZone(target) { endedRegion = target; }

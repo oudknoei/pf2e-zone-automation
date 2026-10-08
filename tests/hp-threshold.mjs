@@ -54,7 +54,7 @@ function hpBlock(id, threshold, repeat = "every") {
 }
 
 test("HP threshold values remain visible and invalid input is rejected", () => {
-  assert.equal(SCHEMA_VERSION, 15);
+  assert.equal(SCHEMA_VERSION, 16);
   assert.equal(editableHpThreshold("0"), 0);
   assert.equal(editableHpThreshold("25"), 25);
   assert.equal(editableHpThreshold("2d4"), "2d4");

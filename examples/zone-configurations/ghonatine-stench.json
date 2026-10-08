@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 11,
+  "schemaVersion": 16,
   "name": "Stench (Ghonhatine)",
   "mode": "emanation",
   "radius": 30,
@@ -126,7 +126,9 @@
         "starts": [
           "success-or-better"
         ],
-        "recoveryCondition": "sickened"
+        "recoveryCondition": "sickened",
+        "scope": "shared-group",
+        "group": "stench:ghonhatine"
       }
     }
   ]

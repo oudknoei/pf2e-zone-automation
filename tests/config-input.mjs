@@ -109,6 +109,7 @@ test("unknown imported enum choices are rejected instead of changed to defaults"
     [(config) => { config.targeting.lineOfEffect = "sometimes"; }, /Line of effect.*sometimes/],
     [(config) => { config.effects[0].repeat = "occasionally"; }, /repeat setting.*occasionally/],
     [(config) => { config.effects[0].save.type = "luck"; }, /save type.*luck/],
+    [(config) => { config.effects[0].immunity.scope = "same-name"; }, /immunity scope.*same-name/],
     [(config) => { config.effects[0].immunity.starts = ["after-save", "whenever"]; }, /immunity start.*whenever/],
     [(config) => { config.effects[0].outcomes.noSave.conditions.push({ slug: "frightened", removal: "surprise" }); }, /condition removal.*surprise/]
   ];
@@ -203,4 +204,33 @@ test("condition-recovery immunity requires its condition in an active outcome", 
     slug: "sickened", value: 1, removal: "normal", condition: ""
   });
   assert.deepEqual(validateConfig(config).errors, []);
+});
+
+test("shared immunity groups are explicit and legacy immunity remains effect-block scoped", () => {
+  const legacy = defaultConfig();
+  delete legacy.effects[0].immunity.scope;
+  delete legacy.effects[0].immunity.group;
+  const migrated = normalizeConfig(legacy);
+  assert.equal(migrated.effects[0].immunity.scope, "effect-block");
+  assert.equal(migrated.effects[0].immunity.group, "");
+
+  const config = defaultConfig();
+  config.name = "Shared stench";
+  config.targeting.affects = "enemies";
+  const block = config.effects[0];
+  block.triggers.enter = true;
+  block.chatAlert.enabled = true;
+  block.immunity.duration = "1-minute";
+  block.immunity.starts = ["success-or-better"];
+  block.immunity.scope = "shared-group";
+
+  let validation = validateConfig(config);
+  assert.match(validation.errors.join(" "), /choose an immunity group/i);
+  assert.equal(validation.issues.find((issue) => issue.message.includes("immunity group"))?.target.field, "immunity-group");
+
+  block.immunity.group = "Stench: Ghonhatine";
+  const normalized = normalizeConfig(config);
+  assert.equal(normalized.effects[0].immunity.group, "stench:ghonhatine");
+  validation = validateConfig(normalized);
+  assert.deepEqual(validation.errors, []);
 });

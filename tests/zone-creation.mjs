@@ -56,7 +56,7 @@ globalThis.game = {
 const effectDocuments = new Map();
 globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : effectDocuments.get(uuid) ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.19", installHooks() {},
+  version: "0.5.20", installHooks() {},
   async activateRegion(region) { activated.push(region); }
 };
 

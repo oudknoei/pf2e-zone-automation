@@ -294,7 +294,7 @@ test("player creates and dismisses a Region through the authenticated GM socket"
     globalThis.fromUuid = async (uuid) =>
       uuid === token.uuid ? token : uuid === actor.uuid ? actor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.19",
+      version: "0.5.20",
       installHooks() {},
       async activateRegion(region) { activated.push(region); },
       async endZone(region) {

@@ -13,6 +13,7 @@ globalThis.foundry = { utils: {} };
 const module = {};
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
+  settings: { register: () => undefined },
   system: { id: "pf2e" },
   user: { id: "gm", isGM: true }
 };
@@ -88,7 +89,7 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
     game.scenes = { get: (id) => id === scene.id ? scene : null };
     globalThis.fromUuid = async (uuid) => uuid === "Actor.source" ? sourceActor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.19",
+      version: "0.5.20",
       installHooks: () => undefined,
       endZone: async (target, reason) => { ended = { target, reason }; }
     };

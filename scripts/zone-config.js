@@ -6,7 +6,7 @@ import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
 import { editableHpThreshold } from "./hp-threshold.js";
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 /** Keeps saved trait labels and validation messages readable. */
 const titleCase = (slug) => String(slug ?? "").replaceAll("-", " ").replace(/\b\w/g, (m) => m.toUpperCase());
 /** Uses PF2e translations when the system provides one. */
@@ -202,7 +202,9 @@ function newBlock(index = 1) {
     immunity: {
       duration: "none",
       starts: [],
-      recoveryCondition: "sickened"
+      recoveryCondition: "sickened",
+      scope: "effect-block",
+      group: ""
     }
   };
 }
@@ -295,6 +297,7 @@ function validateSuppliedChoices(cfg) {
     check(block?.save?.dc?.mode, ["custom", "actorStatistic"], `${prefix} DC source`);
     check(block?.damage?.typeMode, ["fixed", "activation-choice"], `${prefix} damage type source`);
     check(block?.immunity?.duration, ["none", "1-round", "1-minute", "10-minutes"], `${prefix} immunity duration`);
+    check(block?.immunity?.scope, ["effect-block", "shared-group"], `${prefix} immunity scope`);
     for (const start of (Array.isArray(block?.immunity?.starts) ? block.immunity.starts : [])) {
       check(start, ["after-save", "success-or-better", "failure-or-worse", "affected", "condition-recovery"], `${prefix} immunity start`);
     }
@@ -471,7 +474,13 @@ function normalizeConfig(input, { strict = false } = {}) {
               "after-save", "success-or-better", "failure-or-worse", "affected", "condition-recovery"
             ].includes(x)))]
           : [],
-        recoveryCondition: String(block?.immunity?.recoveryCondition ?? "sickened")
+        recoveryCondition: String(block?.immunity?.recoveryCondition ?? "sickened"),
+        scope: block?.immunity?.scope === "shared-group" ? "shared-group" : "effect-block",
+        group: String(block?.immunity?.group ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/\s*:\s*/g, ":")
+          .replace(/\s+/g, "-")
       }
     };
   });
@@ -667,6 +676,13 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
 
     if (block.immunity.duration !== "none" && block.immunity.starts.length === 0) {
       error(`${prefix} immunity has a duration but no start condition.`, blockTarget(index, "immunity-starts"));
+    }
+    if (block.immunity.duration !== "none" && block.immunity.scope === "shared-group") {
+      if (!block.immunity.group) {
+        error(`${prefix} choose an immunity group for shared immunity.`, blockTarget(index, "immunity-group"));
+      } else if (block.immunity.group.length > 100 || !/^[a-z0-9][a-z0-9._:-]*$/.test(block.immunity.group)) {
+        error(`${prefix} immunity group must use letters, numbers, periods, colons, underscores, or hyphens.`, blockTarget(index, "immunity-group"));
+      }
     }
     if (block.immunity.starts.includes("after-save") && !block.save.enabled) {
       warnings.push(`${prefix} 'After any save' immunity is selected but this block has no save.`);
