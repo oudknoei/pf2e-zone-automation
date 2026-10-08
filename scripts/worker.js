@@ -1,6 +1,6 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
-import { fixedAreaShape } from "./area-shape.js";
+import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
 import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
 import { validateEffectItems } from "./effect-items.js";
 /* GM-only document operations and authorization for module socket requests. */
@@ -85,7 +85,7 @@ function serializeLibraryOperation(operation) {
 export async function handleWorkerRequest(request) {
   "use strict";
 
-  const WORKER_VERSION = "0.5.16";
+  const WORKER_VERSION = "0.5.17";
   const FLAG_SCOPE = "world";
   const FLAG_KEY = "pf2eZone";
   const LIBRARY_FLAG_KEY = "pf2eZoneLibrary";
@@ -484,6 +484,39 @@ export async function handleWorkerRequest(request) {
     return succeed({ action: "end", sceneId: scene.id, regionId: request.regionId });
   }
 
+  /** Moves an authorized fixed area through a normal Region update so Entry sweep handling still runs. */
+  async function moveZone() {
+    const requester = getRequester();
+    const scene = game.scenes.get(request.sceneId ?? "");
+    const region = scene?.regions.get(request.regionId ?? "");
+    if (!scene || !region) throw new Error("The requested PF2e Zone no longer exists.");
+
+    const payload = region.getFlag(FLAG_SCOPE, FLAG_KEY);
+    if (!payload) throw new Error("The requested Region is not a PF2e Zone.");
+    if (payload.config?.mode !== "area") throw new Error("Only fixed-area zones can be moved this way.");
+    if (payload.state?.endRequested) throw new Error("This zone is waiting for cleanup and cannot be moved.");
+
+    if (!requester.isGM) {
+      const sourceActor = payload.state?.sourceActorUuid ? await fromUuid(payload.state.sourceActorUuid) : null;
+      if (!sourceActor?.testUserPermission?.(requester, "OWNER")) {
+        throw new Error("You do not own the source Actor for this zone.");
+      }
+    }
+
+    const center = request.areaCenter;
+    if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) {
+      throw new Error("Area center is missing or invalid.");
+    }
+    if (typeof region.update !== "function") throw new Error("The requested Region cannot be updated.");
+
+    const shapes = [...(region.shapes ?? [])].map((shape) => shape.toObject?.() ?? clone(shape));
+    await region.update({ shapes: moveAreaShapesToCenter(shapes, center) });
+    return succeed({
+      action: "move", sceneId: scene.id, regionId: region.id,
+      areaCenter: { x: Number(center.x), y: Number(center.y) }
+    });
+  }
+
   /** Allows only a GM to remove one exact outstanding request through the active runtime. */
   async function cancelPendingSave() {
     const requester = getRequester();
@@ -508,6 +541,7 @@ export async function handleWorkerRequest(request) {
   try {
     switch (request.action) {
       case "create": return await oncePerCreationRequest(request, createZone);
+      case "move": return await moveZone();
       case "end": return await endZone();
       case "cancel-pending-save": return await cancelPendingSave();
       case "shielding-taunt": {

@@ -30,6 +30,35 @@ export function fixedAreaShape(config, center, distancePixels) {
   return { type: "circle", x, y, radius, gridBased: true };
 }
 
+/** Translates one fixed-area shape to a selected center without resizing or rotating it. */
+export function moveAreaShapesToCenter(shapes, center) {
+  if (!Array.isArray(shapes) || shapes.length !== 1) {
+    throw new Error("The fixed area must have exactly one shape before it can be moved.");
+  }
+  const x = Number(center?.x);
+  const y = Number(center?.y);
+  if (![x, y].every(Number.isFinite)) throw new Error("Area center is missing or invalid.");
+
+  const shape = shapes[0];
+  if (!shape || !["circle", "rectangle"].includes(shape.type)) {
+    throw new Error("The fixed area has an unsupported shape.");
+  }
+  const width = Number(shape.width);
+  const height = Number(shape.height);
+  const radius = Number(shape.radius);
+  if (shape.type === "rectangle" && (![width, height].every(Number.isFinite) || width <= 0 || height <= 0)) {
+    throw new Error("The fixed area's rectangle is invalid.");
+  }
+  if (shape.type === "circle" && (!Number.isFinite(radius) || radius <= 0)) {
+    throw new Error("The fixed area's circle is invalid.");
+  }
+
+  const currentX = Number(shape.x) + (shape.type === "rectangle" ? width / 2 : 0);
+  const currentY = Number(shape.y) + (shape.type === "rectangle" ? height / 2 : 0);
+  if (![currentX, currentY].every(Number.isFinite)) throw new Error("The fixed area's position is invalid.");
+  return [{ ...shape, x: Number(shape.x) + x - currentX, y: Number(shape.y) + y - currentY }];
+}
+
 /** Recognizes a pure drag so resizing a zone does not imply a path that never occurred. */
 export function translatedAreaShapes(before, after) {
   if (before?.length !== 1 || after?.length !== 1) return null;

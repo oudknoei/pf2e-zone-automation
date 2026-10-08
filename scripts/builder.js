@@ -1584,6 +1584,7 @@ export async function openZoneBuilder() {
       const cfg = payload?.config ?? {};
       const canEnd = await canCurrentUserDismiss(payload);
       const cleanupPending = Boolean(payload?.state?.endRequested);
+      const canMove = canEnd && cfg.mode === "area" && !cleanupPending;
       const pendingRows = [];
       if (game.user.isGM) {
         for (const [pendingId, pending] of Object.entries(payload?.state?.pendingSaves ?? {})) {
@@ -1604,7 +1605,10 @@ export async function openZoneBuilder() {
       zoneRows.push(`<div class="pza-zone-entry" data-region-id="${esc(region.id)}">
         <div class="pza-zone-row">
           <div><b>${esc(region.name)}</b><div class="pza-zone-meta">Created by ${esc(payload?.state?.createdBy?.name ?? "Unknown")} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}${cleanupPending ? " · Cleanup pending" : ""}</div></div>
-          ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> ${cleanupPending ? "Retry Dismiss" : "Dismiss"}</button>` : `<span></span>`}
+          <div class="pza-zone-actions">
+            ${canMove ? `<button type="button" data-action="move"><i class="fa-solid fa-arrows-up-down-left-right"></i> Move</button>` : ""}
+            ${canEnd ? `<button type="button" data-action="end" class="danger"><i class="fa-solid fa-trash"></i> ${cleanupPending ? "Retry Dismiss" : "Dismiss"}</button>` : ""}
+          </div>
         </div>
         ${pendingMarkup}
       </div>`);
@@ -1618,6 +1622,7 @@ export async function openZoneBuilder() {
         .pza-zone-entry { border-bottom:1px solid rgba(127,127,127,.3); }
         .pza-zone-entry:last-child { border-bottom:0; }
         .pza-zone-row { border-bottom:0; }
+        .pza-zone-actions { display:flex; gap:8px; justify-content:flex-end; }
         .pza-zone-meta { opacity:.72; font-size:.9em; }
         .pza-pending-list { margin:0 0 8px 12px; padding:8px 0 0 12px; border-left:2px solid rgba(127,127,127,.4); }
         .pza-pending-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:4px 0; }
@@ -1671,6 +1676,32 @@ export async function openZoneBuilder() {
             console.error("PF2e Zone save cancellation failed", error);
             ui.notifications.error(`Could not cancel save request: ${error.message ?? error}`);
             button.disabled = false;
+          }
+          return;
+        }
+        if (button.dataset.action === "move") {
+          if (payload?.config?.mode !== "area" || payload?.state?.endRequested) return;
+          button.disabled = true;
+          const dimensions = payload.config.areaShape === "square"
+            ? `${payload.config.sideLength}-foot square`
+            : `${payload.config.radius}-foot circle`;
+          const restoreBuilder = hideBuilderForAreaPlacement();
+          try {
+            await dlg.close();
+            const areaCenter = await pickAreaCenter(region.name, dimensions);
+            if (!areaCenter) {
+              ui.notifications.info("Zone movement was cancelled.");
+              return;
+            }
+            await callGMWorker("move", {
+              sceneId: region.parent.id, regionId: region.id, areaCenter
+            });
+            ui.notifications.info(`Moved '${region.name}'.`);
+          } catch (error) {
+            console.error("PF2e Zone movement failed", error);
+            ui.notifications.error(`PF2e Zone movement failed: ${error.message ?? error}`);
+          } finally {
+            restoreBuilder();
           }
           return;
         }

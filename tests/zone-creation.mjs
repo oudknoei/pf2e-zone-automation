@@ -23,7 +23,12 @@ const token = { uuid: "Scene.scene.Token.source", documentName: "Token", parent:
 /** Keeps both entry points on the same simulated Foundry document service. */
 function makeRegion(data) {
   const id = `region-${created.length + 1}`;
-  const region = { id, uuid: `Scene.scene.Region.${id}`, parent: scene, getFlag: (scope, key) => data.flags?.[scope]?.[key] };
+  const region = {
+    id, uuid: `Scene.scene.Region.${id}`, parent: scene,
+    get shapes() { return (data.shapes ?? []).map((shape) => ({ toObject: () => structuredClone(shape) })); },
+    getFlag: (scope, key) => data.flags?.[scope]?.[key],
+    async update(changes) { Object.assign(data, structuredClone(changes)); }
+  };
   created.push({ data, region });
   scene.regions.set(id, region);
   return region;
@@ -422,6 +427,56 @@ test("both area placement adapters use the shared payload and state", async () =
   assert.ok(direct.region);
   assert.deepEqual(created.at(-2).data.flags, created.at(-1).data.flags);
   assert.equal(created.at(-1).data.shapes[0].type, "rectangle");
+});
+
+test("the worker manually moves a fixed area through a Region shape update", async () => {
+  const config = validConfig();
+  config.mode = "area";
+  config.areaShape = "circle";
+  config.radius = 15;
+  const creation = await handleWorkerRequest({
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    sceneId: scene.id, sourceTokenUuid: token.uuid, config,
+    areaCenter: { x: 100, y: 120 }
+  });
+  assert.equal(creation.ok, true, creation.error);
+  const record = created.find((entry) => entry.region.id === creation.regionId);
+  assert.deepEqual(record.data.shapes, [{
+    type: "circle", x: 100, y: 120, radius: 300, gridBased: true
+  }]);
+
+  const moved = await handleWorkerRequest({
+    protocol: 1, action: "move", requesterUserId: gm.id,
+    sceneId: scene.id, regionId: creation.regionId,
+    areaCenter: { x: 460, y: 240 }
+  });
+  assert.equal(moved.ok, true, moved.error);
+  assert.deepEqual(moved.areaCenter, { x: 460, y: 240 });
+  assert.deepEqual(record.data.shapes, [{
+    type: "circle", x: 460, y: 240, radius: 300, gridBased: true
+  }]);
+});
+
+test("the worker does not offer fixed-area movement to emanations", async () => {
+  const config = validConfig();
+  const creation = await handleWorkerRequest({
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    sceneId: scene.id, sourceTokenUuid: token.uuid, config
+  });
+  assert.equal(creation.ok, true, creation.error);
+  const previous = console.error;
+  console.error = () => {};
+  try {
+    const moved = await handleWorkerRequest({
+      protocol: 1, action: "move", requesterUserId: gm.id,
+      sceneId: scene.id, regionId: creation.regionId,
+      areaCenter: { x: 200, y: 200 }
+    });
+    assert.equal(moved.ok, false);
+    assert.match(moved.error, /Only fixed-area zones/);
+  } finally {
+    console.error = previous;
+  }
 });
 
 test("creation anchors to a matching Scene encounter, never the GM's unrelated combat", async () => {

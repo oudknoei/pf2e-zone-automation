@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixedAreaShape, sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes, zoneTypeChoice, zoneTypeFields } from "../scripts/area-shape.js";
+import { fixedAreaShape, moveAreaShapesToCenter, sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes, zoneTypeChoice, zoneTypeFields } from "../scripts/area-shape.js";
 
 test("combined Zone Type choices preserve saved mode and shape", () => {
   for (const config of [
@@ -21,6 +21,20 @@ test("a 10-foot square is centered on the placement point", () => {
   assert.deepEqual(fixedAreaShape({ radius: 5 }, { x: 250, y: 350 }, 10), {
     type: "circle", x: 250, y: 350, radius: 50, gridBased: true
   });
+});
+
+test("Move preserves a fixed area's current size and rotation", () => {
+  assert.deepEqual(moveAreaShapesToCenter([{
+    type: "rectangle", x: 20, y: 40, width: 120, height: 80, rotation: 30, gridBased: true
+  }], { x: 400, y: 300 }), [{
+    type: "rectangle", x: 340, y: 260, width: 120, height: 80, rotation: 30, gridBased: true
+  }]);
+  assert.deepEqual(moveAreaShapesToCenter([{
+    type: "circle", x: 40, y: 70, radius: 55, gridBased: true
+  }], { x: 225, y: 175 }), [{
+    type: "circle", x: 225, y: 175, radius: 55, gridBased: true
+  }]);
+  assert.throws(() => moveAreaShapesToCenter([], { x: 0, y: 0 }), /exactly one shape/);
 });
 
 test("a translated square reaches tokens passed over between its endpoints", () => {

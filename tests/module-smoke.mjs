@@ -115,6 +115,76 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
   }
 });
 
+test("a source owner can move a fixed area but an unowned request is rejected", async () => {
+  const prior = {
+    user: game.user,
+    users: game.users,
+    scenes: game.scenes,
+    fromUuid: globalThis.fromUuid
+  };
+  const requester = { id: "player", name: "Player", active: true, isGM: false };
+  let ownsSource = true;
+  const sourceActor = {
+    testUserPermission: (user, level) => ownsSource && user === requester && level === "OWNER"
+  };
+  let shape = { type: "rectangle", x: 0, y: 20, width: 100, height: 60, rotation: 15 };
+  const scene = { id: "scene", regions: { get: (id) => id === "zone" ? region : null } };
+  const region = {
+    id: "zone",
+    parent: scene,
+    get shapes() { return [{ toObject: () => ({ ...shape }) }]; },
+    getFlag: () => ({
+      config: { mode: "area", areaShape: "square", sideLength: 10 },
+      state: { sourceActorUuid: "Actor.source" }
+    }),
+    async update(changes) { [shape] = changes.shapes; }
+  };
+
+  try {
+    game.user = { id: "gm", isGM: true };
+    game.users = { get: (id) => id === requester.id ? requester : null };
+    game.scenes = { get: (id) => id === scene.id ? scene : null };
+    globalThis.fromUuid = async (uuid) => uuid === "Actor.source" ? sourceActor : null;
+
+    const moved = await handleWorkerRequest({
+      protocol: 1,
+      action: "move",
+      requesterUserId: requester.id,
+      sceneId: scene.id,
+      regionId: region.id,
+      areaCenter: { x: 300, y: 250 }
+    });
+    assert.equal(moved.ok, true, moved.error);
+    assert.deepEqual(shape, {
+      type: "rectangle", x: 250, y: 220, width: 100, height: 60, rotation: 15
+    });
+
+    ownsSource = false;
+    const previousConsoleError = console.error;
+    console.error = () => {};
+    try {
+      const denied = await handleWorkerRequest({
+        protocol: 1,
+        action: "move",
+        requesterUserId: requester.id,
+        sceneId: scene.id,
+        regionId: region.id,
+        areaCenter: { x: 500, y: 500 }
+      });
+      assert.equal(denied.ok, false);
+      assert.match(denied.error, /do not own the source Actor/);
+    } finally {
+      console.error = previousConsoleError;
+    }
+  } finally {
+    game.user = prior.user;
+    game.users = prior.users;
+    game.scenes = prior.scenes;
+    if (prior.fromUuid === undefined) delete globalThis.fromUuid;
+    else globalThis.fromUuid = prior.fromUuid;
+  }
+});
+
 test("worker rejects non-GM execution and dispatches GM requests", async () => {
   const request = { protocol: 1, action: "ping", requesterUserId: "gm" };
   game.user.isGM = false;

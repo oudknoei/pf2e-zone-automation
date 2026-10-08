@@ -4,7 +4,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 
 ## Features
 
-- Create token-following emanations and fixed circular or square areas. Drag a fixed area to apply Entry effects to creatures it crosses, including those outside its final position.
+- Create token-following emanations and fixed circular or square areas. Use **Move** for a fixed area to apply Entry effects to creatures it crosses, including those outside its final position.
 - Show zones as colored outlines without an interior fill, so overlapping zones remain easy to distinguish. Existing zones use the same outline display after the Scene loads.
 - Configure one or more Effect Blocks for each zone.
 - Run an Effect Block when a zone is created, when a creature enters, during turns, while a creature is inside, when a creature casts a spell, when a watched trait is used, or when an occupant crosses an HP threshold.
@@ -74,7 +74,7 @@ Choose one or more plain-language trigger choices:
 
 If an older preset combines **While a creature is inside** with a saving throw, open it and split those behaviors into separate Effect Blocks. Dismiss and recreate any zone already active with that combination: earlier processing may have applied an unsaved result or spent its repeat allowance. The runtime skips further continuous processing of the combined block.
 
-For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), choose **Area - Square** with a 10-foot side length and two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Move its Region manually when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions.
+For [*Cyclone Rondo*](https://2e.aonprd.com/Spells.aspx?ID=1301), choose **Area - Square** with a 10-foot side length and two Effect Blocks: **When the zone is created** for a Reflex save that applies prone on failure or critical failure, and **When a creature enters after creation** for `4d6` damage with a basic Reflex save. Set the damage block to **Every time this happens** if the square may be moved more than once in a round. Use **Move** when the spell is Sustained, and dismiss it if the spell ends before its one-minute maximum. The builder does not track Sustain actions or choose a movement direction automatically.
 
 For **Trait Use Trigger**, select one or more common traits or enter another trait slug. It begins with no selection. The supplied choices cover common reactive-aura cases: energy and healing (**vitality**, **void**, **healing**), sanctification and spirit (**holy**, **unholy**, **spirit**, **divine**), and action or mental effects (**auditory**, **concentrate**, **manipulate**, **move**, **emotion**, **fear**, **mental**).
 
@@ -108,8 +108,8 @@ Choose the Effect Item removal rule that matches the ability: keep the item's ow
 
 1. Select **Validate** to check the configuration.
 2. Select **Post Preview to Chat** to validate and send a readable summary privately to yourself without creating a Region.
-3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center. A GM can later drag the Region; Entry effects apply along the straight path between its old and new positions. Resizing applies Entry only to newly covered creatures.
-4. Use **Manage Existing Zones** to dismiss a zone on the active Scene. Dismiss opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place. If cleanup fails, the zone stays inactive and shows **Cleanup pending**; select **Retry Dismiss** after the underlying problem is resolved. The GM runtime also retries unfinished cleanup after reconnecting.
+3. Select **Create Zone** to create and activate it. For an Area, click the Scene to place its center. Entry effects apply along the straight path between a fixed area's old and new positions. Resizing applies Entry only to newly covered creatures.
+4. Use **Manage Existing Zones** to move or dismiss a zone on the active Scene. **Move** is available for fixed areas to the GM and the source Actor's owners; click it, then click the area's new center on the Scene. The module never moves an area automatically. **Dismiss** opens that zone's configuration in the builder so you can edit and recreate it. The current source selection stays in place. If cleanup fails, the zone stays inactive and shows **Cleanup pending**; select **Retry Dismiss** after the underlying problem is resolved. The GM runtime also retries unfinished cleanup after reconnecting.
 5. A GM can also see pending saving throws there. Select **Cancel request** to remove an unanswered save without applying an outcome. Its old chat button stops working, and a later eligible trigger can request a new save. If a valid roll is already in chat, its result is applied instead of discarded.
 
 Each save request's chat card has a **Ping target** button. It uses the exact Token for that request and pings its current position, so identically named creatures can be distinguished. This is Foundry's ordinary shared ping: everyone viewing the Scene sees it, even if the Token itself is hidden. After a save is accepted and applied, its card says **save completed** and removes the save buttons, but keeps **Ping target**. View the target's Scene before clicking; unanswered requests that are no longer active and deleted Tokens cannot be pinged.

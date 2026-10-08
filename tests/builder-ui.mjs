@@ -34,6 +34,9 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-action="load"><i class="fa-solid fa-folder-open"><\/i> Load<\/button>/);
   assert.doesNotMatch(builder, /Load Config/);
   assert.match(builder, /data-action="end"/);
+  assert.match(builder, /data-action="move"/);
+  assert.match(builder, /canMove = canEnd && cfg\.mode === "area" && !cleanupPending/);
+  assert.match(builder, /callGMWorker\("move"/);
   assert.match(builder, /const savedPresetId = operation\.preset\?\.id \?\? null/);
   assert.match(builder, /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/);
   assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
