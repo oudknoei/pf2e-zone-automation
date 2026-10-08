@@ -139,6 +139,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   const regionData = {
     name: config.name,
     color: lightenZoneColor(color ?? requester.color ?? game.user.color),
+    displayMeasurements: true,
     visibility: config.visibility === "creator"
       ? (CONST.REGION_VISIBILITY?.OBSERVER ?? 3)
       : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),

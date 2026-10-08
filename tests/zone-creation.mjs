@@ -88,6 +88,7 @@ test("direct GM and worker creation persist identical normalized config and init
   assert.equal(worker.ok, true, worker.error);
   assert.equal(direct.durationResolution.rounds, 3);
   assert.deepEqual(created[0].data, created[1].data);
+  assert.equal(created[0].data.displayMeasurements, true);
   assert.equal(created[0].data.flags.world.pf2eZone.state.sourceTokenUuid, token.uuid);
   assert.deepEqual(created[0].data.flags.world.pf2eZone.state.resolvedSaves, {});
   assert.deepEqual(activated, created.map((entry) => entry.region));

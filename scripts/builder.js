@@ -706,7 +706,7 @@ export async function openZoneBuilder() {
                 <select data-field="recovery-condition">${conditionOptions(block.immunity.recoveryCondition)}</select>
               </label>
               <label class="zb-immunity-group">Immunity group
-                <input data-field="immunity-group" type="text" value="${esc(block.immunity.group)}" placeholder="e.g. stench:ghonhatine">
+                <input data-field="immunity-group" type="text" value="${esc(block.immunity.group)}" placeholder="e.g. stench">
               </label>
             </div>
             <p class="zb-immunity-group-note notes">Creatures with immunity ignore every zone using this exact group. Use <b>stench</b> for all Stench auras or a narrower key such as <b>stench:ghonhatine</b>.</p>
@@ -1685,9 +1685,10 @@ export async function openZoneBuilder() {
           const dimensions = payload.config.areaShape === "square"
             ? `${payload.config.sideLength}-foot square`
             : `${payload.config.radius}-foot circle`;
-          const restoreBuilder = hideBuilderForAreaPlacement();
+          hideBuilderForAreaPlacement();
           try {
             await dlg.close();
+            await dialog.close();
             const areaCenter = await pickAreaCenter(region.name, dimensions);
             if (!areaCenter) {
               ui.notifications.info("Zone movement was cancelled.");
@@ -1700,8 +1701,6 @@ export async function openZoneBuilder() {
           } catch (error) {
             console.error("PF2e Zone movement failed", error);
             ui.notifications.error(`PF2e Zone movement failed: ${error.message ?? error}`);
-          } finally {
-            restoreBuilder();
           }
           return;
         }

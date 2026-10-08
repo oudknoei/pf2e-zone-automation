@@ -37,6 +37,9 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-action="move"/);
   assert.match(builder, /canMove = canEnd && cfg\.mode === "area" && !cleanupPending/);
   assert.match(builder, /callGMWorker\("move"/);
+  assert.match(builder, /button\.dataset\.action === "move"[\s\S]*await dlg\.close\(\);\s*await dialog\.close\(\);/);
+  assert.match(builder, /data-field="immunity-group"[^>]*placeholder="e\.g\. stench"/);
+  assert.doesNotMatch(builder, /placeholder="e\.g\. stench:ghonhatine"/);
   assert.match(builder, /const savedPresetId = operation\.preset\?\.id \?\? null/);
   assert.match(builder, /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/);
   assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
