@@ -58,6 +58,7 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.handleRegionEvent, "function");
   assert.equal(typeof module.api.setHeroPoints, "function");
   assert.equal(typeof module.api.promptSetHeroPoints, "function");
+  assert.equal(typeof module.api.createHeroPointReminder, "function");
   const controls = { tokens: { tools: { select: {} } } };
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);

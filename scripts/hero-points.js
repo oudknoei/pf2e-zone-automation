@@ -1,3 +1,6 @@
+import { escapeHtml as escapeHTML } from "./utils.js";
+import { createHeroPointReminder, reminderTimestamp } from "./hero-point-reminders.js";
+
 let heroPointsDialog = null;
 
 /** Lists player-owned characters, including characters who have no token on the viewed Scene. */
@@ -5,13 +8,6 @@ function playerCharacters() {
   return [...(game.actors ?? [])]
     .filter((actor) => actor.type === "character" && actor.hasPlayerOwner)
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** Safely includes character names and IDs in dialog markup and chat messages. */
-function escapeHTML(value) {
-  return String(value).replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  })[character]);
 }
 
 /** Reads PF2e's Hero Point resource and respects characters whose maximum differs from three. */
@@ -52,8 +48,9 @@ function resolveCharacters(character) {
 }
 
 /** Applies exact planned totals so retrying a partially failed operation never adds points twice. */
-async function applyHeroPointChanges(plan) {
+async function applyHeroPointChanges(plan, chatVisibility = "gm") {
   if (!game.user.isGM) throw new Error("Only a GM can change Hero Points.");
+  if (!["gm", "public"].includes(chatVisibility)) throw new Error("Choose Public or GM Whisper for the chat results.");
   const changes = [];
   const failures = [];
   for (const { actor, total } of plan) {
@@ -74,7 +71,7 @@ async function applyHeroPointChanges(plan) {
         content: `<p><strong>Hero Points updated</strong></p><ul>${changes.map(({ name, before, after }) =>
           `<li>${escapeHTML(name)}: ${before} → ${after}</li>`).join("")}</ul>`,
         user: game.user.id,
-        whisper: [...game.users].filter((user) => user.isGM).map((user) => user.id)
+        whisper: chatVisibility === "public" ? [] : [...game.users].filter((user) => user.isGM).map((user) => user.id)
       });
     } catch (error) {
       console.error("PF2e Zone Hero Point announcement failed", error);
@@ -86,14 +83,14 @@ async function applyHeroPointChanges(plan) {
 }
 
 /** Updates PF2e's actual Hero Point totals, keeping the existing API's additive default. */
-export async function setHeroPoints(amount, character, { mode = "add" } = {}) {
+export async function setHeroPoints(amount, character, { mode = "add", chatVisibility = "gm" } = {}) {
   if (!game.user.isGM) throw new Error("Only a GM can change Hero Points.");
   if (!Number.isInteger(amount) || !["add", "remove", "set"].includes(mode)
       || (mode !== "add" && amount < 0)) {
     throw new Error("Enter a whole number of Hero Points and choose Add, Remove, or Set total.");
   }
   const actors = resolveCharacters(character);
-  return applyHeroPointChanges(actors.map((actor) => ({ actor, total: nextTotal(actor, amount, mode) })));
+  return applyHeroPointChanges(actors.map((actor) => ({ actor, total: nextTotal(actor, amount, mode) })), chatVisibility);
 }
 
 /** Presents one guided screen with explicit recipients and a preview of their resulting totals. */
@@ -112,6 +109,8 @@ export async function promptSetHeroPoints() {
     return heroPointsDialog;
   }
   const selectedActors = new Set((globalThis.canvas?.tokens?.controlled ?? []).map((token) => token.actor?.id));
+  const defaultReminder = new Date(Date.now() + 60 * 60 * 1000);
+  const defaultTime = `${String(defaultReminder.getHours()).padStart(2, "0")}:${String(defaultReminder.getMinutes()).padStart(2, "0")}`;
   // DialogV2 requires an attribute-free outer div and renders only its inner HTML.
   const content = document.createElement("div");
   content.innerHTML = `
@@ -149,10 +148,33 @@ export async function promptSetHeroPoints() {
       </div>
       <p class="pza-hp-help">Characters with selected tokens are checked automatically.</p>
     </fieldset>
+    <fieldset>
+      <legend>3. Share results</legend>
+      <label class="pza-hp-field">Chat results
+        <select name="hero-chat">
+          <option value="gm">GM Whisper</option>
+          <option value="public">Public</option>
+        </select>
+      </label>
+      <p class="pza-hp-help">Public shares the changes with everyone. GM Whisper shares them with GMs only.</p>
+    </fieldset>
     <p class="pza-hp-summary" data-hp-summary aria-live="polite"></p>
+    <fieldset>
+      <legend>Award reminder</legend>
+      <div class="pza-hp-reminder">
+        <label class="pza-hp-field">Reminder time (local)
+          <input type="time" name="hero-reminder-time" value="${defaultTime}" step="60">
+        </label>
+        <button type="button" data-hp-reminder>Create reminder</button>
+      </div>
+      <p class="pza-hp-help">Whisper only to you: it's time to award everyone 1 Hero Point. Uses the next occurrence of this time.</p>
+      <p class="pza-hp-help">Keep Foundry open with a GM online. Missed reminders appear when a GM returns.</p>
+      <p class="pza-hp-help" data-hp-reminder-status aria-live="polite"></p>
+    </fieldset>
     </div>`;
 
   let applying = false;
+  let reminderCreating = false;
   let pendingPlan = null;
   const dialog = new foundry.applications.api.DialogV2({
     window: { title: "Set Hero Points" },
@@ -163,10 +185,11 @@ export async function promptSetHeroPoints() {
       {
         action: "apply", label: "Add 1 Hero Point", default: true,
         callback: async (_event, button) => {
-          if (applying) return;
+          if (applying || reminderCreating) return;
           const root = button.form.querySelector(".pza-hero-points");
           const amount = root.querySelector('[name="hero-amount"]').valueAsNumber;
           const mode = root.querySelector('[name="hero-action"]').value;
+          const chatVisibility = root.querySelector('[name="hero-chat"]').value;
           const selected = [...root.querySelectorAll('[name="hero-character"]:checked')]
             .map((input) => actors.find((actor) => actor.id === input.value));
           if (!selected.length || !Number.isInteger(amount) || amount < (mode === "set" ? 0 : 1) || amount > 3) {
@@ -177,7 +200,7 @@ export async function promptSetHeroPoints() {
           pendingPlan ??= selected.map((actor) => ({ actor, total: nextTotal(actor, amount, mode) }));
           refreshPreview();
           try {
-            const changes = await applyHeroPointChanges(pendingPlan);
+            const changes = await applyHeroPointChanges(pendingPlan, chatVisibility);
             await dialog.close();
             return changes;
           } catch (error) {
@@ -229,25 +252,53 @@ export async function promptSetHeroPoints() {
       : `${count} ${count === 1 ? "character" : "characters"} selected. Review the After column before applying.`;
     const apply = dialog.element.querySelector('button[data-action="apply"]');
     if (apply) {
-      apply.disabled = applying || !count || !valid || (!changed && !pendingPlan);
+      apply.disabled = applying || reminderCreating || !count || !valid || (!changed && !pendingPlan);
       const label = valid ? `${mode === "set" ? "Set to" : mode === "remove" ? "Remove" : "Add"} ${amount} Hero ${amount === 1 ? "Point" : "Points"}` : "Apply change";
       const labelElement = apply.querySelector(".button-label");
       (labelElement ?? apply).textContent = applying ? "Updating…" : pendingPlan ? "Retry update" : label;
     }
-    for (const inputElement of root.querySelectorAll("input, select, button")) inputElement.disabled = applying;
+    for (const inputElement of root.querySelectorAll("input, select, button")) inputElement.disabled = applying || reminderCreating;
+    const reminderButton = root.querySelector("[data-hp-reminder]");
+    try {
+      reminderTimestamp(root.querySelector('[name="hero-reminder-time"]').value);
+    } catch {
+      reminderButton.disabled = true;
+    }
+    reminderButton.textContent = reminderCreating ? "Creating…" : "Create reminder";
     const cancel = dialog.element.querySelector('button[data-action="cancel"]');
-    if (cancel) cancel.disabled = applying;
+    if (cancel) cancel.disabled = applying || reminderCreating;
+  }
+
+  /** Creates a reminder independently of the selected characters or chat-summary audience. */
+  async function createReminder() {
+    if (applying || reminderCreating) return;
+    const root = dialog.element.querySelector(".pza-hero-points");
+    const status = root.querySelector("[data-hp-reminder-status]");
+    reminderCreating = true;
+    status.textContent = "Saving reminder…";
+    refreshPreview();
+    try {
+      const reminder = await createHeroPointReminder(root.querySelector('[name="hero-reminder-time"]').value);
+      status.textContent = `Private reminder set for ${new Date(reminder.remindAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}.`;
+    } catch (error) {
+      status.textContent = error?.message ?? "The reminder could not be saved. Try again.";
+      ui.notifications.error(status.textContent);
+    } finally {
+      reminderCreating = false;
+      if (dialog.rendered) refreshPreview();
+    }
   }
 
   dialog.addEventListener("render", () => {
     const root = dialog.element.querySelector(".pza-hero-points");
     /** Starts a new operation when the GM deliberately changes its amount, action, or recipients. */
-    const editSelection = () => {
-      pendingPlan = null;
+    const editSelection = (event) => {
+      if (!event || ["hero-amount", "hero-action", "hero-character"].includes(event.target.name)) pendingPlan = null;
       refreshPreview();
     };
     root.addEventListener("input", editSelection);
     root.addEventListener("change", editSelection);
+    root.querySelector("[data-hp-reminder]").addEventListener("click", createReminder);
     for (const button of root.querySelectorAll("[data-hp-select]")) {
       button.addEventListener("click", () => {
         for (const input of root.querySelectorAll('[name="hero-character"]')) input.checked = button.dataset.hpSelect === "all";

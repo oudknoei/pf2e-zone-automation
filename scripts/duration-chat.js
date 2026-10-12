@@ -1,12 +1,4 @@
-/** Keeps zone names and formulas from changing the structure of the duration announcement. */
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+import { escapeHtml } from "./utils.js";
 
 /** Keeps a randomly determined zone lifetime visible to exactly the people allowed to see that zone. */
 export async function postFormulaDurationMessage({ zoneName, duration, visibility, creatorUserId = null, actor = null, token = null } = {}) {

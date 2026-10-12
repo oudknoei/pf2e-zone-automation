@@ -9,6 +9,7 @@ const dialogs = [];
 const notices = [];
 const messages = [];
 const writes = [];
+const reminderWrites = [];
 
 class TestDialog extends window.EventTarget {
   constructor(options) {
@@ -82,9 +83,17 @@ function actor(id, name, value, extra = {}) {
 
 async function reset(actors = []) {
   for (const dialog of dialogs) if (dialog.rendered) await dialog.close();
-  dialogs.length = notices.length = messages.length = writes.length = 0;
+  dialogs.length = notices.length = messages.length = writes.length = reminderWrites.length = 0;
   game.actors = actors;
-  game.user = { id: "gm", isGM: true, targets: new Set() };
+  game.user = {
+    id: "gm", isGM: true, targets: new Set(), flags: { "pf2e-zone-automation": { heroPointReminders: {} } },
+    async update(data) {
+      reminderWrites.push(data);
+      for (const [path, record] of Object.entries(data)) this.flags["pf2e-zone-automation"].heroPointReminders[path.split(".").at(-1)] = record;
+      return this;
+    }
+  };
+  game.users = [game.user, { id: "player", isGM: false }];
   canvas.tokens.controlled = [];
 }
 
@@ -213,11 +222,15 @@ test("retrying a partial Add operation preserves the planned totals and does not
   assert.equal(dialog.element.querySelector('[data-hp-actor="one"] [data-hp-after]').textContent, "2");
   assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Retry update");
   second.update = saveSecond;
+  change(dialog, '[name="hero-chat"]', "public");
+  change(dialog, '[name="hero-reminder-time"]', "20:30");
+  assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Retry update");
   await dialog.submit();
   assert.equal(first.system.resources.heroPoints.value, 2);
   assert.equal(second.system.resources.heroPoints.value, 2);
   assert.equal(writes.filter(({ id }) => id === "one").length, 1);
   assert.equal(dialog.rendered, false);
+  assert.deepEqual(messages.at(-1).whisper, []);
 });
 
 test("a second Apply while a write is in progress cannot submit the change twice", async () => {
@@ -236,4 +249,94 @@ test("a second Apply while a write is in progress cannot submit the change twice
   await submitted;
   assert.equal(writes.length, 1);
   assert.equal(first.system.resources.heroPoints.value, 2);
+});
+
+test("all selected player characters are prechecked while duplicate tokens, NPCs, and other characters are ignored", async () => {
+  const first = actor("one", "One", 1);
+  const second = actor("two", "Two", 1);
+  const third = actor("three", "Three", 1);
+  const npc = actor("npc", "NPC", 1, { type: "npc" });
+  const gmCharacter = actor("gm-only", "GM Character", 1, { hasPlayerOwner: false });
+  await reset([first, second, third, npc, gmCharacter]);
+  canvas.tokens.controlled = [{ actor: first }, { actor: first }, { actor: second }, { actor: npc }, { actor: gmCharacter }];
+  const dialog = await promptSetHeroPoints();
+  assert.deepEqual([...dialog.element.querySelectorAll('[name="hero-character"]:checked')].map((input) => input.value), ["one", "two"]);
+  assert.equal(dialog.element.querySelectorAll('[name="hero-character"]').length, 3);
+  await dialog.submit();
+  assert.deepEqual(writes.map((entry) => entry.id), ["one", "two"]);
+});
+
+test("chat results offer Public and GM Whisper with GM Whisper as the default", async () => {
+  const first = actor("one", "One", 1);
+  await reset([first]);
+  game.users.push({ id: "other-gm", isGM: true });
+  let dialog = await promptSetHeroPoints();
+  const audience = dialog.element.querySelector('[name="hero-chat"]');
+  assert.equal(audience.value, "gm");
+  assert.deepEqual([...audience.options].map((option) => option.textContent), ["GM Whisper", "Public"]);
+  dialog.element.querySelector('[data-hp-select="all"]').click();
+  await dialog.submit();
+  assert.deepEqual(messages[0].whisper, ["gm", "other-gm"]);
+  dialog = await promptSetHeroPoints();
+  dialog.element.querySelector('[data-hp-select="all"]').click();
+  change(dialog, '[name="hero-chat"]', "public");
+  await dialog.submit();
+  assert.deepEqual(messages[1].whisper, []);
+  await setHeroPoints(0, first, { mode: "set", chatVisibility: "public" });
+  assert.deepEqual(messages[2].whisper, []);
+  const count = writes.length;
+  await assert.rejects(setHeroPoints(1, first, { chatVisibility: "invalid" }), /Public or GM Whisper/);
+  assert.equal(writes.length, count);
+});
+
+test("Create reminder saves a private reminder without applying Hero Points or closing the dialog", async () => {
+  await reset([actor("one", "One", 1)]);
+  const dialog = await promptSetHeroPoints();
+  change(dialog, '[name="hero-chat"]', "public");
+  change(dialog, '[name="hero-reminder-time"]', "");
+  assert.equal(dialog.element.querySelector('[data-hp-reminder]').disabled, true);
+  change(dialog, '[name="hero-reminder-time"]', "20:30");
+  const button = dialog.element.querySelector('[data-hp-reminder]');
+  assert.equal(button.textContent, "Create reminder");
+  assert.equal(button.disabled, false, "Creating a reminder does not require selected characters");
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(reminderWrites.length, 1);
+  assert.match(Object.keys(reminderWrites[0])[0], /^flags\.pf2e-zone-automation\.heroPointReminders\.[a-zA-Z0-9]{16}$/);
+  assert.match(dialog.element.querySelector('[data-hp-reminder-status]').textContent, /Private reminder set for/);
+  assert.equal(dialog.rendered, true);
+  assert.equal(writes.length, 0);
+  assert.equal(messages.length, 0);
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(reminderWrites.length, 1, "The same scheduled time is reused");
+  await dialog.close();
+});
+
+test("reminder creation prevents duplicate clicks and a save failure lets the GM retry", async () => {
+  await reset([actor("one", "One", 1)]);
+  const save = game.user.update;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  game.user.update = async function(data) { await gate; return save.call(this, data); };
+  const dialog = await promptSetHeroPoints();
+  const button = dialog.element.querySelector('[data-hp-reminder]');
+  button.click();
+  assert.equal(button.disabled, true);
+  assert.equal(dialog.element.querySelector('[data-action="cancel"]').disabled, true);
+  button.click();
+  await dialog.submit();
+  release();
+  await new Promise(setImmediate);
+  assert.equal(reminderWrites.length, 1);
+  assert.equal(writes.length, 0);
+  change(dialog, '[name="hero-reminder-time"]', "01:00");
+  game.user.update = async () => { throw new Error("Reminder save failed."); };
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(dialog.rendered, true);
+  assert.equal(button.disabled, false);
+  assert.equal(notices.at(-1).message, "Reminder save failed.");
+  assert.equal(dialog.element.querySelector('[data-hp-reminder-status]').textContent, "Reminder save failed.");
+  await dialog.close();
 });

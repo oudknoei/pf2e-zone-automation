@@ -4,6 +4,7 @@ import { openShieldingTaunt, requestShieldingTaunt } from "./shielding-taunt.js"
 import { registerZoneSocket } from "./transport.js";
 import { installZoneOutlines } from "./zone-outline.js";
 import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
+import { createHeroPointReminder, registerHeroPointReminders } from "./hero-point-reminders.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -26,7 +27,8 @@ Hooks.once("init", () => {
     requestShieldingTaunt,
     handleRegionEvent: zoneRuntimeEntrypoint,
     setHeroPoints,
-    promptSetHeroPoints
+    promptSetHeroPoints,
+    createHeroPointReminder
   };
 });
 
@@ -54,6 +56,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 /** Starts cross-client requests and runtime reconciliation only after Foundry services and documents are available. */
 Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") return;
+  registerHeroPointReminders();
   try {
     installZoneOutlines();
   } catch (error) {

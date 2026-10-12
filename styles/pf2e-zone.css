@@ -185,6 +185,9 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pza-hero-points .pza-hp-name { display:flex; align-items:center; gap:8px; min-width:0; overflow-wrap:anywhere; }
 .pza-hero-points .pza-hp-name input { flex:0 0 auto; margin:0; }
 .pza-hero-points .pza-hp-summary { padding:8px 0; font-weight:600; }
+.pza-hero-points .pza-hp-field { display:flex; flex-direction:column; gap:6px; }
+.pza-hero-points .pza-hp-reminder { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+.pza-hero-points .pza-hp-reminder button { flex:0 0 auto; width:auto; }
 @media (max-width: 850px) {
   .pf2e-zone-builder .zb-grid.two, .pf2e-zone-builder .zb-grid.three { grid-template-columns:1fr; }
   .pf2e-zone-builder details.zb-block > summary { grid-template-columns:1fr; gap:3px; }

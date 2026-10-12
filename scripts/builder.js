@@ -11,6 +11,7 @@ import { fixedAreaShape, zoneTypeChoice, zoneTypeFields } from "./area-shape.js"
 import { createZoneDocument, savedPresetFromZone } from "./zone-creation.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { activeOutcomeKeys, inspectEffectItem, validateEffectItems } from "./effect-items.js";
+import { cloneData as clone, escapeHtml as esc, localize, newOperationId, titleCase } from "./utils.js";
 
 /*
  * PF2e Zone Automation - Zone Builder
@@ -62,32 +63,6 @@ export async function openZoneBuilder() {
   let sourceToken = selectedSourceToken();
   if (!sourceToken) return;
   let sourceActor = sourceToken.actor;
-
-  /** Keeps actor and user text from changing the builder HTML. */
-  const esc = (value) => String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-
-  /** Makes stored slugs understandable without giving display text authority over saved data. */
-  const titleCase = (slug) => String(slug ?? "")
-    .replaceAll("-", " ")
-    .replace(/\b\w/g, (m) => m.toUpperCase());
-
-  /** Uses PF2e translations when available while retaining a readable fallback for custom content. */
-  const localize = (key, fallback) => {
-    if (typeof key !== "string") return fallback;
-    const localized = game.i18n.localize(key);
-    return localized && localized !== key ? localized : fallback;
-  };
-
-  /** Prevents preview and form changes from mutating a saved configuration by reference. */
-  const clone = (obj) => {
-    if (globalThis.structuredClone) return structuredClone(obj);
-    return JSON.parse(JSON.stringify(obj));
-  };
 
   /** Turns hidden player-to-GM prerequisites into an actionable builder status. */
   function workerSetupProblem() {
@@ -2217,7 +2192,7 @@ export async function openZoneBuilder() {
         if (!creationAttempt || creationAttempt.signature !== signature) {
           creationAttempt = {
             signature,
-            operationId: foundry.utils.randomID?.(20) ?? crypto.randomUUID(),
+            operationId: newOperationId(),
             areaCenter: null,
             uncertain: false
           };

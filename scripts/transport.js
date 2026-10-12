@@ -1,4 +1,5 @@
 import { handleWorkerRequest } from "./worker.js";
+import { newOperationId } from "./utils.js";
 
 const CHANNEL = "module.pf2e-zone-automation";
 const RESPONSE_TIMEOUT_MS = 60000;
@@ -27,7 +28,7 @@ export async function requestGMWorker(request) {
     throw new Error("The PF2e Zone module socket is not ready. Refresh Foundry and try again.");
   }
 
-  const id = foundry.utils.randomID?.(20) ?? crypto.randomUUID();
+  const id = newOperationId();
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pending.delete(id);

@@ -3,6 +3,8 @@ import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
 import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
 import { validateEffectItems } from "./effect-items.js";
+import { cloneData as clone, escapeHtml as escHtml, randomId } from "./utils.js";
+import { oncePerOperation } from "./request-cache.js";
 /* GM-only document operations and authorization for module socket requests. */
 
 let libraryOperationTail = Promise.resolve();
@@ -18,10 +20,6 @@ function oncePerCreationRequest(request, create) {
   if (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(operationId)) {
     throw new Error("Creation operation ID is invalid.");
   }
-  const now = Date.now();
-  for (const [key, entry] of creationRequests) {
-    if (entry.completedAt && now - entry.completedAt > CREATION_REQUEST_TTL_MS) creationRequests.delete(key);
-  }
   const key = `${request.requesterUserId}:${operationId}`;
   const fingerprint = JSON.stringify({
     sceneId: request.sceneId, sourceTokenUuid: request.sourceTokenUuid,
@@ -29,18 +27,10 @@ function oncePerCreationRequest(request, create) {
     savedPresetRevision: request.savedPresetRevision, chosenDamageType: request.chosenDamageType,
     color: request.color, areaCenter: request.areaCenter
   });
-  const prior = creationRequests.get(key);
-  if (prior) {
-    if (prior.fingerprint !== fingerprint) throw new Error("Creation operation ID was reused with different zone details.");
-    return prior.promise;
-  }
-  const entry = { fingerprint, promise: Promise.resolve().then(create), completedAt: null };
-  creationRequests.set(key, entry);
-  entry.promise.then(
-    () => { entry.completedAt = Date.now(); },
-    () => { if (creationRequests.get(key) === entry) creationRequests.delete(key); }
-  );
-  return entry.promise;
+  return oncePerOperation(creationRequests, {
+    key, fingerprint, ttlMs: CREATION_REQUEST_TTL_MS,
+    reuseError: "Creation operation ID was reused with different zone details."
+  }, create);
 }
 
 /** Joins duplicate Taunt requests and retains success while a socket response can arrive late. */
@@ -49,29 +39,15 @@ function oncePerShieldingTauntRequest(request, execute) {
   if (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(operationId)) {
     throw new Error("Shielding Taunt operation ID is invalid.");
   }
-  const now = Date.now();
-  for (const [key, entry] of shieldingTauntRequests) {
-    if (entry.completedAt && now - entry.completedAt > SHIELDING_TAUNT_REQUEST_TTL_MS) shieldingTauntRequests.delete(key);
-  }
   const key = `${request.requesterUserId}:${operationId}`;
   const fingerprint = JSON.stringify({
     sourceTokenUuid: request.sourceTokenUuid,
     targetTokenUuid: request.targetTokenUuid
   });
-  const prior = shieldingTauntRequests.get(key);
-  if (prior) {
-    if (prior.fingerprint !== fingerprint) {
-      throw new Error("Shielding Taunt operation ID was reused with different request details.");
-    }
-    return prior.promise;
-  }
-  const entry = { fingerprint, promise: Promise.resolve().then(execute), completedAt: null };
-  shieldingTauntRequests.set(key, entry);
-  entry.promise.then(
-    () => { entry.completedAt = Date.now(); },
-    () => { if (shieldingTauntRequests.get(key) === entry) shieldingTauntRequests.delete(key); }
-  );
-  return entry.promise;
+  return oncePerOperation(shieldingTauntRequests, {
+    key, fingerprint, ttlMs: SHIELDING_TAUNT_REQUEST_TTL_MS,
+    reuseError: "Shielding Taunt operation ID was reused with different request details."
+  }, execute);
 }
 
 /** Keeps one GM client's library reads and writes in order so each mutation starts from the latest flag. */
@@ -95,14 +71,6 @@ export async function handleWorkerRequest(request) {
   const LIBRARY_JOURNAL_NAME = "PF2e Zone Library";
   const LIBRARY_PAGE_NAME = "Shared Zone Presets";
   const LIBRARY_SCHEMA_VERSION = 1;
-  const fu = foundry.utils;
-
-  /** Prevents the worker from mutating caller-owned request data while it validates and enriches it. */
-  const clone = (obj) => {
-    if (globalThis.structuredClone) return structuredClone(obj);
-    return JSON.parse(JSON.stringify(obj));
-  };
-
   /** Returns worker errors in one predictable shape so clients can present them safely. */
   const fail = (message, details = {}) => ({
     ok: false, workerVersion: WORKER_VERSION, error: String(message), ...details
@@ -129,14 +97,6 @@ export async function handleWorkerRequest(request) {
       throw new Error(`${requester.name} does not own the source Actor '${actor?.name ?? "Unknown"}'.`);
     }
   }
-
-  /** Keeps saved preset names from changing the Library Journal page markup. */
-  const escHtml = (value) => String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 
   /** Lets older or incomplete Journal flags recover to a usable shared preset library. */
   function normalizeLibrary(raw) {
@@ -361,7 +321,7 @@ export async function handleWorkerRequest(request) {
         config: cfg
       };
     } else {
-      const id = fu.randomID?.(12) ?? crypto.randomUUID().slice(0, 12);
+      const id = randomId();
       record = {
         id,
         name: cfg.name,

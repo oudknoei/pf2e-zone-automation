@@ -1,12 +1,8 @@
 import { requestGMWorker } from "./transport.js";
+import { newOperationId } from "./utils.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const shieldingTauntAttempts = new Map();
-
-/** Gives retries one stable identity while a timed-out GM request may still be finishing. */
-function newOperationId() {
-  return foundry.utils.randomID?.(20) ?? crypto.randomUUID();
-}
 
 /** Keeps player-facing macros thin so all Shielding Taunt rule changes ship with the module. */
 export async function requestShieldingTaunt(sourceTokenUuid, targetTokenUuid, { operationId: suppliedOperationId = null } = {}) {

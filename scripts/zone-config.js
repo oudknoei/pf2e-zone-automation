@@ -5,19 +5,11 @@ import { actorStatisticDc } from "./dc.js";
 import { hasTargetSelection } from "./targeting.js";
 import { pf2eFormulaError } from "./formula-validation.js";
 import { editableHpThreshold } from "./hp-threshold.js";
+import { localize, randomId, titleCase } from "./utils.js";
 
 export const SCHEMA_VERSION = 16;
-/** Keeps saved trait labels and validation messages readable. */
-const titleCase = (slug) => String(slug ?? "").replaceAll("-", " ").replace(/\b\w/g, (m) => m.toUpperCase());
-/** Uses PF2e translations when the system provides one. */
-const localize = (key, fallback) => {
-  if (typeof key !== "string") return fallback;
-  const localized = game.i18n.localize(key);
-  return localized && localized !== key ? localized : fallback;
-};
-
 /** Gives unsaved blocks stable identities so UI edits can target the intended block. */
-const newId = () => globalThis.foundry?.utils?.randomID?.(8) ?? crypto.randomUUID().slice(0, 8);
+const newId = () => randomId(8);
 
 
 /** Keeps checkbox and custom trait input portable as normalized PF2e slugs. */

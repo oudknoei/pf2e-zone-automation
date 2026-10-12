@@ -4,6 +4,7 @@ import { combatForZone, combatForZoneState, recordedCombatForZoneState } from ".
 import { sweptAreaIntersectsToken, tokenBounds, translatedAreaShapes } from "./area-shape.js";
 import { actorHitPoints, crossedHpThreshold } from "./hp-threshold.js";
 import { hasLineOfEffect, tokenCenter, zoneOrigin } from "./line-of-effect.js";
+import { cloneData as clone, escapeHtml as escHtml, randomId, titleCase as titleCaseLocal } from "./utils.js";
 
 // Zone runtime extracted from PF2e Zone Builder v0.5.15.
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
@@ -17,27 +18,6 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
     const SAVE_PREFIX = "pf2e-zone";
     const fu = foundry.utils;
 
-    /** Prevents reads of persisted zone flags from mutating the data that Foundry still owns. */
-    const clone = (obj) => {
-      if (globalThis.structuredClone) return structuredClone(obj);
-      return JSON.parse(JSON.stringify(obj));
-    };
-
-    /** Keeps actor, item, and zone text from changing chat card markup. */
-    const escHtml = (value) => String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-
-    /** Makes stored slugs readable in player-facing alerts without changing their data identity. */
-    const titleCaseLocal = (slug) => String(slug ?? "")
-      .replaceAll("-", " ")
-      .replace(/\b\w/g, (m) => m.toUpperCase());
-
-    /** Creates durable keys when Foundry does not supply an identifier for a runtime event. */
-    const randomId = () => fu.randomID?.(12) ?? crypto.randomUUID().slice(0, 12);
     /** Uses shared world time so duration decisions remain consistent across connected clients. */
     const nowWorld = () => Number(game.time?.worldTime ?? 0);
     /** Builds safe flag keys from document identifiers that may contain punctuation. */

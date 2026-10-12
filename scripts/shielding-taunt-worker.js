@@ -1,3 +1,5 @@
+import { escapeHtml, readDocumentFlag } from "./utils.js";
+
 const TAUNT_ACTION_UUID = "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb";
 const TAUNT_EFFECT_UUID = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
 const FLAG_SCOPE = "world";
@@ -18,14 +20,6 @@ async function serializeGuardianTaunt(guardianUuid, operation) {
     if (guardianTauntTails.get(guardianUuid) === tail) guardianTauntTails.delete(guardianUuid);
   }
 }
-
-/** Keeps chat text safe when actor and target names come from world data. */
-const escapeHtml = (value) => String(value ?? "")
-  .replaceAll("&", "&amp;")
-  .replaceAll("<", "&lt;")
-  .replaceAll(">", "&gt;")
-  .replaceAll('"', "&quot;")
-  .replaceAll("'", "&#039;");
 
 /** Uses a consistent item identity so rules checks survive display-name changes. */
 function itemSlug(item) {
@@ -69,16 +63,12 @@ function previousTauntsFrom(guardian) {
 
 /** Reads operation metadata from either a live Item or a source-shaped test document. */
 function tauntOperation(effect) {
-  return effect?.getFlag?.(FLAG_SCOPE, EFFECT_FLAG_KEY)
-    ?? effect?.flags?.[FLAG_SCOPE]?.[EFFECT_FLAG_KEY]
-    ?? null;
+  return readDocumentFlag(effect, FLAG_SCOPE, EFFECT_FLAG_KEY);
 }
 
 /** Reads operation metadata from a chat document without depending on Collection internals. */
 function chatOperation(message) {
-  return message?.getFlag?.(FLAG_SCOPE, CHAT_FLAG_KEY)
-    ?? message?.flags?.[FLAG_SCOPE]?.[CHAT_FLAG_KEY]
-    ?? null;
+  return readDocumentFlag(message, FLAG_SCOPE, CHAT_FLAG_KEY);
 }
 
 /** Returns all messages regardless of whether Foundry exposes a Collection or a plain test array. */
