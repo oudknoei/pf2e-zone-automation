@@ -3,6 +3,7 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { actorLoreSkills, bestKnowledgeSkill, creatureKnowledgeDC, creatureType, knowledgeDegree, loreKnowledgeDCAdjustment } from "../scripts/recall-knowledge-rules.js";
 import { executeAskQuestion, QUESTION_MESSAGE_FLAG } from "../scripts/recall-knowledge-worker.js";
+import { compactCreatureData } from "../scripts/recall-knowledge-data.js";
 import { openAskQuestion, registerQuestionChat } from "../scripts/recall-knowledge.js";
 
 const MODULE_ID = "pf2e-zone-automation";
@@ -176,7 +177,67 @@ test("degrees handle both ten-point boundaries and natural die adjustments witho
   ]) assert.equal(knowledgeDegree(total, 20, natural), expected);
 });
 
-test("private GM prompt includes full creature data but response contains no secret result", async () => {
+test("creature reference keeps factual data and conditional rules while removing bookkeeping without mutating documents", () => {
+  const actor = setup().creature.toObject();
+  Object.assign(actor, { img: "portrait.webp", folder: "folder-id", ownership: { default: 0 },
+    prototypeToken: { texture: { src: "token.webp" } }, _stats: { createdTime: 123 }, flags: { notes: "A secret pact" } });
+  actor.system._migration = { version: 1 };
+  actor.system.details.privateNotes = "Only silver breaks the ward.";
+  actor.system.attributes = { resistances: [{ type: "physical", value: 5, exceptions: ["silver"], typeLabels: { fire: "Fire" } }] };
+  const rules = [{ key: "FlatModifier", value: 1, selector: "saving-throw", predicate: ["item:magical"],
+    disabled: false, extra: null, options: {}, choice: "" }];
+  actor.items[0].system.rules = rules;
+  actor.items[0].system.description.gm = "The flame gutters in rain.";
+  actor.items[0]._stats = { modifiedTime: 456 };
+  const current = structuredClone(actor.system);
+  current.saves = { reflex: { value: 18, breakdown: "Base +16, vs. magic +1", modifiers: [{
+    label: "Magic ward", modifier: 1, type: "status", predicate: ["item:magical"],
+    adjustments: [{ predicate: ["target:trait:dragon"], value: 2 }], enabled: false, ignored: true,
+    domains: ["saving-throw"], hideIfDisabled: false, kind: "modifier", force: false, custom: false
+  }] } };
+  const before = structuredClone({ actor, current });
+  const data = compactCreatureData(actor, current);
+  assert.deepEqual({ actor, current }, before);
+  for (const key of ["img", "folder", "ownership", "prototypeToken", "_stats"]) assert.equal(Object.hasOwn(data.actor, key), false);
+  assert.doesNotMatch(JSON.stringify(data), /typeLabels|_migration|modifiedTime|domains|breakdown/);
+  assert.equal(data.actor.system.details.privateNotes, "Only silver breaks the ward.");
+  assert.deepEqual(data.actor.system.attributes.resistances, [{ type: "physical", value: 5, exceptions: ["silver"] }]);
+  assert.deepEqual(data.actor.items[0].system.rules, rules);
+  assert.equal(data.actor.items[0].system.description.gm, "The flame gutters in rain.");
+  assert.equal(data.actor.items[1].system.level.value, 2);
+  assert.equal(data.actor.flags.notes, "A secret pact");
+  assert.deepEqual(data.currentSystem.saves.reflex.modifiers, [{ label: "Magic ward", modifier: 1,
+    type: "status", predicate: ["item:magical"], adjustments: [{ predicate: ["target:trait:dragon"], value: 2 }],
+    enabled: false, ignored: true }]);
+});
+
+test("prepared changes retain cleared fields, current values and altered strike damage through item references", () => {
+  const actor = setup().creature.toObject();
+  actor.system.attributes = { hp: { value: 65, max: 65 }, immunities: [{ type: "fire" }] };
+  const weapon = { _id: "hammer", name: "Hammer", type: "melee", system: {
+    bonus: { value: 19 }, damageRolls: { base: { damage: "1d6+6", damageType: "bludgeoning" } }
+  } };
+  actor.items.push(weapon);
+  const current = structuredClone(actor.system);
+  current.attributes.hp.value = 37;
+  current.attributes.immunities = [];
+  const alteredWeapon = structuredClone(weapon);
+  alteredWeapon.system.damageRolls.fire = { damage: "1d6", damageType: "fire" };
+  alteredWeapon.system.bonus.value = 0;
+  const unrelated = { _id: "unrelated", name: "New strike", type: "melee", system: { bonus: { value: 10 } } };
+  current.actions = [{ label: "Hammer", totalModifier: 19, item: alteredWeapon, weapon }, { item: unrelated }];
+  const data = compactCreatureData(actor, current);
+  assert.equal(data.currentSystem.details, undefined, "Unchanged notes should only appear once");
+  assert.deepEqual(data.currentSystem.attributes, { hp: { value: 37 }, immunities: null });
+  assert.deepEqual(data.currentSystem.actions[0].weapon, { itemReference: "hammer" });
+  const { itemReference, currentData } = data.currentSystem.actions[0].item;
+  assert.equal(itemReference, "hammer");
+  assert.deepEqual(currentData, { system: { bonus: { value: 0 }, damageRolls: { fire: { damage: "1d6", damageType: "fire" } } } });
+  assert.deepEqual(data.currentSystem.actions[1].item, unrelated, "Keep a full item when no source reference exists");
+  assert.equal(compactCreatureData(actor, actor.system).currentSystem, undefined);
+});
+
+test("private GM prompt includes creature facts but response contains no secret result", async () => {
   const f = setup();
   const response = await executeAskQuestion(request(f, { loreSlug: "dragon-lore", question: 'Is <script>alert("hi")</script> its weakest defense?' }));
   assert.deepEqual(response, { action: "ask-question", messageId: "message-1" });
@@ -320,8 +381,7 @@ test("dialog captures Lore from the selected token and Cancel closes without a r
   const options = [...dialog.options.content.querySelectorAll("option")];
   assert.deepEqual(options.map((option) => option.value), ["", "dragon-lore", "sailing-lore"]);
   assert.match(options[1].textContent, /Dragons of the Inner Sea \(\+10\)/);
-  assert.match(dialog.options.content.textContent, /lowers the DC by 5.*or by 3 otherwise/);
-  assert.doesNotMatch(dialog.options.content.textContent, /receives \+5/);
+  assert.equal(dialog.options.content.querySelector(".hint").textContent, "Choose a Lore only if it applies to your question");
   assert.doesNotMatch(dialog.options.content.textContent, /Clockwork Drake/, "Show the visible token name, not the secret Actor identity");
   await dialog.options.buttons.find((button) => button.action === "cancel").callback();
   assert.equal(dialog.rendered, false);

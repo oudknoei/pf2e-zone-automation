@@ -1,4 +1,5 @@
 import { bestKnowledgeSkill, creatureKnowledgeDC, creatureTraits, creatureType, knowledgeDegree, traitLabel } from "./recall-knowledge-rules.js";
+import { compactCreatureData } from "./recall-knowledge-data.js";
 import { oncePerOperation } from "./request-cache.js";
 import { escapeHtml, readDocumentFlag } from "./utils.js";
 
@@ -60,10 +61,7 @@ async function questionToken(uuid, label) {
 export function buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total, degree }) {
   const traits = creatureTraits(creature).map(traitLabel).join(", ") || "None listed";
   const type = creatureType(creature);
-  const data = {
-    actor: creature.toObject(),
-    currentSystem: creature.toObject(false).system
-  };
+  const data = compactCreatureData(creature.toObject(), creature.toObject(false).system);
   return [
     "You are helping a Pathfinder Second Edition GM narrate a Recall Knowledge answer in Golarion.",
     "Write a brief, flavorful answer addressed to the character, ready for the GM to read aloud. Use evocative, grounded language: a remembered lesson, a tavern tale, a scholar's warning, or an instinctive recognition appropriate to the skill.",
@@ -88,9 +86,9 @@ export function buildKnowledgePrompt({ request, requester, source, creature, ski
     `CREATURE TYPE (ALWAYS REVEAL): ${type}`,
     `CREATURE TRAITS (ALWAYS REVEAL): ${traits}`,
     "",
-    "FULL CREATURE DATA (GM REFERENCE; source Actor with all embedded items, plus the current prepared system data):",
-    // Drop repeated internal label catalogs at every depth without modifying the creature's data.
-    JSON.stringify(data, (key, value) => key === "typeLabels" ? undefined : value, 2)
+    "CREATURE DATA (GM REFERENCE; all embedded items and factual system data; internal bookkeeping and empty fields omitted):",
+    "currentSystem contains only changes to actor.system: merge objects recursively, replace arrays and scalar values, and remove fields marked null. Prepared values take precedence. itemReference points to the actor.items entry with that _id; merge any currentData changes into that item using the same rules.",
+    JSON.stringify(data, null, 2)
   ].join("\n");
 }
 

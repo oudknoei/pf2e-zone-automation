@@ -52,11 +52,11 @@ export async function openAskQuestion() {
   const loreSkills = actorLoreSkills(source.actor);
   const content = document.createElement("div");
   content.innerHTML = `<div class="pza-knowledge-dialog">
-    <p><strong>${escapeHtml(source.name)}</strong> asks about <strong>${escapeHtml(target.name)}</strong>.</p>
-    <label>Question<textarea name="knowledge-question" rows="3" maxlength="2000" required placeholder="What do I remember about this creature?"></textarea></label>
+    <p><strong>${escapeHtml(source.name)}</strong>, what would you like to know about <strong>${escapeHtml(target.name)}</strong></p>
+    <label><textarea name="knowledge-question" aria-label="Question" rows="3" maxlength="2000" required></textarea></label>
     <label>Applicable Lore<select name="knowledge-lore"><option value="">None</option>${loreSkills.map((skill) =>
       `<option value="${escapeHtml(skill.slug)}">${escapeHtml(skill.label)} (${skill.modifier >= 0 ? "+" : ""}${skill.modifier})</option>`).join("")}</select></label>
-    <p class="hint">Choose a Lore only if it applies to your question. Lore lowers the DC by 5 when its name matches a creature trait, or by 3 otherwise. The best check is used.</p>
+    <p class="hint">Choose a Lore only if it applies to your question</p>
     <p data-pza-question-status aria-live="polite"></p>
   </div>`;
   let sending = false;
