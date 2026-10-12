@@ -68,7 +68,37 @@ export function actorLoreSkills(actor) {
     .sort((first, second) => first.label.localeCompare(second.label));
 }
 
-/** Chooses the highest applicable skill or the chosen Lore plus the requested five-point adjustment. */
+/** Normalizes skill and trait names for case-insensitive matching across spaces, punctuation, and slugs. */
+function nameWords(name) {
+  return String(name ?? "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** Matches complete trait names within a Lore name, including common plurals, without matching word fragments. */
+function loreNameMatchesTrait(loreName, traitName) {
+  const loreWords = nameWords(loreName);
+  const traitWords = nameWords(traitName);
+  if (!traitWords.length) return false;
+  const lastWord = traitWords.at(-1);
+  const endings = new Set([lastWord, `${lastWord}s`]);
+  if (/[^aeiou]y$/.test(lastWord)) endings.add(`${lastWord.slice(0, -1)}ies`);
+  if (/(?:s|x|z|ch|sh)$/.test(lastWord)) endings.add(`${lastWord}es`);
+  if (/f$/.test(lastWord)) endings.add(`${lastWord.slice(0, -1)}ves`);
+  if (/fe$/.test(lastWord)) endings.add(`${lastWord.slice(0, -2)}ves`);
+  return loreWords.some((_word, start) => traitWords.every((word, index) => (
+    index === traitWords.length - 1 ? endings.has(loreWords[start + index]) : loreWords[start + index] === word
+  )));
+}
+
+/** Lowers a chosen Lore's DC by five for a matching creature trait, or by three otherwise. */
+export function loreKnowledgeDCAdjustment(creature, lore) {
+  const names = [lore.slug, lore.label];
+  const matches = creatureTraits(creature).some((trait) => names.some((name) => (
+    loreNameMatchesTrait(name, trait) || loreNameMatchesTrait(name, traitLabel(trait))
+  )));
+  return matches ? -5 : -3;
+}
+
+/** Chooses the skill with the best bonus relative to its DC while leaving the rolled modifier unchanged. */
 export function bestKnowledgeSkill(actor, creature, loreSlug = null) {
   const skills = creature.identificationDCs?.skills
     ?? creatureTraits(creature).flatMap((trait) => IDENTIFICATION_SKILLS[trait] ?? []);
@@ -78,10 +108,12 @@ export function bestKnowledgeSkill(actor, creature, loreSlug = null) {
       throw new Error("The selected Lore skill no longer belongs to the selected character.");
     }
     const lore = skillCandidate(actor, loreSlug, creature);
-    candidates.push({ ...lore, lore: true, modifier: lore.modifier + 5, loreAdjustment: 5 });
+    candidates.push({ ...lore, lore: true, dcAdjustment: loreKnowledgeDCAdjustment(creature, lore) });
   }
   if (!candidates.length) throw new Error("No applicable identification skill was found. Choose an applicable Lore skill or ask the GM to adjudicate this creature.");
-  return candidates.reduce((best, candidate) => candidate.modifier > best.modifier ? candidate : best);
+  return candidates.reduce((best, candidate) => (
+    candidate.modifier - (candidate.dcAdjustment ?? 0) > best.modifier - (best.dcAdjustment ?? 0) ? candidate : best
+  ));
 }
 
 /** Applies PF2e's ten-point thresholds and one-step natural 20 or natural 1 adjustment. */

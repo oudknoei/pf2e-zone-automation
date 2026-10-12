@@ -11,7 +11,7 @@ const expectedMacros = new Map([
     "pzaAskQuestion01",
     {
       name: "Ask a question about ...",
-      image: "icons/sundries/books/book-open-brown.webp",
+      image: "modules/pf2e-zone-automation/assets/macros/ask-question.webp",
       api: "openAskQuestion"
     }
   ],

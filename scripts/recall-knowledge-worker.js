@@ -81,7 +81,7 @@ export function buildKnowledgePrompt({ request, requester, source, creature, ski
     `CHARACTER: ${JSON.stringify(source.name)}`,
     `QUESTION: ${JSON.stringify(request.question)}`,
     `RESULT: ${degree}`,
-    `SKILL USED: ${skill.label}${skill.loreAdjustment ? " (+5 applicable Lore adjustment)" : ""}`,
+    `SKILL USED: ${skill.label}${skill.dcAdjustment ? ` (Lore DC ${skill.dcAdjustment}: ${skill.dcAdjustment === -5 ? "creature trait match" : "no creature trait match"})` : ""}`,
     `ROLL: d20 ${natural} + modifier ${skill.modifier} = ${total}; DC ${dc}`,
     `LORE SELECTED AS APPLICABLE: ${request.loreSlug ?? "None"}`,
     `CREATURE NAME (GM REFERENCE): ${JSON.stringify(creature.name)}`,
@@ -89,7 +89,8 @@ export function buildKnowledgePrompt({ request, requester, source, creature, ski
     `CREATURE TRAITS (ALWAYS REVEAL): ${traits}`,
     "",
     "FULL CREATURE DATA (GM REFERENCE; source Actor with all embedded items, plus the current prepared system data):",
-    JSON.stringify(data, null, 2)
+    // Drop repeated internal label catalogs at every depth without modifying the creature's data.
+    JSON.stringify(data, (key, value) => key === "typeLabels" ? undefined : value, 2)
   ].join("\n");
 }
 
@@ -98,7 +99,7 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
   const source = sourceToken.actor;
   const creature = targetToken.actor;
   const skill = bestKnowledgeSkill(source, creature, request.loreSlug);
-  const dc = creatureKnowledgeDC(creature);
+  const dc = creatureKnowledgeDC(creature) + (skill.dcAdjustment ?? 0);
   const roll = await new Roll("1d20 + @modifier", { modifier: skill.modifier }).evaluate();
   const natural = roll.dice?.[0]?.results?.find((result) => result.active !== false)?.result;
   if (!Number.isInteger(natural) || natural < 1 || natural > 20 || !Number.isFinite(roll.total)) {
@@ -116,7 +117,7 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
       <h3>Ask a question about ...</h3>
       <p><strong>${escapeHtml(source.name)}</strong> asks about <strong>${escapeHtml(creature.name)}</strong>:</p>
       <p>${escapeHtml(request.question)}</p>
-      <p><strong>${degree}</strong> · ${escapeHtml(skill.label)}${skill.loreAdjustment ? " +5 Lore" : ""} · ${roll.total} vs. DC ${dc}</p>
+      <p><strong>${degree}</strong> · ${escapeHtml(skill.label)}${skill.dcAdjustment ? ` (Lore DC ${skill.dcAdjustment})` : ""} · ${roll.total} vs. DC ${dc}</p>
       <p><strong>Type:</strong> ${escapeHtml(creatureType(creature))}<br><strong>Traits:</strong> ${escapeHtml(traits)}</p>
       <button type="button" data-pza-copy-knowledge>Copy</button>
       <details><summary>LLM prompt and full creature data</summary><pre data-pza-knowledge-prompt>${escapeHtml(prompt)}</pre></details>

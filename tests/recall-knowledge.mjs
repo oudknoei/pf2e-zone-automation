@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { actorLoreSkills, bestKnowledgeSkill, creatureKnowledgeDC, creatureType, knowledgeDegree } from "../scripts/recall-knowledge-rules.js";
+import { actorLoreSkills, bestKnowledgeSkill, creatureKnowledgeDC, creatureType, knowledgeDegree, loreKnowledgeDCAdjustment } from "../scripts/recall-knowledge-rules.js";
 import { executeAskQuestion, QUESTION_MESSAGE_FLAG } from "../scripts/recall-knowledge-worker.js";
 import { openAskQuestion, registerQuestionChat } from "../scripts/recall-knowledge.js";
 
@@ -108,13 +108,39 @@ test("best identification skill combines every creature trait and contextual bon
   assert.equal(bestKnowledgeSkill(f.source, f.creature).slug, "religion", "Use PF2e's prepared identification skill list when available");
 });
 
-test("chosen Lore plus five wins only when its adjusted bonus is higher", () => {
+test("chosen Lore lowers its DC without changing its bonus and wins only when the check is better", () => {
   const f = setup();
   const best = bestKnowledgeSkill(f.source, f.creature, "dragon-lore");
-  assert.equal(best.modifier, 15);
-  assert.equal(best.loreAdjustment, 5);
+  assert.equal(best.modifier, 10);
+  assert.equal(best.dcAdjustment, -5);
   assert.equal(bestKnowledgeSkill(f.source, f.creature, "sailing-lore").slug, "crafting");
+  f.source.skills["sailing-lore"].check.mod = 10;
+  f.source.skills["sailing-lore"].withRollOptions = () => ({ check: { mod: 10 } });
+  const unmatched = bestKnowledgeSkill(f.source, f.creature, "sailing-lore");
+  assert.equal(unmatched.modifier, 10);
+  assert.equal(unmatched.dcAdjustment, -3);
+  f.source.skills["sailing-lore"].withRollOptions = () => ({ check: { mod: 9 } });
+  assert.equal(bestKnowledgeSkill(f.source, f.creature, "sailing-lore").slug, "crafting", "The ordinary skill wins a tie");
   assert.throws(() => bestKnowledgeSkill(f.source, f.creature, "invented-lore"), /no longer belongs/);
+});
+
+test("trait matching handles slugs, display names, plurals and punctuation without matching word fragments", () => {
+  const f = setup();
+  for (const [traits, slug, label, expected] of [
+    [["dragon"], "dragon-lore", "Scholarly Lore", -5],
+    [["dragon"], "scholarly-lore", "Dragons Lore", -5],
+    [["dragon"], "scholarly-lore", "Ancient DRAGON (Lore)", -5],
+    [["elf"], "elves-lore", "Elves Lore", -5],
+    [["dwarf"], "dwarves-lore", "Dwarves Lore", -5],
+    [["sea-devil"], "sea-devils-lore", "Sea Devils Lore", -5],
+    [["dragon"], "dragonfly-lore", "Dragonfly Lore", -3],
+    [["dragon"], "sailing-lore", "Sailing Lore", -3],
+    [["construct", "dragon", "fire"], "fire-lore", "Fire Lore", -5],
+    [[], "dragon-lore", "Dragon Lore", -3]
+  ]) {
+    f.creature.system.traits.value = traits;
+    assert.equal(loreKnowledgeDCAdjustment(f.creature, { slug, label }), expected, label);
+  }
 });
 
 test("unmapped creature needs applicable Lore instead of inventing a skill", () => {
@@ -166,13 +192,36 @@ test("private GM prompt includes full creature data but response contains no sec
   const prompt = dom.window.document.querySelector("[data-pza-knowledge-prompt]").textContent;
   assert.match(prompt, /QUESTION: "Is <script>/);
   assert.match(prompt, /RESULT: Success/);
-  assert.match(prompt, /ROLL: d20 10 \+ modifier 15 = 25; DC 21/);
+  assert.match(prompt, /SKILL USED: Dragons of the Inner Sea \(Lore DC -5: creature trait match\)/);
+  assert.match(prompt, /ROLL: d20 10 \+ modifier 10 = 20; DC 16/);
+  assert.equal(f.rolls[0].data.modifier, 10);
+  assert.doesNotMatch(prompt, /\+5 applicable Lore|modifier 15/);
   assert.match(prompt, /Burning Breath/);
   assert.match(prompt, /Ignition/);
   assert.match(prompt, /"max": 65/);
   assert.match(prompt, /materially FALSE/);
   assert.match(prompt, /Never falsify or omit that opening/);
   dom.window.close();
+});
+
+test("nonmatching Lore uses its normal bonus against DC minus three in chat and the copied prompt", async () => {
+  const f = setup();
+  f.source.skills["sailing-lore"] = statistic("Sailing Lore", 10, true);
+  await executeAskQuestion(request(f, { loreSlug: "sailing-lore" }));
+  assert.equal(f.rolls[0].data.modifier, 10);
+  assert.match(f.messages[0].content, /Sailing Lore \(Lore DC -3\).*20 vs. DC 18/);
+  const prompt = f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt;
+  assert.match(prompt, /ROLL: d20 10 \+ modifier 10 = 20; DC 18/);
+  assert.match(prompt, /RESULT: Success/);
+});
+
+test("a better ordinary skill keeps the full creature DC even when Lore is selected", async () => {
+  const f = setup();
+  await executeAskQuestion(request(f, { loreSlug: "sailing-lore" }));
+  assert.equal(f.rolls[0].data.modifier, 12);
+  const prompt = f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt;
+  assert.match(prompt, /SKILL USED: Crafting\n/);
+  assert.match(prompt, /ROLL: d20 10 \+ modifier 12 = 22; DC 21/);
 });
 
 test("every result reports truthful type and traits and records the degree for the LLM", async () => {
@@ -271,6 +320,8 @@ test("dialog captures Lore from the selected token and Cancel closes without a r
   const options = [...dialog.options.content.querySelectorAll("option")];
   assert.deepEqual(options.map((option) => option.value), ["", "dragon-lore", "sailing-lore"]);
   assert.match(options[1].textContent, /Dragons of the Inner Sea \(\+10\)/);
+  assert.match(dialog.options.content.textContent, /lowers the DC by 5.*or by 3 otherwise/);
+  assert.doesNotMatch(dialog.options.content.textContent, /receives \+5/);
   assert.doesNotMatch(dialog.options.content.textContent, /Clockwork Drake/, "Show the visible token name, not the secret Actor identity");
   await dialog.options.buttons.find((button) => button.action === "cancel").callback();
   assert.equal(dialog.rendered, false);
