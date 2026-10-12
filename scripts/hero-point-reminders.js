@@ -9,6 +9,59 @@ let installed = false;
 let timer = null;
 let delivery = null;
 let retryAfter = 0;
+let reminderChatHook = null;
+const wiredReminderButtons = new WeakSet();
+
+/** Limits the private reminder's dialog shortcut to the GM who created it. */
+function canOpenReminder(message) {
+  const marker = readDocumentFlag(message, MODULE_ID, MESSAGE_FLAG);
+  return game.user?.isGM && marker?.recipientUserId === game.user.id && Number.isFinite(marker?.remindAt);
+}
+
+/** Adds a dialog shortcut to new and previously saved reminders whenever Foundry renders them. */
+function renderReminderChat(message, html) {
+  const selector = "button[data-pza-hero-point-reminder]";
+  const buttons = [...html.querySelectorAll(selector)];
+  if (!canOpenReminder(message)) {
+    for (const button of buttons) button.remove();
+    return;
+  }
+  const button = buttons[0] ?? html.ownerDocument.createElement("button");
+  for (const duplicate of buttons.slice(1)) duplicate.remove();
+  if (wiredReminderButtons.has(button)) return;
+  button.type = "button";
+  button.dataset.pzaHeroPointReminder = "";
+  button.textContent = "Award Hero Points";
+  if (!button.parentElement) (html.querySelector(".message-content") ?? html).append(button);
+  wiredReminderButtons.add(button);
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (button.disabled || !canOpenReminder(message)) return;
+    button.disabled = true;
+    try {
+      const api = game.modules.get(MODULE_ID)?.api;
+      if (typeof api?.promptSetHeroPoints !== "function") throw new Error("The Hero Points dialog is unavailable. Refresh Foundry and try again.");
+      await api.promptSetHeroPoints();
+    } catch (error) {
+      console.error("PF2e Zone Hero Point reminder button failed", error);
+      ui.notifications.error(error?.message ?? "The Hero Points dialog could not be opened. Try again.");
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+/** Registers before chat history loads so reminders retain working buttons after a refresh. */
+export function registerHeroPointReminderChat() {
+  if (reminderChatHook !== null) return;
+  const hook = Hooks.on("renderChatMessageHTML", renderReminderChat);
+  reminderChatHook = hook;
+  return () => {
+    Hooks.off("renderChatMessageHTML", hook);
+    if (reminderChatHook === hook) reminderChatHook = null;
+  };
+}
 
 /** Interprets a local clock time as its next occurrence, including tomorrow when today's time has passed. */
 export function reminderTimestamp(time, now = Date.now()) {
@@ -82,7 +135,7 @@ async function deliverReminder(reminder) {
     }
   }
   if (!isDeliveredReminder(message, reminder)) throw new Error("The Hero Point reminder could not be delivered.");
-  await reminder.user.update({ [`flags.${MODULE_ID}.${REMINDERS_FLAG}.-=${reminder.id}`]: null });
+  await reminder.user.update({ [`flags.${MODULE_ID}.${REMINDERS_FLAG}.${reminder.id}`]: new foundry.data.operators.ForcedDeletion() });
 }
 
 /** Reserves delivery synchronously so timer, reconnect, and document hooks cannot send overlapping reminders. */

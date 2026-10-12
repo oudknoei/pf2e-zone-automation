@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { createHeroPointReminder, deliverHeroPointReminders, registerHeroPointReminders, reminderTimestamp } from "../scripts/hero-point-reminders.js";
+import { JSDOM } from "jsdom";
+import { createHeroPointReminder, deliverHeroPointReminders, registerHeroPointReminderChat, registerHeroPointReminders, reminderTimestamp } from "../scripts/hero-point-reminders.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const nativeNow = Date.now;
@@ -13,6 +14,12 @@ let timers;
 let hooks;
 let messages;
 let writes;
+let chatCleanup;
+let opened;
+let notices;
+const dom = new JSDOM("<!doctype html><html><body></body></html>");
+
+class ForcedDeletion {}
 
 function user(id, isGM = true) {
   return {
@@ -22,7 +29,8 @@ function user(id, isGM = true) {
       writes.push({ userId: this.id, data });
       for (const [path, record] of Object.entries(data)) {
         const key = path.split(".").at(-1);
-        if (key.startsWith("-=")) delete this.flags[MODULE_ID].heroPointReminders[key.slice(2)];
+        assert.equal(key.startsWith("-="), false, "Reminder updates must use v14 deletion operators, not legacy keys");
+        if (record instanceof ForcedDeletion) delete this.flags[MODULE_ID].heroPointReminders[key];
         else this.flags[MODULE_ID].heroPointReminders[key] = structuredClone(record);
       }
       for (const handler of hooks.get("updateUser")?.values() ?? []) handler(this, data);
@@ -33,8 +41,22 @@ function user(id, isGM = true) {
 
 function pending(recipient = game.user) { return recipient.flags[MODULE_ID].heroPointReminders; }
 
-function fire(name) {
-  for (const handler of hooks.get(name)?.values() ?? []) handler();
+function fire(name, ...args) {
+  for (const handler of hooks.get(name)?.values() ?? []) handler(...args);
+}
+
+function renderMessage(message) {
+  const html = dom.window.document.createElement("li");
+  html.innerHTML = `<div class="message-content">${message.content}</div>`;
+  fire("renderChatMessageHTML", message, html);
+  return html;
+}
+
+async function deliveredReminder() {
+  const reminder = await createHeroPointReminder("20:00");
+  now = reminder.remindAt;
+  await deliverHeroPointReminders();
+  return messages[0];
 }
 
 async function runNextTimer() {
@@ -53,6 +75,9 @@ beforeEach(() => {
   hooks = new Map();
   messages = [];
   writes = [];
+  chatCleanup = null;
+  opened = 0;
+  notices = [];
   Date.now = () => now;
   globalThis.setTimeout = (callback, delay) => { const id = ++sequence; timers.set(id, { callback, delay }); return id; };
   globalThis.clearTimeout = (id) => timers.delete(id);
@@ -66,12 +91,17 @@ beforeEach(() => {
     },
     off(name, id) { hooks.get(name)?.delete(id); }
   };
-  globalThis.foundry = { utils: { randomID: () => String(++sequence).padStart(16, "A") } };
+  globalThis.foundry = {
+    utils: { randomID: () => String(++sequence).padStart(16, "A") },
+    data: { operators: { ForcedDeletion } }
+  };
   const gm = user("gm");
   const otherGM = user("other-gm");
   const users = [gm, otherGM, user("player", false)];
   users.activeGM = gm;
-  globalThis.game = { user: gm, users, messages: new Map() };
+  const api = { promptSetHeroPoints: async () => { opened++; } };
+  globalThis.game = { user: gm, users, messages: new Map(), modules: { get: (id) => id === MODULE_ID ? { api } : undefined } };
+  globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
   globalThis.ChatMessage = {
     async create(data, options) {
       assert.equal(options.keepId, true);
@@ -87,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup?.();
+  chatCleanup?.();
   Date.now = nativeNow;
   globalThis.setTimeout = nativeSetTimeout;
   globalThis.clearTimeout = nativeClearTimeout;
@@ -135,6 +166,29 @@ test("the scheduler posts a private reminder at the saved time and clears the pe
   assert.match(messages[0].content, /It's time to award everyone 1 Hero Point/);
   assert.equal(Object.keys(pending()).length, 0);
   assert.equal(timers.size, 0);
+});
+
+test("clearing the 8pm reminder preserves and delivers the 9pm reminder and leaves another GM's reminders intact", async () => {
+  cleanup = registerHeroPointReminders();
+  const first = await createHeroPointReminder("20:00");
+  const second = await createHeroPointReminder("21:00");
+  const otherGM = game.users[1];
+  const otherId = "OtherGMReminder1";
+  assert.equal(otherId.length, 16);
+  pending(otherGM)[otherId] = { remindAt: new Date(2026, 9, 12, 22, 0).getTime() };
+  const otherSaved = structuredClone(pending(otherGM));
+  await runNextTimer();
+  assert.deepEqual(messages.map((message) => message.id), [first.id]);
+  assert.deepEqual(pending(), { [second.id]: { remindAt: second.remindAt } });
+  assert.deepEqual(pending(otherGM), otherSaved);
+  const deletion = writes.at(-1).data;
+  assert.ok(deletion[`flags.${MODULE_ID}.heroPointReminders.${first.id}`] instanceof ForcedDeletion);
+  assert.equal([...timers.values()][0].delay, 60 * 60 * 1000);
+  await runNextTimer();
+  assert.deepEqual(messages.map((message) => message.id), [first.id, second.id]);
+  assert.ok(messages.every((message) => message.whisper.length === 1 && message.whisper[0] === "gm"));
+  assert.deepEqual(pending(), {});
+  assert.deepEqual(pending(otherGM), otherSaved);
 });
 
 test("refresh recovery restores future reminders and delivers missed reminders after reopening", async () => {
@@ -250,4 +304,97 @@ test("malformed flags are ignored and a player client never installs delivery ho
   game.user = game.users[2];
   assert.equal(registerHeroPointReminders(), undefined);
   assert.equal([...hooks.values()].reduce((count, entries) => count + entries.size, 0), 0);
+});
+
+test("the recipient's reminder button opens the same module entry point as the Hero Points macro", async () => {
+  chatCleanup = registerHeroPointReminderChat();
+  const message = await deliveredReminder();
+  const html = renderMessage(message);
+  const button = html.querySelector("button[data-pza-hero-point-reminder]");
+  assert.equal(button.textContent, "Award Hero Points");
+  assert.equal(button.type, "button");
+  const before = { writes: writes.length, messages: messages.length };
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(opened, 1);
+  assert.equal(button.disabled, false);
+  assert.equal(writes.length, before.writes, "Opening the dialog does not apply Hero Points or change reminders");
+  assert.equal(messages.length, before.messages);
+  assert.deepEqual(message.whisper, ["gm"]);
+});
+
+test("saved reminders regain their buttons when chat history renders after a refresh", async () => {
+  const message = await deliveredReminder();
+  assert.equal(renderMessage(message).querySelector("button"), null, "Message predates registration and has no stored button");
+  chatCleanup = registerHeroPointReminderChat();
+  const html = renderMessage(message);
+  const button = html.querySelector("button");
+  fire("renderChatMessageHTML", message, html);
+  assert.equal(html.querySelectorAll("button").length, 1, "Rendering twice does not duplicate controls");
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(opened, 1, "Rendering twice does not bind two click handlers");
+  chatCleanup();
+  chatCleanup = registerHeroPointReminderChat();
+  const restored = renderMessage(message);
+  restored.querySelector("button").click();
+  await new Promise(setImmediate);
+  assert.equal(opened, 2);
+});
+
+test("other GMs, players, and ordinary chat messages receive no reminder shortcut", async () => {
+  chatCleanup = registerHeroPointReminderChat();
+  const message = await deliveredReminder();
+  assert.equal(renderMessage({ content: "Ordinary chat", flags: {} }).querySelector("button"), null);
+  game.user = game.users[1];
+  assert.equal(renderMessage(message).querySelector("button"), null);
+  game.user = game.users[2];
+  const html = renderMessage({ ...message, content: `${message.content}<button data-pza-hero-point-reminder>Open</button>` });
+  assert.equal(html.querySelector("button"), null);
+  assert.equal(opened, 0);
+});
+
+test("the reminder button ignores duplicate clicks while opening and rechecks the current user's authority", async () => {
+  chatCleanup = registerHeroPointReminderChat();
+  const message = await deliveredReminder();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  game.modules.get(MODULE_ID).api.promptSetHeroPoints = async () => { opened++; await gate; };
+  const button = renderMessage(message).querySelector("button");
+  button.click();
+  assert.equal(button.disabled, true);
+  button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert.equal(opened, 1);
+  release();
+  await new Promise(setImmediate);
+  assert.equal(button.disabled, false);
+  game.user = game.users[1];
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(opened, 1);
+});
+
+test("a failed dialog launch reports an error and leaves the reminder button retryable", async () => {
+  chatCleanup = registerHeroPointReminderChat();
+  const message = await deliveredReminder();
+  const api = game.modules.get(MODULE_ID).api;
+  api.promptSetHeroPoints = async () => { throw new Error("Dialog could not open."); };
+  const button = renderMessage(message).querySelector("button");
+  const nativeError = console.error;
+  console.error = () => {};
+  try {
+    button.click();
+    await new Promise(setImmediate);
+    assert.equal(notices[0], "Dialog could not open.");
+    assert.equal(button.disabled, false);
+    api.promptSetHeroPoints = async () => { opened++; };
+    button.click();
+    await new Promise(setImmediate);
+    assert.equal(opened, 1);
+    api.promptSetHeroPoints = undefined;
+    button.click();
+    await new Promise(setImmediate);
+    assert.match(notices.at(-1), /Hero Points dialog is unavailable/);
+    assert.equal(button.disabled, false);
+  } finally { console.error = nativeError; }
 });

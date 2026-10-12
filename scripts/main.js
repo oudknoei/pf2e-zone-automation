@@ -4,7 +4,7 @@ import { openShieldingTaunt, requestShieldingTaunt } from "./shielding-taunt.js"
 import { registerZoneSocket } from "./transport.js";
 import { installZoneOutlines } from "./zone-outline.js";
 import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
-import { createHeroPointReminder, registerHeroPointReminders } from "./hero-point-reminders.js";
+import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -30,6 +30,7 @@ Hooks.once("init", () => {
     promptSetHeroPoints,
     createHeroPointReminder
   };
+  registerHeroPointReminderChat();
 });
 
 /** Adds the builder where token-focused preparation naturally begins, avoiding a separate setup macro. */
