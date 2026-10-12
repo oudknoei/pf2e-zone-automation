@@ -13,11 +13,14 @@ const writes = [];
 class TestDialog extends window.EventTarget {
   constructor(options) {
     super();
+    assert.equal(options.content.tagName, "DIV", "DialogV2 content must be a plain div");
+    assert.equal(options.content.attributes.length, 0, "DialogV2 content must have no attributes");
     this.options = options;
     this.rendered = false;
     this.element = document.createElement("section");
     const form = document.createElement("form");
-    form.append(options.content);
+    // Foundry serializes the wrapper's inner HTML rather than retaining the wrapper.
+    form.innerHTML = options.content.innerHTML;
     for (const config of options.buttons) {
       const button = document.createElement("button");
       button.type = "button";
@@ -145,6 +148,8 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   const dialog = await promptSetHeroPoints();
   const root = dialog.element;
   assert.equal(dialog.options.window.title, "Set Hero Points");
+  assert.equal(dialog.options.content.attributes.length, 0);
+  assert.ok(root.querySelector(".pza-hero-points"), "Styled content survives Foundry's wrapper serialization");
   assert.equal(dialog.options.form.closeOnSubmit, false);
   assert.equal(root.querySelectorAll('[name="hero-character"]').length, 2);
   assert.equal(root.querySelector('[value="one"]').checked, true);

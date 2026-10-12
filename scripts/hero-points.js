@@ -112,9 +112,10 @@ export async function promptSetHeroPoints() {
     return heroPointsDialog;
   }
   const selectedActors = new Set((globalThis.canvas?.tokens?.controlled ?? []).map((token) => token.actor?.id));
+  // DialogV2 requires an attribute-free outer div and renders only its inner HTML.
   const content = document.createElement("div");
-  content.className = "pza-hero-points";
   content.innerHTML = `
+    <div class="pza-hero-points">
     <p>Choose an action and check the characters to update. Review the totals, then apply.</p>
     <fieldset>
       <legend>1. Choose the change</legend>
@@ -148,7 +149,8 @@ export async function promptSetHeroPoints() {
       </div>
       <p class="pza-hp-help">Characters with selected tokens are checked automatically.</p>
     </fieldset>
-    <p class="pza-hp-summary" data-hp-summary aria-live="polite"></p>`;
+    <p class="pza-hp-summary" data-hp-summary aria-live="polite"></p>
+    </div>`;
 
   let applying = false;
   let pendingPlan = null;
