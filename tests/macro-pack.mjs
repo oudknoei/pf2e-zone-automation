@@ -22,6 +22,14 @@ const expectedMacros = new Map([
       image: "modules/pf2e-zone-automation/assets/macros/shielding-taunt.webp",
       api: "openShieldingTaunt"
     }
+  ],
+  [
+    "pzaSetHeroPoints01",
+    {
+      name: "Set Hero Points",
+      image: "modules/pf2e-zone-automation/assets/macros/SetHeroPoints.webp",
+      api: "promptSetHeroPoints"
+    }
   ]
 ]);
 
@@ -52,12 +60,12 @@ test("compiled Macro pack provides the module hotbar macros", async () => {
       assert.match(macro.command, new RegExp(`await zoneModule\\.api\\.${expected.api}\\(\\)`));
     }
 
-    const builderImage = readFileSync(join(root, "assets", "macros", "pf2e-zone-builder.webp"));
-    assert.equal(builderImage.subarray(0, 4).toString("ascii"), "RIFF");
-    assert.equal(builderImage.subarray(8, 12).toString("ascii"), "WEBP");
-    const tauntImage = readFileSync(join(root, "assets", "macros", "shielding-taunt.webp"));
-    assert.equal(tauntImage.subarray(0, 4).toString("ascii"), "RIFF");
-    assert.equal(tauntImage.subarray(8, 12).toString("ascii"), "WEBP");
+    for (const { image } of expectedMacros.values()) {
+      const imagePath = image.replace("modules/pf2e-zone-automation/", "");
+      const imageData = readFileSync(join(root, imagePath));
+      assert.equal(imageData.subarray(0, 4).toString("ascii"), "RIFF");
+      assert.equal(imageData.subarray(8, 12).toString("ascii"), "WEBP");
+    }
   } finally {
     assert.ok(scratch.startsWith(tmpdir()));
     rmSync(scratch, { recursive: true, force: true });

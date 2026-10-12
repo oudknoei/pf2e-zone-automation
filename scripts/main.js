@@ -18,7 +18,7 @@ Hooks.once("init", () => {
     default: {}
   });
   
-  // Define the setHeroPoints function separately
+  /** Adjusts Hero Points for the character selected by the GM, keeping the stored total between zero and three. */
   const setHeroPoints = (amount, character) => {
     // Implementation to set hero points
     if (!game.user.isGM) return;
@@ -85,7 +85,7 @@ Hooks.once("init", () => {
     }
   };
   
-// Define a method that handles UI prompts for setHeroPoints with checkboxes and select/clear buttons
+  /** Prompts for a Hero Point adjustment and the characters who should receive it. */
   const promptSetHeroPoints = async () => {
     if (!game.modules.get(MODULE_ID)?.active || !game.modules.get(MODULE_ID)?.api?.setHeroPoints) {
       ui.notifications.error("Enable PF2e Zone Automation first.");
