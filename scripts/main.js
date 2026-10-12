@@ -93,83 +93,100 @@ Hooks.once("init", () => {
     }
     
     // Prompt for hero point amount
-    const amountInput = await DialogV2.prompt({
-      window: { title: "Set Hero Points Amount" },
+    const amountInput = await Dialog.prompt({
+      title: "Set Hero Points Amount",
       content: `<div class="form-group">
         <label>Amount:</label>
         <input type="number" name="amount" value="1" min="-999" max="999" />
       </div>`,
-      ok: { label: "Set Points" }
-    });
-    
-    if (amountInput) {
-      const amount = parseInt(amountInput.amount);
-      
-      // Get all actors for selection
-      const actors = game.actors?.filter(a => a.type === "character") || [];
-      
-      if (actors.length > 0) {
-        // Create character selection options with checkboxes and select/clear buttons
-        let content = `<div class="form-group">
-          <label>Character:</label>
-          <select name="character" id="character-select">
-            <option value="selected">Selected Token</option>
-            <option value="target">Targeted Token</option>`;
-        
-        for (const actor of actors) {
-          content += `<option value="${actor.name}">${actor.name}</option>`;
-        }
-        
-        content += `</select></div><div class="form-group"><label>Check Characters:</label><br>`;
-        
-        // Add checkboxes for all characters
-        const characterCheckboxes = actors.map(actor => 
-          `<input type="checkbox" name="characters" value="${actor.name}" id="char-${actor.name}"> 
-           <label for="char-${actor.name}">${actor.name}</label><br>`
-        ).join('');
-        
-        content += `<div style="max-height: 200px; overflow-y: auto;">${characterCheckboxes}</div>`;
-        content += `<button type="button" id="select-all">Select All</button> 
-                   <button type="button" id="clear-all">Clear All</button></div>`;
-        
-        // Create a custom dialog with event listeners
-        const dialog = new Dialog({
-          title: "Select Characters",
-          content,
-          buttons: {
-            set: {
-              label: "Set Points",
-              callback: (html) => {
-                // Get selected checkboxes from the DOM after dialog is closed
-                const checkboxes = html.find('input[name="characters"]:checked');
-                const selectedCharacters = Array.from(checkboxes).map(cb => cb.value);
-                
-                if (selectedCharacters.length > 0) {
-                  for (const characterName of selectedCharacters) {
-                    setHeroPoints(amount, characterName);
-                  }
-                } else {
-                  // If no checkboxes are checked, use the dropdown selection
-                  const characterSelect = html.find('#character-select');
-                  if (characterSelect && characterSelect.val() !== "selected" && characterSelect.val() !== "target") {
-                    setHeroPoints(amount, characterSelect.val());
-                  }
-                }
+      buttons: {
+        set: {
+          label: "Set Points",
+          callback: (html) => {
+            const amount = parseInt(html.find('[name="amount"]').val());
+            
+            // Get all actors for selection
+            const actors = game.actors?.filter(a => a.type === "character") || [];
+            
+            if (actors.length > 0) {
+              // Create character selection options with checkboxes and select/clear buttons
+              let content = `<div class="form-group">
+                <label>Character:</label>
+                <select name="character" id="character-select">
+                  <option value="selected">Selected Token</option>
+                  <option value="target">Targeted Token</option>`;
+              
+              for (const actor of actors) {
+                content += `<option value="${actor.name}">${actor.name}</option>`;
               }
-            },
-            cancel: {
-              label: "Cancel"
+              
+              content += `</select></div><div class="form-group"><label>Check Characters:</label><br>`;
+              
+              // Add checkboxes for all characters
+              const characterCheckboxes = actors.map(actor => 
+                `<input type="checkbox" name="characters" value="${actor.name}" id="char-${actor.name}"> 
+                  <label for="char-${actor.name}">${actor.name}</label><br>`
+              ).join('');
+              
+              content += `<div style="max-height: 200px; overflow-y: auto;">${characterCheckboxes}</div>`;
+              content += `<button type="button" id="select-all">Select All</button> 
+                         <button type="button" id="clear-all">Clear All</button></div>`;
+              
+              // Create a custom dialog with event listeners
+              const dialog = new Dialog({
+                title: "Select Characters",
+                content,
+                buttons: {
+                  set: {
+                    label: "Set Points",
+                    callback: (html) => {
+                      // Get selected checkboxes from the DOM after dialog is closed
+                      const checkboxes = html.find('input[name="characters"]:checked');
+                      const selectedCharacters = Array.from(checkboxes).map(cb => cb.value);
+                      
+                      if (selectedCharacters.length > 0) {
+                        for (const characterName of selectedCharacters) {
+                          setHeroPoints(amount, characterName);
+                        }
+                      } else {
+                        // If no checkboxes are checked, use the dropdown selection
+                        const characterSelect = html.find('#character-select');
+                        if (characterSelect && characterSelect.val() !== "selected" && characterSelect.val() !== "target") {
+                          setHeroPoints(amount, characterSelect.val());
+                        }
+                      }
+                    }
+                  },
+                  cancel: {
+                    label: "Cancel"
+                  }
+                },
+                default: "set",
+                render: (html) => {
+                  // Add event listeners for select/clear buttons after dialog is rendered
+                  html.find('#select-all').on('click', () => {
+                    html.find('input[name="characters"]').prop('checked', true);
+                  });
+                  
+                  html.find('#clear-all').on('click', () => {
+                    html.find('input[name="characters"]').prop('checked', false);
+                  });
+                }
+              });
+              
+              dialog.render(true);
+            } else {
+              // No actors available
+              ui.notifications.warn("No characters found.");
             }
-          },
-          default: "set"
-        });
-        
-        dialog.render(true);
-      } else {
-        // No actors available
-        ui.notifications.warn("No characters found.");
-      }
-    }
+          }
+        },
+        cancel: {
+          label: "Cancel"
+        }
+      },
+      default: "set"
+    });
   };
   
   const module = game.modules.get(MODULE_ID);
