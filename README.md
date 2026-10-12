@@ -46,6 +46,8 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 The prompt asks for a short, flavorful, player-facing answer: accurate on success, with a useful related fact on critical success, no useful answer on failure, or a believable falsehood on critical failure. **Type and all listed traits remain truthful at every result.** The GM reviews the generated answer before sharing it. This macro creates the prompt; it does not contact an LLM service.
 
+GMs can edit the reusable instructions under **Configure Settings → PF2e Zone Automation → Recall Knowledge prompt**. The multiline world setting starts with the current prompt and applies to new questions immediately after saving. The question, roll result, skill, and creature reference are appended automatically. Existing chat cards retain the prompt used when they were created.
+
 This follows the Remaster's [question-based Recall Knowledge action](https://2e.aonprd.com/Actions.aspx?ID=2367) and [creature identification skill table](https://2e.aonprd.com/Rules.aspx?ID=2633). Always revealing type and traits and the automatic Lore DC reductions (−5 for a trait match, −3 otherwise) are this table's custom rules. Lore applicability, repeat-attempt restrictions, special feat outcomes, and other GM adjustments remain for the GM to adjudicate.
 
 ### Open the builder

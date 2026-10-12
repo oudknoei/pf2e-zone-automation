@@ -22,3 +22,69 @@
   | [Wall of Shrubs](https://2e.aonprd.com/Spells.aspx?ID=1414) | 1 (3rd/5th heightened) | **Low.** There is no recurring save or damage to automate. Cover is the main effect; higher ranks add difficult terrain and a ring option, so useful support would be wall/terrain placement rather than the zone effect engine. |
 
   **Scope recommendation:** Start with passable, damaging walls—especially *Wall of Fire* and *Wall of Radiance*—using straight-line and ring footprints, crossing detection, and existing turn/save/damage/condition effects. Treat physical obstruction, cover/sight, difficult terrain, projectile interception, and destructible sections as explicit later integrations, not promises of a generic Wall shape. *Prismatic Wall*, *Chromatic Wall*, *Wall of Virtue*, and *Wall of Water* above are marked Legacy on Archives of Nethys and have no linked Remaster reprint there; this table retains their printed rules instead of inventing a replacement. In particular, do not map *Wall of Virtue*'s good/positive damage to new damage types without an approved rules decision.
+
+## Direct OpenAI answers for Recall Knowledge
+
+- [ ] **Feature: Send the "Ask a question about ..." prompt directly to OpenAI and show the answer privately to the GM.** This is a proposed implementation design. Key entry belongs in Foundry's game settings UI, while the key itself exists only in the active GM's current browser session. The request runs from that browser, so Forge needs no server changes or separately hosted service.
+
+### GM setup and session lifetime
+
+Add **Configure Settings → PF2e Zone Automation → AI Connection**, using a GM-only settings submenu. This opens an ApplicationV2 dialog rather than registering the API key as a saved setting. Foundry supports custom settings menus with `restricted: true`; also check GM authorization in the dialog's handlers. [Foundry settings API](https://foundryvtt.com/api/v14/classes/foundry.helpers.ClientSettings.html)
+
+The dialog contains:
+
+- **API key:** a blank, masked input. Never prefill it with the current key.
+- Helper: **"Kept only until you reload or close this tab."**
+- **Use for this session**, **Clear key**, and **Close** buttons.
+- Status: **"Key entered for this session"** or **"No key entered"**. Entering a key does not imply that OpenAI has validated it.
+- **Model:** a non-secret world setting, initially `gpt-4.1-mini`, editable by a GM. This is a proposed starting model for short answers using the supplied creature reference; verify its availability and answer quality when implementing. It supports Responses and offers low latency without a reasoning step. [Model documentation](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
+
+Store the trimmed API key in a private module variable bound to the current world and GM user. Clear the input after use. Never put the key in `game.settings`, localStorage, sessionStorage, IndexedDB, Actor/User/ChatMessage flags, sockets, logs, macros, or module files. Do not expose a public getter for it. Reloading, closing the tab, logging out, changing user/world, or losing the GM role clears access. **Clear key** releases the key and cancels queued/in-flight AI work for that session; cancellation cannot guarantee that an already-submitted request incurs no API charge.
+
+Each GM tab has its own session. The active GM who handles question requests must enter the key in that tab; other GMs' keys are never transferred. Once entered, the key is reused automatically for subsequent questions in that session.
+
+Reusable answer instructions are stored separately in the non-secret **Recall Knowledge prompt** world setting. Use the GM's current instructions when preparing a new question, and retain that exact text with the saved prompt for later API attempts. Editing the setting affects new questions; existing questions and retries keep their original instructions.
+
+This keeps credentials out of saved world data and players' clients, but does not make the GM browser a secret vault. Other code or extensions running there could capture the input or outgoing authorization header. OpenAI recommends server-side key storage; this design deliberately uses session-only browser storage to accommodate Forge without an external service. [OpenAI authentication guidance](https://developers.openai.com/api/reference/overview)
+
+### Question and answer flow
+
+1. Preserve the existing player dialog, owned source token, single target, question, and applicable Lore selection. Send only the question, token identities, Lore choice, requester ID, and operation ID through the existing authenticated GM transport.
+2. The active GM validates the requester and tokens, makes the secret roll, applies the existing skill/DC rules, and freezes the compacted creature reference and LLM prompt. Preserve the ordinary best-skill comparison and the chosen Lore's DC reduction of 5 for a trait match or 3 otherwise.
+3. Create the existing blind, GM-whispered question card and save its operation marker, original roll, prompt, and factual type/traits. Acknowledge the player's request once that card exists. Close the player's dialog and return to play; do not await OpenAI inside the player-to-GM request-response path.
+4. If the active GM has a key, queue the saved question for an async API request. The private card shows **"Queued…"**, then **"Thinking…"**. Process one AI request at a time in that GM tab; waiting for the network does not block Foundry controls or other module actions.
+5. When a valid answer arrives, update that same private card with the answer. Retain its existing GM recipients and blind status, original result, and collapsed prompt reference. The GM reviews and shares the answer manually. Do not automatically send an answer, creature data, or roll result to the player.
+6. If the key is missing, keep the private card with **"Enter an API key to get an answer."** and **AI Connection** / **Get answer** controls. Entering a key does not silently submit a backlog; the active GM chooses **Get answer** on the desired card. The existing **Copy** prompt action remains available.
+
+### API request and answer handling
+
+Use browser `fetch` with async/await to send `POST https://api.openai.com/v1/responses`. Use the session key only in the HTTPS `Authorization: Bearer …` header; omit browser cookies. Keep the endpoint fixed so a configurable URL cannot redirect the key elsewhere. This uses the OpenAI API rather than automating the ChatGPT website; API billing is separate from a ChatGPT subscription.
+
+Send the existing saved prompt as `input`, with trusted answer instructions in `instructions`. Treat the user's question and creature descriptions as reference material, not executable instructions. Set the selected `model`, `max_output_tokens: 600`, `store: false`, and leave tools, streaming, background mode, and conversation history disabled for the first implementation. Async network I/O is sufficient for a responsive UI. Use a separate 90-second API timeout via AbortController, independent of the existing 60-second GM acknowledgment timeout. [Responses API](https://developers.openai.com/api/reference/typescript/resources/responses/methods/create)
+
+`store: false` avoids requesting saved response history for later API retrieval; it does not promise that OpenAI keeps no logs or temporarily retained data. The question and compacted creature reference are sent to OpenAI. [Response storage](https://developers.openai.com/api/docs/guides/migrate-to-responses), [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data)
+
+For raw REST responses, collect text from the assistant's `output` message items and their `output_text` content parts. Do not assume the SDK-only aggregate `output_text` helper exists on the raw JSON response. Treat refusals, empty text, incomplete output, and malformed responses as explicit failures rather than completed answers.
+
+Preserve the current prompt's degree-specific behavior: accurate focused information on success, truthful identification with no useful extra information on failure, a believable false recollection on critical failure, and an accurate answer plus a useful related fact on critical success. Always display the creature's type and all traits from the saved GM reference, independently of the model's wording. The answer should be flavorful and ready to read aloud, without revealing the roll, DC, degree, or GM notes.
+
+Store the answer in the private ChatMessage marker and insert it as plain text during chat rendering. Do not run generated HTML, scripts, inline rolls, UUID links, or other Foundry actions embedded in model text. Add a distinct **Copy answer** button, leaving the existing prompt **Copy** action intact. Apply the same clipboard fallback as the current prompt card.
+
+### Failures, retries, and interrupted sessions
+
+Extend the private question marker with AI status, handling GM ID, attempt ID, model, timestamps, response ID, and answer or a sanitized error. Never include credentials. Reserve an attempt before any await so duplicate clicks and replayed player submissions join the existing job instead of starting additional paid requests. Keep the original question operation ID and roll across all AI retries.
+
+Translate authentication, unavailable model, quota/rate-limit, network, browser connection-policy, and timeout errors into concise GM-only messages. Leave the saved prompt available and offer **Retry** or **AI Connection** as appropriate. Do not automatically retry paid API requests: after an uncertain network failure, OpenAI may already have processed the first attempt. A manual retry may incur another charge, but must never reroll Recall Knowledge.
+
+If OpenAI succeeds but saving the answer to Foundry fails, retain the answer in memory and retry chat delivery without calling OpenAI again. Accept a late result only if the same GM session and attempt still own the job, the user remains a GM, the private card still exists, and no newer attempt has replaced it. Abort on an active-GM change and prevent the old handler from overwriting a new attempt.
+
+After a reload or GM handoff, retained question cards and completed answers remain in chat, but the key and in-memory queue are gone. Mark abandoned pending attempts **"Interrupted"** when the new active GM initializes. Re-enter the key and explicitly retry any desired question using its saved prompt and roll; do not automatically resend pending requests. All API-related card controls execute only on the active GM, validate the private message/operation, and reject player attempts to invoke them through sockets or the public API.
+
+### Implementation points and acceptance checks
+
+- `scripts/main.js`: register the AI Connection submenu and non-secret model setting.
+- New `scripts/recall-knowledge-ai.js`: session key, fixed API endpoint, async queue, timeout, response parsing, and guarded delivery. New `scripts/recall-knowledge-settings.js`: GM connection dialog and key-clearing workflow.
+- `scripts/recall-knowledge-worker.js`: preserve authorization and one-roll behavior; create the private card before scheduling AI work, save durable attempt state, and keep acknowledgment independent of generation.
+- `scripts/recall-knowledge.js`: render pending/error/answer states and wire GM-only connection, get-answer, retry, and copy-answer controls. Keep the compendium macro as a thin module API call.
+- Automated verification: key persistence and socket/log isolation; rejection of non-GM calls; acknowledgment before delayed API completion; duplicate submissions/clicks; error/timeout handling; one roll across retries; chat-delivery-only retries; stale completion after clear/reload/handoff; preserved whisper recipients; harmless rendering of model-supplied markup; truthful type/traits and all four outcome instructions.
+- Live verification on Forge with GM and player clients: confirm the browser can reach OpenAI without server changes, the canvas and other actions stay responsive, players receive no secret data or answer, the GM receives the private result, and a reload requires key entry again. Local tests alone cannot establish this behavior. If Forge/browser policy blocks the direct connection, show a useful failure and retain the manual Copy workflow; do not claim the integration works there until tested.

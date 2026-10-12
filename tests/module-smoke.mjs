@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { JSDOM } from "jsdom";
+import { DEFAULT_KNOWLEDGE_PROMPT, KNOWLEDGE_PROMPT_SETTING } from "../scripts/recall-knowledge-prompt.js";
 
 const root = resolve(import.meta.dirname, "..");
 const hooks = new Map();
@@ -9,11 +11,14 @@ globalThis.Hooks = {
   once(name, handler) { hooks.set(name, handler); },
   on(name, handler) { hooks.set(name, handler); }
 };
-globalThis.foundry = { utils: {} };
+globalThis.foundry = { utils: {}, data: { fields: { StringField: class {
+  constructor(options) { this.options = options; }
+} } } };
 const module = {};
+const settings = new Map();
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
-  settings: { register: () => undefined },
+  settings: { register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config) },
   system: { id: "pf2e" },
   user: { id: "gm", isGM: true }
 };
@@ -66,6 +71,34 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
+});
+
+test("Recall Knowledge instructions are editable as literal multiline text in world settings", () => {
+  const setting = settings.get(`pf2e-zone-automation.${KNOWLEDGE_PROMPT_SETTING}`);
+  assert.equal(setting.scope, "world");
+  assert.equal(setting.config, true);
+  assert.equal(setting.default, DEFAULT_KNOWLEDGE_PROMPT);
+  assert.equal(setting.type.options.blank, false);
+  const dom = new JSDOM("<form></form>");
+  const previousDocument = globalThis.document;
+  globalThis.document = dom.window.document;
+  try {
+    const name = `pf2e-zone-automation.${KNOWLEDGE_PROMPT_SETTING}`;
+    const value = 'Speak as a scholar.\n<script>literal reference</script>\nKeep it short.';
+    const input = setting.input(setting.type, { name, value, rootId: "settings-config" });
+    dom.window.document.querySelector("form").append(input);
+    assert.equal(input.tagName, "TEXTAREA");
+    assert.equal(input.value, value);
+    assert.equal(dom.window.document.querySelector("script"), null);
+    assert.equal(new dom.window.FormData(input.form).get(name), value);
+    const disabled = setting.input(setting.type, { name, value, disabled: true, readonly: true });
+    assert.equal(disabled.disabled, true);
+    assert.equal(disabled.readOnly, true);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    dom.window.close();
+  }
 });
 
 test("a source owner can dismiss a zone regardless of its retired dismissal flag", async () => {
