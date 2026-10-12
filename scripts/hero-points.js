@@ -1,5 +1,5 @@
 import { escapeHtml as escapeHTML } from "./utils.js";
-import { createHeroPointReminder, reminderTimestamp } from "./hero-point-reminders.js";
+import { clearHeroPointReminders, createHeroPointReminder, hasHeroPointReminders, reminderTimestamp } from "./hero-point-reminders.js";
 
 let heroPointsDialog = null;
 
@@ -148,8 +148,8 @@ export async function promptSetHeroPoints() {
       </div>
       <p class="pza-hp-help">Characters with selected tokens are checked automatically.</p>
     </fieldset>
-    <p class="pza-hp-summary" data-hp-summary aria-live="polite"></p>
     </div>
+    <p class="pza-hp-summary" data-hp-summary aria-live="polite"></p>
     <div class="pza-hp-actions"></div>
     <fieldset class="pza-hp-reminder-section">
       <legend>Award reminder</legend>
@@ -158,6 +158,7 @@ export async function promptSetHeroPoints() {
           <input type="time" name="hero-reminder-time" value="${defaultTime}" step="60">
         </label>
         <button type="button" data-hp-reminder>Create reminder</button>
+        <button type="button" data-hp-clear-reminders hidden>Clear Reminders</button>
       </div>
       <p class="pza-hp-help">Whisper only to you: it's time to award everyone 1 Hero Point. Uses the next occurrence of this time.</p>
       <p class="pza-hp-help">Keep Foundry open with a GM online. Missed reminders appear when a GM returns.</p>
@@ -167,6 +168,8 @@ export async function promptSetHeroPoints() {
 
   let applying = false;
   let reminderCreating = false;
+  let reminderClearing = false;
+  let reminderHook = null;
   let pendingPlan = null;
   const dialog = new foundry.applications.api.DialogV2({
     window: { title: "Set Hero Points" },
@@ -177,7 +180,7 @@ export async function promptSetHeroPoints() {
       {
         action: "apply", label: "Add 1 Hero Point", default: true,
         callback: async (_event, button) => {
-          if (applying || reminderCreating) return;
+          if (applying || reminderCreating || reminderClearing) return;
           const root = button.form.querySelector(".pza-hero-points");
           const amount = root.querySelector('[name="hero-amount"]').valueAsNumber;
           const mode = root.querySelector('[name="hero-action"]').value;
@@ -241,10 +244,12 @@ export async function promptSetHeroPoints() {
       : !valid ? `Enter a whole number from ${input.min} to 3.`
       : !changed ? "The selected characters already have these totals."
       : `${count} ${count === 1 ? "character" : "characters"} selected. Review the After column before applying.`;
-    for (const inputElement of root.querySelectorAll("input, select, button")) inputElement.disabled = applying || reminderCreating;
+    summary.classList.toggle("is-validation", !applying && !pendingPlan && (!count || !valid));
+    const busy = applying || reminderCreating || reminderClearing;
+    for (const inputElement of root.querySelectorAll("input, select, button")) inputElement.disabled = busy;
     const apply = dialog.element.querySelector('button[data-action="apply"]');
     if (apply) {
-      apply.disabled = applying || reminderCreating || !count || !valid || (!changed && !pendingPlan);
+      apply.disabled = busy || !count || !valid || (!changed && !pendingPlan);
       const label = valid ? `${mode === "set" ? "Set to" : mode === "remove" ? "Remove" : "Add"} ${amount} Hero ${amount === 1 ? "Point" : "Points"}` : "Apply change";
       const labelElement = apply.querySelector(".button-label");
       (labelElement ?? apply).textContent = applying ? "Updating…" : pendingPlan ? "Retry update" : label;
@@ -256,13 +261,16 @@ export async function promptSetHeroPoints() {
       reminderButton.disabled = true;
     }
     reminderButton.textContent = reminderCreating ? "Creating…" : "Create reminder";
+    const clearButton = root.querySelector("[data-hp-clear-reminders]");
+    clearButton.hidden = !hasHeroPointReminders();
+    clearButton.textContent = reminderClearing ? "Clearing…" : "Clear Reminders";
     const cancel = dialog.element.querySelector('button[data-action="cancel"]');
-    if (cancel) cancel.disabled = applying || reminderCreating;
+    if (cancel) cancel.disabled = busy;
   }
 
   /** Creates a private reminder independently of the selected characters. */
   async function createReminder() {
-    if (applying || reminderCreating) return;
+    if (applying || reminderCreating || reminderClearing) return;
     const root = dialog.element.querySelector(".pza-hero-points");
     const status = root.querySelector("[data-hp-reminder-status]");
     reminderCreating = true;
@@ -276,6 +284,26 @@ export async function promptSetHeroPoints() {
       ui.notifications.error(status.textContent);
     } finally {
       reminderCreating = false;
+      if (dialog.rendered) refreshPreview();
+    }
+  }
+
+  /** Clears the GM's pending reminders without applying points or closing the dialog. */
+  async function clearReminders() {
+    if (applying || reminderCreating || reminderClearing) return;
+    const root = dialog.element.querySelector(".pza-hero-points");
+    const status = root.querySelector("[data-hp-reminder-status]");
+    reminderClearing = true;
+    status.textContent = "Clearing reminders…";
+    refreshPreview();
+    try {
+      const count = await clearHeroPointReminders();
+      status.textContent = count ? "All your Hero Point reminders cleared." : "No pending Hero Point reminders.";
+    } catch (error) {
+      status.textContent = error?.message ?? "The reminders could not be cleared. Try again.";
+      ui.notifications.error(status.textContent);
+    } finally {
+      reminderClearing = false;
       if (dialog.rendered) refreshPreview();
     }
   }
@@ -294,6 +322,10 @@ export async function promptSetHeroPoints() {
     root.addEventListener("input", editSelection);
     root.addEventListener("change", editSelection);
     root.querySelector("[data-hp-reminder]").addEventListener("click", createReminder);
+    root.querySelector("[data-hp-clear-reminders]").addEventListener("click", clearReminders);
+    reminderHook = Hooks.on("updateUser", (user) => {
+      if (user.id === game.user.id && dialog.rendered) refreshPreview();
+    });
     for (const button of root.querySelectorAll("[data-hp-select]")) {
       button.addEventListener("click", () => {
         for (const input of root.querySelectorAll('[name="hero-character"]')) input.checked = button.dataset.hpSelect === "all";
@@ -303,6 +335,7 @@ export async function promptSetHeroPoints() {
     refreshPreview();
   }, { once: true });
   dialog.addEventListener("close", () => {
+    if (reminderHook !== null) Hooks.off("updateUser", reminderHook);
     if (heroPointsDialog === dialog) heroPointsDialog = null;
   }, { once: true });
   heroPointsDialog = dialog;

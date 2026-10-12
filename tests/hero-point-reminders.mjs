@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
-import { createHeroPointReminder, deliverHeroPointReminders, registerHeroPointReminderChat, registerHeroPointReminders, reminderTimestamp } from "../scripts/hero-point-reminders.js";
+import { clearHeroPointReminders, createHeroPointReminder, deliverHeroPointReminders, hasHeroPointReminders, registerHeroPointReminderChat, registerHeroPointReminders, reminderTimestamp } from "../scripts/hero-point-reminders.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const nativeNow = Date.now;
@@ -151,6 +151,69 @@ test("players, invalid input, and failed saves cannot schedule reminders", async
   await assert.rejects(createHeroPointReminder("20:00"), /Only a GM/);
   assert.equal(timers.size, 0);
   assert.equal(messages.length, 0);
+});
+
+test("Clear Reminders removes both saved times and their timers while preserving another GM's reminders and flags", async () => {
+  cleanup = registerHeroPointReminders();
+  assert.equal(hasHeroPointReminders(), false);
+  await createHeroPointReminder("20:00");
+  await createHeroPointReminder("21:00");
+  game.user.flags[MODULE_ID].otherSetting = "preserved";
+  const otherGM = game.users[1];
+  pending(otherGM).OtherGMReminder1 = { remindAt: new Date(2026, 9, 12, 22, 0).getTime() };
+  const otherSaved = structuredClone(pending(otherGM));
+  assert.equal(hasHeroPointReminders(), true);
+  assert.equal(await clearHeroPointReminders(), 2);
+  assert.deepEqual(pending(), {});
+  assert.equal(hasHeroPointReminders(), false);
+  assert.equal(game.user.flags[MODULE_ID].otherSetting, "preserved");
+  assert.deepEqual(pending(otherGM), otherSaved);
+  assert.equal(Object.keys(writes.at(-1).data).length, 2, "All pending reminders are removed in one save");
+  assert.ok(Object.values(writes.at(-1).data).every((record) => record instanceof ForcedDeletion));
+  now = new Date(2026, 9, 12, 21, 30).getTime();
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 0, "Cleared reminders do not appear when their times pass");
+  cleanup();
+  cleanup = registerHeroPointReminders();
+  await runNextTimer();
+  assert.deepEqual(messages.map((message) => message.whisper), [["other-gm"]], "The remaining timer survives a refresh");
+});
+
+test("clearing requires a GM, retains pending reminders after a failed save, and does nothing when already empty", async () => {
+  cleanup = registerHeroPointReminders();
+  await createHeroPointReminder("20:00");
+  const save = game.user.update;
+  game.user.update = async () => { throw new Error("Clear failed"); };
+  await assert.rejects(clearHeroPointReminders(), /Clear failed/);
+  assert.equal(hasHeroPointReminders(), true);
+  assert.equal(timers.size, 1);
+  game.user.update = save;
+  await clearHeroPointReminders();
+  assert.equal(timers.size, 0);
+  const count = writes.length;
+  assert.equal(await clearHeroPointReminders(), 0);
+  assert.equal(writes.length, count);
+  game.user = game.users[2];
+  assert.equal(hasHeroPointReminders(), false);
+  await assert.rejects(clearHeroPointReminders(), /Only a GM/);
+  assert.equal(writes.length, count);
+});
+
+test("a due reminder cleared while an earlier message is posting is skipped by the delivery batch", async () => {
+  const first = await createHeroPointReminder("20:00");
+  await createHeroPointReminder("21:00");
+  now = new Date(2026, 9, 12, 21, 0).getTime();
+  const create = ChatMessage.create;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  ChatMessage.create = async (...args) => { await gate; return create(...args); };
+  const posting = deliverHeroPointReminders();
+  await new Promise(setImmediate);
+  await clearHeroPointReminders();
+  release();
+  await posting;
+  assert.deepEqual(messages.map((message) => message.id), [first.id], "Only the message already posting is delivered");
+  assert.deepEqual(pending(), {});
 });
 
 test("the scheduler posts a private reminder at the saved time and clears the pending flag", async () => {

@@ -170,7 +170,7 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pza-hero-points { display:flex; flex-direction:column; gap:8px; min-height:0; max-height:calc(100vh - 180px); }
 .pza-hero-points > *, .pza-hero-points .pza-hp-main > * { flex-shrink:0; }
 .pza-hero-points > .pza-hp-main { display:flex; flex-direction:column; gap:8px; flex:0 1 auto; min-height:0; overflow-y:auto; padding-right:6px; overscroll-behavior:contain; scrollbar-gutter:stable; }
-.pza-hero-points .pza-hp-main > p { margin:0; }
+.pza-hero-points > p, .pza-hero-points .pza-hp-main > p { margin:0; }
 .pza-hero-points fieldset { margin:0; padding:12px; border-radius:6px; }
 .pza-hero-points legend { font-weight:700; padding:0 5px; }
 .pza-hero-points .pza-hp-change { display:grid; grid-template-columns:minmax(0,1fr) 85px; gap:12px; }
@@ -178,21 +178,24 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pza-hero-points .pza-hp-help { font-size:.9em; opacity:.75; margin:8px 0 0; }
 .pza-hero-points .pza-hp-selection { display:flex; gap:8px; margin-bottom:4px; }
 .pza-hero-points .pza-hp-selection button { flex:0 0 auto; width:auto; }
-.pza-hero-points .pza-hp-heading, .pza-hero-points .pza-hp-row { display:grid; grid-template-columns:minmax(0,1fr) 60px 60px; gap:6px; align-items:center; margin:0; padding:3px 6px; line-height:1.2; }
+.pza-hero-points .pza-hp-heading, .pza-hero-points .pza-hp-row { display:grid; grid-template-columns:minmax(0,1fr) 60px 60px; gap:6px; align-items:center; margin:0; padding:4px 6px; line-height:1.2; }
 .pza-hero-points .pza-hp-heading { font-size:.9em; opacity:.75; }
 .pza-hero-points .pza-hp-heading > :nth-child(n+2), .pza-hero-points .pza-hp-row > :nth-child(n+2) { text-align:center; }
 .pza-hero-points .pza-hp-characters { max-height:180px; overflow-y:auto; }
 .pza-hero-points .pza-hp-row { cursor:pointer; border:1px solid transparent; border-radius:4px; }
 .pza-hero-points .pza-hp-row.is-selected { border-color:var(--color-border-highlight, #b68132); background:rgba(128,128,128,.12); }
 .pza-hero-points .pza-hp-name { display:flex; align-items:center; gap:6px; min-width:0; overflow-wrap:anywhere; }
-.pza-hero-points .pza-hp-name input { flex:0 0 auto; width:16px; height:16px; margin:0; }
+.pza-hero-points .pza-hp-row .pza-hp-name input[type="checkbox"] { appearance:auto; display:block; position:static; flex:0 0 auto; width:20px; height:20px; margin:0; accent-color:var(--color-border-highlight, #b68132); }
+.pza-hero-points .pza-hp-row .pza-hp-name input[type="checkbox"]::before, .pza-hero-points .pza-hp-row .pza-hp-name input[type="checkbox"]::after { content:none; display:none; }
 .pza-hero-points .pza-hp-summary { padding:8px 0; font-weight:600; }
+.pza-hero-points .pza-hp-summary.is-validation { font-style:italic; }
 .pza-hero-points .pza-hp-actions, .pza-hero-points .pza-hp-actions > :is(.form-footer, .dialog-buttons, footer) { display:flex; gap:8px; }
 .pza-hero-points .pza-hp-actions > :is(.form-footer, .dialog-buttons, footer) { flex:1; margin:0; padding:0; }
 .pza-hero-points .pza-hp-actions button { flex:1; }
 .pza-hero-points .pza-hp-field { display:flex; flex-direction:column; gap:6px; }
 .pza-hero-points .pza-hp-reminder { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
 .pza-hero-points .pza-hp-reminder button { flex:0 0 auto; width:auto; }
+.pza-hero-points [data-hp-clear-reminders][hidden] { display:none; }
 @media (max-width: 850px) {
   .pf2e-zone-builder .zb-grid.two, .pf2e-zone-builder .zb-grid.three { grid-template-columns:1fr; }
   .pf2e-zone-builder details.zb-block > summary { grid-template-columns:1fr; gap:3px; }

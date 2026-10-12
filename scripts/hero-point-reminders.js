@@ -96,6 +96,23 @@ function savedReminders() {
   return reminders.sort((a, b) => a.remindAt - b.remindAt);
 }
 
+/** Reports whether the current GM has any pending private reminders, including overdue reminders. */
+export function hasHeroPointReminders() {
+  return Boolean(game.user?.isGM && savedReminders().some((entry) => entry.user.id === game.user.id));
+}
+
+/** Removes the current GM's pending reminders in one update while preserving other users and flags. */
+export async function clearHeroPointReminders() {
+  if (!game.user?.isGM) throw new Error("Only a GM can clear Hero Point reminders.");
+  const user = game.user;
+  const reminders = savedReminders().filter((entry) => entry.user.id === user.id);
+  if (!reminders.length) return 0;
+  await user.update(Object.fromEntries(reminders.map(({ id }) =>
+    [`flags.${MODULE_ID}.${REMINDERS_FLAG}.${id}`, new foundry.data.operators.ForcedDeletion()])));
+  scheduleNextReminder();
+  return reminders.length;
+}
+
 /** Saves a private reminder before starting its timer so a refresh cannot discard it. */
 export async function createHeroPointReminder(time) {
   if (!game.user?.isGM) throw new Error("Only a GM can create Hero Point reminders.");
@@ -117,6 +134,9 @@ function isDeliveredReminder(message, reminder) {
 
 /** Posts one private chat message, then removes its pending record only after confirmed delivery. */
 async function deliverReminder(reminder) {
+  // Another client may clear a reminder while this delivery batch awaits an earlier message.
+  const pending = readDocumentFlag(reminder.user, MODULE_ID, REMINDERS_FLAG)?.[reminder.id];
+  if (pending?.remindAt !== reminder.remindAt) return;
   let message = game.messages.get(reminder.id);
   if (message && !isDeliveredReminder(message, reminder)) throw new Error("A Hero Point reminder message ID is already in use.");
   if (!message) {

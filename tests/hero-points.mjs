@@ -10,6 +10,8 @@ const notices = [];
 const messages = [];
 const writes = [];
 const reminderWrites = [];
+const userHooks = new Map();
+class ForcedDeletion {}
 
 class TestDialog extends window.EventTarget {
   constructor(options) {
@@ -60,7 +62,16 @@ class TestDialog extends window.EventTarget {
   }
 }
 
-globalThis.foundry = { applications: { api: { DialogV2: TestDialog } } };
+globalThis.foundry = { applications: { api: { DialogV2: TestDialog } }, data: { operators: { ForcedDeletion } } };
+globalThis.Hooks = {
+  on(name, callback) {
+    assert.equal(name, "updateUser");
+    const id = Symbol(name);
+    userHooks.set(id, callback);
+    return id;
+  },
+  off(name, id) { assert.equal(name, "updateUser"); userHooks.delete(id); }
+};
 globalThis.ui = { notifications: {
   error: (message) => notices.push({ level: "error", message }),
   warn: (message) => notices.push({ level: "warn", message })
@@ -89,13 +100,19 @@ function actor(id, name, value, extra = {}) {
 
 async function reset(actors = []) {
   for (const dialog of dialogs) if (dialog.rendered) await dialog.close();
+  assert.equal(userHooks.size, 0, "Closed dialogs release their reminder hooks");
   dialogs.length = notices.length = messages.length = writes.length = reminderWrites.length = 0;
   game.actors = actors;
   game.user = {
     id: "gm", isGM: true, targets: new Set(), flags: { "pf2e-zone-automation": { heroPointReminders: {} } },
     async update(data) {
       reminderWrites.push(data);
-      for (const [path, record] of Object.entries(data)) this.flags["pf2e-zone-automation"].heroPointReminders[path.split(".").at(-1)] = record;
+      for (const [path, record] of Object.entries(data)) {
+        const id = path.split(".").at(-1);
+        if (record instanceof ForcedDeletion) delete this.flags["pf2e-zone-automation"].heroPointReminders[id];
+        else this.flags["pf2e-zone-automation"].heroPointReminders[id] = record;
+      }
+      for (const callback of userHooks.values()) callback(this, data);
       return this;
     }
   };
@@ -186,7 +203,9 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   root.querySelector('[data-hp-select="none"]').click();
   assert.equal(root.querySelector('[data-action="apply"]').disabled, true);
   assert.match(root.querySelector("[data-hp-summary]").textContent, /Select at least one/);
+  assert.equal(root.querySelector("[data-hp-summary]").classList.contains("is-validation"), true);
   root.querySelector('[data-hp-select="all"]').click();
+  assert.equal(root.querySelector("[data-hp-summary]").classList.contains("is-validation"), false);
   change(dialog, '[name="hero-action"]', "set");
   change(dialog, '[name="hero-amount"]', "");
   assert.equal(root.querySelector('[data-action="apply"]').disabled, true);
@@ -311,10 +330,73 @@ test("Create reminder saves a private reminder without applying Hero Points or c
   assert.equal(dialog.rendered, true);
   assert.equal(writes.length, 0);
   assert.equal(messages.length, 0);
+  assert.equal(dialog.element.querySelector('[data-hp-clear-reminders]').hidden, false);
   button.click();
   await new Promise(setImmediate);
   assert.equal(reminderWrites.length, 1, "The same scheduled time is reused");
   await dialog.close();
+});
+
+test("Clear Reminders is shown only for the GM's pending reminders and clears them without applying points or closing", async () => {
+  await reset([actor("one", "One", 1)]);
+  const otherGM = { id: "other-gm", isGM: true, flags: { "pf2e-zone-automation": { heroPointReminders: {
+    OtherGMReminder1: { remindAt: Date.now() + 3_600_000 }
+  } } } };
+  game.users.push(otherGM);
+  const dialog = await promptSetHeroPoints();
+  const button = dialog.element.querySelector('[data-hp-clear-reminders]');
+  assert.equal(button.hidden, true, "Another GM's reminder does not reveal the button");
+  await game.user.update({
+    "flags.pf2e-zone-automation.heroPointReminders.FirstReminder001": { remindAt: Date.now() + 3_600_000 },
+    "flags.pf2e-zone-automation.heroPointReminders.SecondReminder01": { remindAt: Date.now() + 7_200_000 }
+  });
+  assert.equal(button.hidden, false, "Updates from another client immediately reveal the button");
+  assert.equal(button.textContent, "Clear Reminders");
+  change(dialog, '[name="hero-reminder-time"]', "");
+  assert.equal(button.disabled, false, "Clearing does not require a valid new reminder time or selected characters");
+  button.click();
+  await new Promise(setImmediate);
+  assert.deepEqual(game.user.flags["pf2e-zone-automation"].heroPointReminders, {});
+  assert.equal(button.hidden, true);
+  assert.equal(dialog.rendered, true);
+  assert.match(dialog.element.querySelector('[data-hp-reminder-status]').textContent, /All your Hero Point reminders cleared/);
+  assert.equal(writes.length, 0);
+  assert.equal(messages.length, 0);
+  assert.ok(otherGM.flags["pf2e-zone-automation"].heroPointReminders.OtherGMReminder1);
+  await game.user.update({ "flags.pf2e-zone-automation.heroPointReminders.FirstReminder001": { remindAt: Date.now() + 3_600_000 } });
+  assert.equal(button.hidden, false);
+  await game.user.update({ "flags.pf2e-zone-automation.heroPointReminders.FirstReminder001": new ForcedDeletion() });
+  assert.equal(button.hidden, true, "Delivery or clearing on another client hides the button immediately");
+});
+
+test("reminder clearing ignores duplicate clicks, locks other actions, and retains a failed save for retry", async () => {
+  await reset([actor("one", "One", 1)]);
+  game.user.flags["pf2e-zone-automation"].heroPointReminders.FirstReminder001 = { remindAt: Date.now() + 3_600_000 };
+  const save = game.user.update;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let attempts = 0;
+  game.user.update = async () => { attempts++; await gate; throw new Error("Clear failed."); };
+  const dialog = await promptSetHeroPoints();
+  const button = dialog.element.querySelector('[data-hp-clear-reminders]');
+  button.click();
+  assert.equal(button.disabled, true);
+  assert.equal(dialog.element.querySelector('[data-hp-reminder]').disabled, true);
+  assert.equal(dialog.element.querySelector('[data-action="cancel"]').disabled, true);
+  button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await dialog.submit();
+  assert.equal(attempts, 1);
+  release();
+  await new Promise(setImmediate);
+  assert.equal(button.disabled, false);
+  assert.equal(button.hidden, false);
+  assert.equal(dialog.rendered, true);
+  assert.equal(notices.at(-1).message, "Clear failed.");
+  game.user.update = save;
+  button.click();
+  await new Promise(setImmediate);
+  assert.equal(button.hidden, true);
+  assert.equal(writes.length, 0);
 });
 
 test("reminder creation prevents duplicate clicks and a save failure lets the GM retry", async () => {
