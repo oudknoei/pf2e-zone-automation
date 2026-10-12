@@ -126,9 +126,12 @@ To use an example, open its JSON file, copy its contents, select a source token,
 
 ## Included Macros
 
-The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros. Both default to **Observer** ownership for players, and their commands call the module API so the underlying logic updates with the module.
+The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros. They default to **Observer** ownership for players, and their commands call the module API so the underlying logic updates with the module.
 
 | Macro | What it does |
 | --- | --- |
 | **Open PF2e Zone Builder** | Opens the zone builder for the one controlled source token. |
 | **Shielding Taunt** | For a Guardian with Shielding Taunt and a wielded shield, raises the shield, applies PF2e's auditory Taunt effect to one targeted creature, and replaces that Guardian's prior Taunt. |
+| **Set Hero Points** | GM only: add points, remove points, or set an exact total for selected player-owned characters. The dialog previews each character's current and resulting totals. |
+
+In **Set Hero Points**, choose the action and number of points, check the characters to update, then review the **After** column and apply. Characters with selected tokens are checked automatically; **Select all** and **Clear** change the selection. Characters do not need a token on the current Scene. If no player-owned characters exist, the macro displays an error instead of opening the dialog.

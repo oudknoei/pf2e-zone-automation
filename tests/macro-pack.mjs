@@ -24,7 +24,7 @@ const expectedMacros = new Map([
     }
   ],
   [
-    "pzaSetHeroPoints01",
+    "pzaHeroPoints001",
     {
       name: "Set Hero Points",
       image: "modules/pf2e-zone-automation/assets/macros/SetHeroPoints.webp",
@@ -48,10 +48,13 @@ test("compiled Macro pack provides the module hotbar macros", async () => {
       .filter((name) => name.endsWith(".json"))
       .map((name) => JSON.parse(readFileSync(join(destination, name), "utf8")));
     assert.equal(records.length, expectedMacros.size);
+    assert.equal(new Set(records.map((macro) => macro.name)).size, records.length, "Macro names must be unique");
+    assert.equal(records.filter((macro) => macro.name === "Set Hero Points").length, 1);
 
     for (const macro of records) {
       const expected = expectedMacros.get(macro._id);
       assert.ok(expected, `Unexpected macro ${macro._id}`);
+      assert.match(macro._id, /^[A-Za-z0-9]{16}$/, "Foundry document IDs must have 16 characters");
       assert.equal(macro.name, expected.name);
       assert.equal(macro.type, "script");
       assert.equal(macro.ownership.default, 2);

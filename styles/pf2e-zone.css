@@ -167,6 +167,24 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pf2e-zone-builder .zb-operation-status.is-ready { color:var(--zb-success); }
 .pf2e-zone-builder .zb-operation-status.has-errors { color:var(--zb-error); }
 .pf2e-zone-builder .zb-bottom .right { display:flex; flex:0 0 auto; gap:6px; }
+.pza-hero-points { display:flex; flex-direction:column; gap:8px; }
+.pza-hero-points > p { margin:0; }
+.pza-hero-points fieldset { margin:0; padding:12px; border-radius:6px; }
+.pza-hero-points legend { font-weight:700; padding:0 5px; }
+.pza-hero-points .pza-hp-change { display:grid; grid-template-columns:minmax(0,1fr) 85px; gap:12px; }
+.pza-hero-points .pza-hp-change > label { display:flex; flex-direction:column; gap:6px; }
+.pza-hero-points .pza-hp-help { font-size:.9em; opacity:.75; margin:8px 0 0; }
+.pza-hero-points .pza-hp-selection { display:flex; gap:8px; margin-bottom:10px; }
+.pza-hero-points .pza-hp-selection button { flex:0 0 auto; width:auto; }
+.pza-hero-points .pza-hp-heading, .pza-hero-points .pza-hp-row { display:grid; grid-template-columns:minmax(0,1fr) 60px 60px; gap:8px; align-items:center; padding:8px; }
+.pza-hero-points .pza-hp-heading { font-size:.9em; opacity:.75; }
+.pza-hero-points .pza-hp-heading > :nth-child(n+2), .pza-hero-points .pza-hp-row > :nth-child(n+2) { text-align:center; }
+.pza-hero-points .pza-hp-characters { max-height:260px; overflow-y:auto; }
+.pza-hero-points .pza-hp-row { cursor:pointer; border:1px solid transparent; border-radius:4px; }
+.pza-hero-points .pza-hp-row.is-selected { border-color:var(--color-border-highlight, #b68132); background:rgba(128,128,128,.12); }
+.pza-hero-points .pza-hp-name { display:flex; align-items:center; gap:8px; min-width:0; overflow-wrap:anywhere; }
+.pza-hero-points .pza-hp-name input { flex:0 0 auto; margin:0; }
+.pza-hero-points .pza-hp-summary { padding:8px 0; font-weight:600; }
 @media (max-width: 850px) {
   .pf2e-zone-builder .zb-grid.two, .pf2e-zone-builder .zb-grid.three { grid-template-columns:1fr; }
   .pf2e-zone-builder details.zb-block > summary { grid-template-columns:1fr; gap:3px; }
