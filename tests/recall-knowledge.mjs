@@ -237,6 +237,64 @@ test("prepared changes retain cleared fields, current values and altered strike 
   assert.equal(compactCreatureData(actor, actor.system).currentSystem, undefined);
 });
 
+test("private GM prompt exports live strike documents without traversing their circular actor references", async () => {
+  const f = setup();
+  const actor = f.creature.toObject();
+  const exportedItem = { _id: "hammer", name: "Hammer", type: "melee", system: {
+    damageRolls: { base: { damage: "1d6+6", damageType: "bludgeoning" } }
+  } };
+  actor.items.push(exportedItem);
+  const currentSystem = structuredClone(actor.system);
+  currentSystem.attributes = { hp: { value: 37, max: 65 }, ac: { value: 22 } };
+  const runtimeActor = { system: currentSystem, items: [] };
+  let exports = 0;
+  const liveItem = {
+    _source: exportedItem, parent: runtimeActor,
+    toJSON() { exports += 1; return this._source; }
+  };
+  runtimeActor.items.push(liveItem);
+  currentSystem.actions = [{ label: "Hammer", totalModifier: 19, item: liveItem, weapon: liveItem }];
+  f.creature.toObject = (source = true) => source ? actor : { system: currentSystem };
+  assert.deepEqual(await executeAskQuestion(request(f)), { action: "ask-question", messageId: "message-1" });
+  assert.equal(f.rolls.length, 1);
+  assert.equal(f.messages.length, 1);
+  assert.equal(exports, 2, "Both strike references must use the document's JSON export");
+  const prompt = f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt;
+  const data = JSON.parse(prompt.slice(prompt.indexOf("\n{") + 1));
+  assert.deepEqual(data.currentSystem.actions[0].item, { itemReference: "hammer" });
+  assert.deepEqual(data.currentSystem.actions[0].weapon, { itemReference: "hammer" });
+  assert.deepEqual(data.actor.items.find((item) => item._id === "hammer").system.damageRolls,
+    exportedItem.system.damageRolls);
+  assert.deepEqual(data.currentSystem.attributes.hp, { value: 37, max: 65 });
+  assert.doesNotMatch(prompt, /"_source"|"parent"/);
+  assert.equal(liveItem.parent, runtimeActor);
+  assert.equal(runtimeActor.system.actions[0].item, liveItem);
+});
+
+test("circular runtime references are omitted while shared sibling modifiers and rule data remain complete", () => {
+  const actor = setup().creature.toObject();
+  const modifier = { label: "Magic ward", modifier: 1, type: "status", predicate: ["item:magical"], enabled: true };
+  const current = structuredClone(actor.system);
+  current.saves = {
+    fortitude: { value: 21, modifiers: [modifier] }, reflex: { value: 18, modifiers: [modifier] }
+  };
+  current.parent = current;
+  const circularArray = [];
+  circularArray.push(circularArray, { label: "Magic ward", value: 1 });
+  current.runtimeNotes = circularArray;
+  const rules = [{ key: "FlatModifier", value: 0, predicate: [], ignored: false, options: {}, source: null }];
+  actor.items[0].system.rules = rules;
+  const data = compactCreatureData(actor, current);
+  assert.deepEqual(data.currentSystem.saves.fortitude.modifiers, [modifier]);
+  assert.deepEqual(data.currentSystem.saves.reflex.modifiers, [modifier], "A shared object is not a circular reference");
+  assert.equal(Object.hasOwn(data.currentSystem, "parent"), false);
+  assert.deepEqual(data.currentSystem.runtimeNotes, [null, { label: "Magic ward", value: 1 }]);
+  assert.deepEqual(data.actor.items[0].system.rules, rules);
+  assert.doesNotThrow(() => JSON.stringify(data));
+  assert.equal(current.parent, current);
+  assert.equal(current.saves.reflex.modifiers[0], modifier);
+});
+
 test("private GM prompt includes creature facts but response contains no secret result", async () => {
   const f = setup();
   const response = await executeAskQuestion(request(f, { loreSlug: "dragon-lore", question: 'Is <script>alert("hi")</script> its weakest defense?' }));

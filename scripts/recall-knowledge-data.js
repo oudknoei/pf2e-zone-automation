@@ -1,6 +1,18 @@
 const INTERNAL_FIELDS = new Set(["typeLabels", "_stats", "_migration"]);
 const DOCUMENT_FIELDS = new Set(["folder", "img", "sort", "ownership", "prototypeToken"]);
 
+/** Honors Foundry document JSON exports and omits circular runtime references while retaining repeated sibling data. */
+function serializeReferenceData(value) {
+  const ancestors = [];
+  return JSON.parse(JSON.stringify(value, function (_key, entry) {
+    if (!entry || typeof entry !== "object") return entry;
+    while (ancestors.length && ancestors.at(-1) !== this) ancestors.pop();
+    if (ancestors.includes(entry)) return undefined;
+    ancestors.push(entry);
+    return entry;
+  }));
+}
+
 /** Copies factual reference data, omitting document bookkeeping and empty fields while preserving rule syntax. */
 function cleanReferenceData(value, preserveEmpty = false) {
   if (Array.isArray(value)) return value.map((entry) => cleanReferenceData(entry, preserveEmpty));
@@ -40,6 +52,7 @@ function compactStatistic(statistic) {
   delete statistic.breakdown;
   for (const key of ["modifiers", "_modifiers"]) {
     for (const modifier of statistic[key] ?? []) {
+      if (!modifier || typeof modifier !== "object") continue;
       delete modifier.domains;
       delete modifier.hideIfDisabled;
       delete modifier.kind;
@@ -51,15 +64,18 @@ function compactStatistic(statistic) {
 
 /** Builds a smaller creature reference without mutating the Actor or discarding abilities, spells, or current values. */
 export function compactCreatureData(actor, currentSystem) {
-  const reference = cleanReferenceData(actor);
-  const prepared = cleanReferenceData(currentSystem);
+  // Prepared strikes contain live Item documents: their enumerable internals lead back to the Actor.
+  const serialized = serializeReferenceData({ actor, currentSystem });
+  const reference = cleanReferenceData(serialized.actor);
+  const prepared = cleanReferenceData(serialized.currentSystem);
   for (const collection of [prepared.skills, prepared.saves, prepared.attributes, prepared.movement?.speeds]) {
     for (const statistic of Object.values(collection ?? {})) compactStatistic(statistic);
   }
   compactStatistic(prepared.perception);
   compactStatistic(prepared.initiative);
-  const items = new Map((reference.items ?? []).filter((item) => item._id).map((item) => [item._id, item]));
+  const items = new Map((reference.items ?? []).filter((item) => item?._id).map((item) => [item._id, item]));
   for (const action of prepared.actions ?? []) {
+    if (!action || typeof action !== "object") continue;
     compactStatistic(action);
     for (const key of ["item", "weapon"]) {
       const item = action[key];
