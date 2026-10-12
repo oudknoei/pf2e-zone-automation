@@ -5,6 +5,7 @@ import { registerZoneSocket } from "./transport.js";
 import { installZoneOutlines } from "./zone-outline.js";
 import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
 import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
+import { openAskQuestion, requestAskQuestion, registerQuestionChat } from "./recall-knowledge.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -25,12 +26,15 @@ Hooks.once("init", () => {
     openBuilder: openZoneBuilder,
     openShieldingTaunt,
     requestShieldingTaunt,
+    openAskQuestion,
+    requestAskQuestion,
     handleRegionEvent: zoneRuntimeEntrypoint,
     setHeroPoints,
     promptSetHeroPoints,
     createHeroPointReminder
   };
   registerHeroPointReminderChat();
+  registerQuestionChat();
 });
 
 /** Adds the builder where token-focused preparation naturally begins, avoiding a separate setup macro. */

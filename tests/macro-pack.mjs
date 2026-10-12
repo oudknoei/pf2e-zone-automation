@@ -8,6 +8,14 @@ import { extractPack } from "@foundryvtt/foundryvtt-cli";
 const root = resolve(import.meta.dirname, "..");
 const expectedMacros = new Map([
   [
+    "pzaAskQuestion01",
+    {
+      name: "Ask a question about ...",
+      image: "icons/sundries/books/book-open-brown.webp",
+      api: "openAskQuestion"
+    }
+  ],
+  [
     "pzaOpenBuilder01",
     {
       name: "Open PF2e Zone Builder",
@@ -64,6 +72,7 @@ test("compiled Macro pack provides the module hotbar macros", async () => {
     }
 
     for (const { image } of expectedMacros.values()) {
+      if (!image.startsWith("modules/pf2e-zone-automation/")) continue;
       const imagePath = image.replace("modules/pf2e-zone-automation/", "");
       const imageData = readFileSync(join(root, imagePath));
       assert.equal(imageData.subarray(0, 4).toString("ascii"), "RIFF");

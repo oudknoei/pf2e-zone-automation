@@ -72,6 +72,31 @@ test("a secondary GM routes shared-library requests to the active GM", async () 
   }
 });
 
+test("a secondary GM routes Recall Knowledge questions to the authoritative GM", async () => {
+  const otherGM = { id: "other-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  try {
+    game.user = otherGM;
+    const resultPromise = requestGMWorker({
+      protocol: 1, action: "ask-question", requesterUserId: otherGM.id,
+      sourceTokenUuid: "Scene.scene.Token.source", targetTokenUuid: "Scene.scene.Token.target",
+      question: "What is it?", loreSlug: null, operationId: "question00000001"
+    });
+    const request = sent.shift();
+    assert.equal(request.kind, "request");
+    assert.equal(request.gmId, gm.id);
+    assert.equal(request.request.action, "ask-question");
+    await listener({
+      kind: "response", id: request.id, gmId: gm.id,
+      recipientUserId: otherGM.id, response: { ok: true, action: "ask-question", messageId: "private-message" }
+    }, gm.id);
+    assert.deepEqual(await resultPromise, { ok: true, action: "ask-question", messageId: "private-message" });
+  } finally {
+    users.delete(otherGM.id);
+    game.user = player;
+  }
+});
+
 test("a secondary GM routes save cancellation to the authoritative GM", async () => {
   const otherGM = { id: "other-gm", name: "Other GM", isGM: true, active: true };
   users.set(otherGM.id, otherGM);

@@ -13,6 +13,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Save, share, load, update, and delete presets through the PF2e Zone Library.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 - Use the **Set Hero Points** macro to add, remove, or set player characters' points, whisper results to GMs, and create a private award reminder.
+- Use **Ask a question about ...** to ask about a targeted creature, choose an applicable Lore, and send a secret Recall Knowledge result with a copyable LLM prompt to the GMs.
 
 ## Requirements
 
@@ -35,6 +36,17 @@ https://github.com/oudknoei/pf2e-zone-automation/releases/latest/download/module
 After installation, restart the Foundry server from **Games Configuration** if it is running. Open the PF2e world, then enable **PF2e Zone Automation** and its required dependencies under **Settings → Manage Modules**.
 
 ## How To
+
+### Ask a question about a creature
+
+1. Select your character's token and target exactly one creature.
+2. Run **Ask a question about ...** from **PF2e Zone Macros**. Enter your question and choose an applicable Lore from the selected character, or leave **None** selected.
+3. Choose **Ask**. An active GM resolves one d20 check with the highest applicable identification skill bonus. Selected Lore is used with **+5** if that beats the ordinary skills. The creature's PF2e identification DC includes level, rarity, and any system DC variants; natural 1 and 20 shift the outcome normally.
+4. GMs receive a private chat card with the question, result, type, traits, and the full creature Actor data, including embedded abilities and spells plus current prepared statistics. Choose **Copy** to copy the LLM prompt. Expand **LLM prompt and full creature data** to read or copy it manually if clipboard permission is unavailable.
+
+The prompt asks for a short, flavorful, player-facing answer: accurate on success, with a useful related fact on critical success, no useful answer on failure, or a believable falsehood on critical failure. **Type and all listed traits remain truthful at every result.** The GM reviews the generated answer before sharing it. This macro creates the prompt; it does not contact an LLM service.
+
+This follows the Remaster's [question-based Recall Knowledge action](https://2e.aonprd.com/Actions.aspx?ID=2367) and [creature identification skill table](https://2e.aonprd.com/Rules.aspx?ID=2633). Always revealing type and traits is this table's custom rule. The flat Lore +5 implements your chosen adjustment; the published guidance lets the GM choose an easy (−2 DC) or very easy (−5 DC) adjustment for relevant Lore. Lore applicability, repeat-attempt restrictions, special feat outcomes, and other GM adjustments remain for the GM to adjudicate.
 
 ### Open the builder
 

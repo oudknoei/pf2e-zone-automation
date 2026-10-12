@@ -55,6 +55,8 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.openBuilder, "function");
   assert.equal(typeof module.api.openShieldingTaunt, "function");
   assert.equal(typeof module.api.requestShieldingTaunt, "function");
+  assert.equal(typeof module.api.openAskQuestion, "function");
+  assert.equal(typeof module.api.requestAskQuestion, "function");
   assert.equal(typeof module.api.handleRegionEvent, "function");
   assert.equal(typeof module.api.setHeroPoints, "function");
   assert.equal(typeof module.api.promptSetHeroPoints, "function");

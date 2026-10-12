@@ -1,5 +1,6 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
+import { executeAskQuestion } from "./recall-knowledge-worker.js";
 import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
 import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
 import { validateEffectItems } from "./effect-items.js";
@@ -504,6 +505,7 @@ export async function handleWorkerRequest(request) {
       case "move": return await moveZone();
       case "end": return await endZone();
       case "cancel-pending-save": return await cancelPendingSave();
+      case "ask-question": return succeed(await executeAskQuestion(request));
       case "shielding-taunt": {
         const requester = getRequester();
         const sourceToken = await fromUuid(request.sourceTokenUuid ?? "");

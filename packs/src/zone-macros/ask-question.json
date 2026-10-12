@@ -1,0 +1,14 @@
+{
+  "name": "Ask a question about ...",
+  "type": "script",
+  "scope": "global",
+  "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.openAskQuestion) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  await zoneModule.api.openAskQuestion();\n}\n",
+  "author": null,
+  "img": "icons/sundries/books/book-open-brown.webp",
+  "folder": null,
+  "sort": 3,
+  "ownership": { "default": 2 },
+  "flags": {},
+  "_id": "pzaAskQuestion01",
+  "_key": "!macros!pzaAskQuestion01"
+}
