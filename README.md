@@ -12,7 +12,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Set a fixed duration, or enter a dice formula such as `2d4` in the existing **X rounds** field. The active GM rolls a formula once when the zone is created, stores the result, and posts the duration to the creator for **Creator only** zones and publicly otherwise.
 - Save, share, load, update, and delete presets through the PF2e Zone Library.
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
-- Use the **Set Hero Points** macro to add, remove, or set player characters' points, share results as **Public** or **GM Whisper**, and create a private award reminder.
+- Use the **Set Hero Points** macro to add, remove, or set player characters' points, whisper results to GMs, and create a private award reminder.
 
 ## Requirements
 
@@ -133,8 +133,8 @@ The **PF2e Zone Macros** compendium contains these hotbar-ready Script Macros. T
 | --- | --- |
 | **Open PF2e Zone Builder** | Opens the zone builder for the one controlled source token. |
 | **Shielding Taunt** | For a Guardian with Shielding Taunt and a wielded shield, raises the shield, applies PF2e's auditory Taunt effect to one targeted creature, and replaces that Guardian's prior Taunt. |
-| **Set Hero Points** | GM only: add points, remove points, or set an exact total for player-owned characters, with current and resulting totals shown before applying. Share results as Public or GM Whisper, or create a private reminder to award everyone a Hero Point. |
+| **Set Hero Points** | GM only: add points, remove points, or set an exact total for player-owned characters, with current and resulting totals shown before applying. Results are always a GM Whisper. Create a private reminder to award everyone a Hero Point. |
 
-Run **Set Hero Points** from the **PF2e Zone Macros** compendium or drag it to your hotbar. Choose the action and number of points, check the characters to update, then review the **After** column and apply. All player characters with selected tokens are checked automatically; **Select all** and **Clear** change the selection. Characters do not need a token on the current Scene. If no player-owned characters exist, the macro displays an error instead of opening the dialog. **Chat results** defaults to **GM Whisper**; choose **Public** to share the changes with everyone.
+Run **Set Hero Points** from the **PF2e Zone Macros** compendium or drag it to your hotbar. Choose the action and number of points, check the characters to update, then review the **After** column and apply. All player characters with selected tokens are checked automatically; **Select all** and **Clear** change the selection. Characters do not need a token on the current Scene. If no player-owned characters exist, the macro displays an error instead of opening the dialog. Results are always sent as **GM Whisper**. The apply and **Cancel** buttons stay above **Award reminder** while the character controls scroll.
 
 To receive a private award reminder, enter **Reminder time (local)** and click **Create reminder**. This uses your computer's clock and the next occurrence of that time, today or tomorrow. The reminder whispers only to the GM who created it: “It's time to award everyone 1 Hero Point.” Click **Award Hero Points** in that message to open the same dialog as the **Set Hero Points** macro, then choose the characters and apply the award. Creating a reminder keeps the dialog open and does not change anyone's points. Reminders survive refreshes; Foundry must have a GM online to send them, and missed reminders appear when a GM returns.

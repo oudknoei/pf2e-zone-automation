@@ -22,13 +22,19 @@ class TestDialog extends window.EventTarget {
     const form = document.createElement("form");
     // Foundry serializes the wrapper's inner HTML rather than retaining the wrapper.
     form.innerHTML = options.content.innerHTML;
+    this.footer = document.createElement("footer");
+    this.footer.className = "form-footer";
     for (const config of options.buttons) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.action = config.action;
       button.textContent = config.label;
-      form.append(button);
+      button.addEventListener("click", (event) => {
+        this.submission = config.callback(event, button, this);
+      });
+      this.footer.append(button);
     }
+    form.append(this.footer);
     this.element.append(form);
     dialogs.push(this);
   }
@@ -166,6 +172,12 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   assert.equal(root.querySelectorAll(".pza-hp-name span")[0].textContent, "A <Hero>");
   assert.equal(root.querySelector('[data-hp-actor="one"] [data-hp-after]').textContent, "3");
   assert.equal(root.querySelector('[data-action="apply"]').textContent, "Add 1 Hero Point");
+  const actions = root.querySelector(".pza-hp-actions");
+  const reminder = root.querySelector(".pza-hp-reminder-section");
+  assert.equal(actions.querySelector(".form-footer"), dialog.footer, "Moves the original native footer");
+  assert.equal(actions.querySelectorAll("button").length, 2);
+  assert.ok(actions.compareDocumentPosition(reminder) & window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.equal(actions.querySelector("button").form, root.querySelector("form"), "Buttons retain their form");
   assert.equal(await promptSetHeroPoints(), dialog);
   assert.equal(dialogs.length, 1);
 
@@ -185,7 +197,8 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   assert.equal(root.querySelector('[data-action="apply"]').disabled, false);
   assert.equal(root.querySelector('[data-action="apply"]').textContent, "Set to 0 Hero Points");
   assert.equal(root.querySelector('[data-hp-actor="two"] [data-hp-after]').textContent, "0");
-  await dialog.submit();
+  root.querySelector('[data-action="apply"]').click();
+  await dialog.submission;
   assert.equal(dialog.rendered, false);
   assert.equal(first.system.resources.heroPoints.value, 0);
   assert.equal(second.system.resources.heroPoints.value, 0);
@@ -196,7 +209,9 @@ test("Cancel changes nothing and a failed write keeps the dialog open for correc
   await reset([first]);
   let dialog = await promptSetHeroPoints();
   dialog.element.querySelector('[data-hp-select="all"]').click();
-  await dialog.submit("cancel");
+  dialog.element.querySelector('[data-action="cancel"]').click();
+  await dialog.submission;
+  assert.equal(dialog.rendered, false, "The relocated Cancel button still closes the dialog");
   assert.equal(writes.length, 0);
   first.update = async () => { throw new Error("The Actor could not be saved."); };
   dialog = await promptSetHeroPoints();
@@ -222,7 +237,6 @@ test("retrying a partial Add operation preserves the planned totals and does not
   assert.equal(dialog.element.querySelector('[data-hp-actor="one"] [data-hp-after]').textContent, "2");
   assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Retry update");
   second.update = saveSecond;
-  change(dialog, '[name="hero-chat"]', "public");
   change(dialog, '[name="hero-reminder-time"]', "20:30");
   assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Retry update");
   await dialog.submit();
@@ -230,7 +244,7 @@ test("retrying a partial Add operation preserves the planned totals and does not
   assert.equal(second.system.resources.heroPoints.value, 2);
   assert.equal(writes.filter(({ id }) => id === "one").length, 1);
   assert.equal(dialog.rendered, false);
-  assert.deepEqual(messages.at(-1).whisper, []);
+  assert.deepEqual(messages.at(-1).whisper, ["gm"]);
 });
 
 test("a second Apply while a write is in progress cannot submit the change twice", async () => {
@@ -266,33 +280,23 @@ test("all selected player characters are prechecked while duplicate tokens, NPCs
   assert.deepEqual(writes.map((entry) => entry.id), ["one", "two"]);
 });
 
-test("chat results offer Public and GM Whisper with GM Whisper as the default", async () => {
+test("chat results always whisper to all GMs without an audience selector", async () => {
   const first = actor("one", "One", 1);
   await reset([first]);
   game.users.push({ id: "other-gm", isGM: true });
-  let dialog = await promptSetHeroPoints();
-  const audience = dialog.element.querySelector('[name="hero-chat"]');
-  assert.equal(audience.value, "gm");
-  assert.deepEqual([...audience.options].map((option) => option.textContent), ["GM Whisper", "Public"]);
+  const dialog = await promptSetHeroPoints();
+  assert.equal(dialog.element.querySelector('[name="hero-chat"]'), null);
+  assert.doesNotMatch(dialog.element.textContent, /Share results/);
   dialog.element.querySelector('[data-hp-select="all"]').click();
   await dialog.submit();
   assert.deepEqual(messages[0].whisper, ["gm", "other-gm"]);
-  dialog = await promptSetHeroPoints();
-  dialog.element.querySelector('[data-hp-select="all"]').click();
-  change(dialog, '[name="hero-chat"]', "public");
-  await dialog.submit();
-  assert.deepEqual(messages[1].whisper, []);
   await setHeroPoints(0, first, { mode: "set", chatVisibility: "public" });
-  assert.deepEqual(messages[2].whisper, []);
-  const count = writes.length;
-  await assert.rejects(setHeroPoints(1, first, { chatVisibility: "invalid" }), /Public or GM Whisper/);
-  assert.equal(writes.length, count);
+  assert.deepEqual(messages[1].whisper, ["gm", "other-gm"], "Older callers cannot make the results public");
 });
 
 test("Create reminder saves a private reminder without applying Hero Points or closing the dialog", async () => {
   await reset([actor("one", "One", 1)]);
   const dialog = await promptSetHeroPoints();
-  change(dialog, '[name="hero-chat"]', "public");
   change(dialog, '[name="hero-reminder-time"]', "");
   assert.equal(dialog.element.querySelector('[data-hp-reminder]').disabled, true);
   change(dialog, '[name="hero-reminder-time"]', "20:30");
