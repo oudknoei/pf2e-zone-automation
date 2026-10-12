@@ -172,7 +172,7 @@ test("players, invalid amounts, and ambiguous or missing recipients cannot chang
   assert.equal(writes.length, 0);
 });
 
-test("one dialog guides selection, previews Add/Remove/Set, validates input, and applies exact zero totals", async () => {
+test("one dropdown guides selection, previews Give/Spend/Set, validates the choice, and applies exact zero totals", async () => {
   const first = actor("one", "A <Hero>", 2);
   const second = actor("two", "A <Hero>", 1);
   await reset([first, second]);
@@ -183,12 +183,17 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   assert.equal(dialog.options.content.attributes.length, 0);
   assert.ok(root.querySelector(".pza-hero-points"), "Styled content survives Foundry's wrapper serialization");
   assert.equal(dialog.options.form.closeOnSubmit, false);
+  assert.deepEqual([...root.querySelector('[name="hero-change"]').options].map((option) => option.textContent), [
+    "Give 1 hero point", "Spend 1 hero point", "Set hero points to 0", "Set hero points to 1", "Set hero points to 2", "Set hero points to 3"
+  ]);
+  assert.equal(root.querySelector('[name="hero-action"]'), null);
+  assert.equal(root.querySelector('[name="hero-amount"]'), null);
   assert.equal(root.querySelectorAll('[name="hero-character"]').length, 2);
   assert.equal(root.querySelector('[value="one"]').checked, true);
   assert.equal(root.querySelector('[value="two"]').checked, false);
   assert.equal(root.querySelectorAll(".pza-hp-name span")[0].textContent, "A <Hero>");
   assert.equal(root.querySelector('[data-hp-actor="one"] [data-hp-after]').textContent, "3");
-  assert.equal(root.querySelector('[data-action="apply"]').textContent, "Add 1 Hero Point");
+  assert.equal(root.querySelector('[data-action="apply"]').textContent, "Give 1 hero point");
   const actions = root.querySelector(".pza-hp-actions");
   const reminder = root.querySelector(".pza-hp-reminder-section");
   assert.equal(actions.querySelector(".form-footer"), dialog.footer, "Moves the original native footer");
@@ -198,7 +203,7 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   assert.equal(await promptSetHeroPoints(), dialog);
   assert.equal(dialogs.length, 1);
 
-  change(dialog, '[name="hero-action"]', "remove");
+  change(dialog, '[name="hero-change"]', "spend-1");
   assert.equal(root.querySelector('[data-hp-actor="one"] [data-hp-after]').textContent, "1");
   root.querySelector('[data-hp-select="none"]').click();
   assert.equal(root.querySelector('[data-action="apply"]').disabled, true);
@@ -206,21 +211,43 @@ test("one dialog guides selection, previews Add/Remove/Set, validates input, and
   assert.equal(root.querySelector("[data-hp-summary]").classList.contains("is-validation"), true);
   root.querySelector('[data-hp-select="all"]').click();
   assert.equal(root.querySelector("[data-hp-summary]").classList.contains("is-validation"), false);
-  change(dialog, '[name="hero-action"]', "set");
-  change(dialog, '[name="hero-amount"]', "");
+  change(dialog, '[name="hero-change"]', "");
   assert.equal(root.querySelector('[data-action="apply"]').disabled, true);
   await dialog.submit();
   assert.equal(dialog.rendered, true);
   assert.equal(writes.length, 0);
-  change(dialog, '[name="hero-amount"]', "0");
+  change(dialog, '[name="hero-change"]', "set-0");
   assert.equal(root.querySelector('[data-action="apply"]').disabled, false);
-  assert.equal(root.querySelector('[data-action="apply"]').textContent, "Set to 0 Hero Points");
+  assert.equal(root.querySelector('[data-action="apply"]').textContent, "Set hero points to 0");
   assert.equal(root.querySelector('[data-hp-actor="two"] [data-hp-after]').textContent, "0");
   root.querySelector('[data-action="apply"]').click();
   await dialog.submission;
   assert.equal(dialog.rendered, false);
   assert.equal(first.system.resources.heroPoints.value, 0);
   assert.equal(second.system.resources.heroPoints.value, 0);
+});
+
+test("each dropdown choice previews and saves the correct bounded totals for characters with zero through three points", async () => {
+  for (const [choice, expected] of [
+    ["give-1", [1, 2, 3, 3]],
+    ["spend-1", [0, 0, 1, 2]],
+    ["set-0", [0, 0, 0, 0]],
+    ["set-1", [1, 1, 1, 1]],
+    ["set-2", [2, 2, 2, 2]],
+    ["set-3", [3, 3, 3, 3]]
+  ]) {
+    const actors = [0, 1, 2, 3].map((points) => actor(`pc${points}`, `Character ${points}`, points));
+    await reset(actors);
+    const dialog = await promptSetHeroPoints();
+    dialog.element.querySelector('[data-hp-select="all"]').click();
+    change(dialog, '[name="hero-change"]', choice);
+    assert.deepEqual([...dialog.element.querySelectorAll('[data-hp-after]')].map((cell) => Number(cell.textContent)), expected, choice);
+    assert.equal(writes.length, 0, "Previewing does not spend or award points");
+    await dialog.submit();
+    assert.deepEqual(actors.map((entry) => entry.system.resources.heroPoints.value), expected, choice);
+    assert.deepEqual(messages[0].whisper, ["gm"]);
+    assert.equal(dialog.rendered, false);
+  }
 });
 
 test("Cancel changes nothing and a failed write keeps the dialog open for correction", async () => {
@@ -264,6 +291,25 @@ test("retrying a partial Add operation preserves the planned totals and does not
   assert.equal(writes.filter(({ id }) => id === "one").length, 1);
   assert.equal(dialog.rendered, false);
   assert.deepEqual(messages.at(-1).whisper, ["gm"]);
+});
+
+test("choosing a different dropdown action after a partial failure starts a new operation", async () => {
+  const first = actor("one", "One", 1);
+  const second = actor("two", "Two", 1);
+  const saveSecond = second.update;
+  second.update = async () => { throw new Error("Save failed."); };
+  await reset([first, second]);
+  const dialog = await promptSetHeroPoints();
+  dialog.element.querySelector('[data-hp-select="all"]').click();
+  await dialog.submit();
+  assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Retry update");
+  second.update = saveSecond;
+  change(dialog, '[name="hero-change"]', "spend-1");
+  assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Spend 1 hero point");
+  assert.deepEqual([...dialog.element.querySelectorAll('[data-hp-after]')].map((cell) => cell.textContent), ["1", "0"]);
+  await dialog.submit();
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(second.system.resources.heroPoints.value, 0);
 });
 
 test("a second Apply while a write is in progress cannot submit the change twice", async () => {

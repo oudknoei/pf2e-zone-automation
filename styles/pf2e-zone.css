@@ -173,8 +173,6 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
 .pza-hero-points > p, .pza-hero-points .pza-hp-main > p { margin:0; }
 .pza-hero-points fieldset { margin:0; padding:12px; border-radius:6px; }
 .pza-hero-points legend { font-weight:700; padding:0 5px; }
-.pza-hero-points .pza-hp-change { display:grid; grid-template-columns:minmax(0,1fr) 85px; gap:12px; }
-.pza-hero-points .pza-hp-change > label { display:flex; flex-direction:column; gap:6px; }
 .pza-hero-points .pza-hp-help { font-size:.9em; opacity:.75; margin:8px 0 0; }
 .pza-hero-points .pza-hp-selection { display:flex; gap:8px; margin-bottom:4px; }
 .pza-hero-points .pza-hp-selection button { flex:0 0 auto; width:auto; }

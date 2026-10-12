@@ -2,6 +2,14 @@ import { escapeHtml as escapeHTML } from "./utils.js";
 import { clearHeroPointReminders, createHeroPointReminder, hasHeroPointReminders, reminderTimestamp } from "./hero-point-reminders.js";
 
 let heroPointsDialog = null;
+const HERO_POINT_CHOICES = [
+  { value: "give-1", label: "Give 1 hero point", mode: "add", amount: 1 },
+  { value: "spend-1", label: "Spend 1 hero point", mode: "remove", amount: 1 },
+  { value: "set-0", label: "Set hero points to 0", mode: "set", amount: 0 },
+  { value: "set-1", label: "Set hero points to 1", mode: "set", amount: 1 },
+  { value: "set-2", label: "Set hero points to 2", mode: "set", amount: 2 },
+  { value: "set-3", label: "Set hero points to 3", mode: "set", amount: 3 }
+];
 
 /** Lists player-owned characters, including characters who have no token on the viewed Scene. */
 function playerCharacters() {
@@ -115,21 +123,14 @@ export async function promptSetHeroPoints() {
   content.innerHTML = `
     <div class="pza-hero-points">
     <div class="pza-hp-main">
-    <p>Choose an action and check the characters to update. Review the totals, then apply.</p>
+    <p>Choose a change and check the characters to update. Review the totals, then apply.</p>
     <fieldset>
       <legend>1. Choose the change</legend>
-      <div class="pza-hp-change">
-        <label>Action
-          <select name="hero-action">
-            <option value="add">Add points</option>
-            <option value="remove">Remove points</option>
-            <option value="set">Set total</option>
-          </select>
-        </label>
-        <label>Points
-          <input type="number" name="hero-amount" value="1" min="1" max="3" step="1" required>
-        </label>
-      </div>
+      <label class="pza-hp-field">Hero points
+        <select name="hero-change">
+          ${HERO_POINT_CHOICES.map(({ value, label }) => `<option value="${value}">${label}</option>`).join("")}
+        </select>
+      </label>
       <p class="pza-hp-help" data-hp-help></p>
     </fieldset>
     <fieldset>
@@ -178,20 +179,19 @@ export async function promptSetHeroPoints() {
     form: { closeOnSubmit: false },
     buttons: [
       {
-        action: "apply", label: "Add 1 Hero Point", default: true,
+        action: "apply", label: HERO_POINT_CHOICES[0].label, default: true,
         callback: async (_event, button) => {
           if (applying || reminderCreating || reminderClearing) return;
           const root = button.form.querySelector(".pza-hero-points");
-          const amount = root.querySelector('[name="hero-amount"]').valueAsNumber;
-          const mode = root.querySelector('[name="hero-action"]').value;
+          const choice = HERO_POINT_CHOICES.find((entry) => entry.value === root.querySelector('[name="hero-change"]').value);
           const selected = [...root.querySelectorAll('[name="hero-character"]:checked')]
             .map((input) => actors.find((actor) => actor.id === input.value));
-          if (!selected.length || !Number.isInteger(amount) || amount < (mode === "set" ? 0 : 1) || amount > 3) {
-            ui.notifications.error("Select at least one character and enter a whole number from " + (mode === "set" ? "0" : "1") + " to 3.");
+          if (!selected.length || !choice) {
+            ui.notifications.error("Select at least one character and choose a Hero Point change.");
             return;
           }
           applying = true;
-          pendingPlan ??= selected.map((actor) => ({ actor, total: nextTotal(actor, amount, mode) }));
+          pendingPlan ??= selected.map((actor) => ({ actor, total: nextTotal(actor, choice.amount, choice.mode) }));
           refreshPreview();
           try {
             const changes = await applyHeroPointChanges(pendingPlan);
@@ -213,16 +213,12 @@ export async function promptSetHeroPoints() {
   /** Keeps the operation label, recipient count, and before/after totals in sync with the form. */
   function refreshPreview() {
     const root = dialog.element.querySelector(".pza-hero-points");
-    const input = root.querySelector('[name="hero-amount"]');
-    const amount = input.valueAsNumber;
-    const mode = root.querySelector('[name="hero-action"]').value;
-    input.min = mode === "set" ? "0" : "1";
-    const valid = Number.isInteger(amount) && amount >= Number(input.min) && amount <= 3;
-    root.querySelector("[data-hp-help]").textContent = {
-      add: "Add this many Hero Points to each selected character. Totals cannot exceed 3.",
-      remove: "Remove this many Hero Points from each selected character. Totals cannot fall below 0.",
-      set: "Set each selected character to this exact total, between 0 and 3."
-    }[mode];
+    const choice = HERO_POINT_CHOICES.find((entry) => entry.value === root.querySelector('[name="hero-change"]').value);
+    const valid = Boolean(choice);
+    root.querySelector("[data-hp-help]").textContent = !choice ? "Choose a Hero Point change."
+      : choice.mode === "add" ? "Give 1 Hero Point to each selected character. Totals cannot exceed 3."
+      : choice.mode === "remove" ? "Spend 1 Hero Point for each selected character. Totals cannot fall below 0."
+      : `Set each selected character to exactly ${choice.amount} Hero ${choice.amount === 1 ? "Point" : "Points"}.`;
     let count = 0;
     let changed = 0;
     for (const row of root.querySelectorAll("[data-hp-actor]")) {
@@ -230,7 +226,7 @@ export async function promptSetHeroPoints() {
       const checked = row.querySelector("input").checked;
       const current = heroPointState(actor).value;
       const planned = pendingPlan?.find((entry) => entry.actor === actor);
-      const after = planned ? planned.total : checked && valid ? nextTotal(actor, amount, mode) : current;
+      const after = planned ? planned.total : checked && valid ? nextTotal(actor, choice.amount, choice.mode) : current;
       row.querySelector("[data-hp-current]").textContent = current;
       row.querySelector("[data-hp-after]").textContent = valid ? after : "—";
       row.classList.toggle("is-selected", checked);
@@ -241,7 +237,7 @@ export async function promptSetHeroPoints() {
     summary.textContent = applying ? "Updating Hero Points…"
       : pendingPlan ? "Some updates failed. Use Retry update to finish the totals shown in the After column."
       : !count ? "Select at least one character."
-      : !valid ? `Enter a whole number from ${input.min} to 3.`
+      : !valid ? "Choose a Hero Point change."
       : !changed ? "The selected characters already have these totals."
       : `${count} ${count === 1 ? "character" : "characters"} selected. Review the After column before applying.`;
     summary.classList.toggle("is-validation", !applying && !pendingPlan && (!count || !valid));
@@ -250,7 +246,7 @@ export async function promptSetHeroPoints() {
     const apply = dialog.element.querySelector('button[data-action="apply"]');
     if (apply) {
       apply.disabled = busy || !count || !valid || (!changed && !pendingPlan);
-      const label = valid ? `${mode === "set" ? "Set to" : mode === "remove" ? "Remove" : "Add"} ${amount} Hero ${amount === 1 ? "Point" : "Points"}` : "Apply change";
+      const label = choice?.label ?? "Apply change";
       const labelElement = apply.querySelector(".button-label");
       (labelElement ?? apply).textContent = applying ? "Updating…" : pendingPlan ? "Retry update" : label;
     }
@@ -314,9 +310,9 @@ export async function promptSetHeroPoints() {
     const buttons = [...dialog.element.querySelectorAll('button[data-action="apply"], button[data-action="cancel"]')];
     const footer = buttons[0]?.closest(".form-footer, .dialog-buttons, footer");
     root.querySelector(".pza-hp-actions").append(...(footer ? [footer] : buttons));
-    /** Starts a new operation when the GM deliberately changes its amount, action, or recipients. */
+    /** Starts a new operation when the GM deliberately changes the choice or recipients. */
     const editSelection = (event) => {
-      if (!event || ["hero-amount", "hero-action", "hero-character"].includes(event.target.name)) pendingPlan = null;
+      if (!event || ["hero-change", "hero-character"].includes(event.target.name)) pendingPlan = null;
       refreshPreview();
     };
     root.addEventListener("input", editSelection);
