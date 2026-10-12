@@ -25,7 +25,7 @@
 
 ## Direct OpenAI answers for Recall Knowledge
 
-- [ ] **Feature: Send the "Ask a question about ..." prompt directly to OpenAI and show the answer privately to the GM.** This is a proposed implementation design. Key entry belongs in Foundry's game settings UI, while the key itself exists only in the active GM's current browser session. The request runs from that browser, so Forge needs no server changes or separately hosted service.
+- [x] **Feature: Send the "Ask a question about ..." prompt directly to an LLM and show the answer privately to the GM.** Implemented with session-only key entry, a configurable Responses API endpoint, and private async answers. Automated validation covers the flow; live Forge/API verification is still pending. The design below records the intended behavior. Key entry belongs in Foundry's game settings UI, while the key itself exists only in the active GM's current browser session. The request runs from that browser, so Forge needs no server changes or separately hosted service.
 
 ### GM setup and session lifetime
 
@@ -38,6 +38,7 @@ The dialog contains:
 - **Use for this session**, **Clear key**, and **Close** buttons.
 - Status: **"Key entered for this session"** or **"No key entered"**. Entering a key does not imply that OpenAI has validated it.
 - **Model:** a non-secret world setting, initially `gpt-4.1-mini`, editable by a GM. This is a proposed starting model for short answers using the supplied creature reference; verify its availability and answer quality when implementing. It supports Responses and offers low latency without a reasoning step. [Model documentation](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
+- **API endpoint:** a separate non-secret world setting, initially `https://api.openai.com/v1/responses`. Use a complete HTTPS URL compatible with the Responses API. Show the destination in AI Connection. Changing it clears the session key, so a GM must enter a key for the new destination. Reject embedded URL credentials, query parameters, fragments, and automatic redirects.
 
 Store the trimmed API key in a private module variable bound to the current world and GM user. Clear the input after use. Never put the key in `game.settings`, localStorage, sessionStorage, IndexedDB, Actor/User/ChatMessage flags, sockets, logs, macros, or module files. Do not expose a public getter for it. Reloading, closing the tab, logging out, changing user/world, or losing the GM role clears access. **Clear key** releases the key and cancels queued/in-flight AI work for that session; cancellation cannot guarantee that an already-submitted request incurs no API charge.
 
@@ -58,7 +59,7 @@ This keeps credentials out of saved world data and players' clients, but does no
 
 ### API request and answer handling
 
-Use browser `fetch` with async/await to send `POST https://api.openai.com/v1/responses`. Use the session key only in the HTTPS `Authorization: Bearer …` header; omit browser cookies. Keep the endpoint fixed so a configurable URL cannot redirect the key elsewhere. This uses the OpenAI API rather than automating the ChatGPT website; API billing is separate from a ChatGPT subscription.
+Use browser `fetch` with async/await to POST to the configured endpoint, defaulting to `https://api.openai.com/v1/responses`. Use the session key only in the HTTPS `Authorization: Bearer …` header; omit browser cookies and reject redirects. Bind each session key to the endpoint shown when it was entered. This uses the OpenAI API rather than automating the ChatGPT website; API billing is separate from a ChatGPT subscription.
 
 Send the existing saved prompt as `input`, with trusted answer instructions in `instructions`. Treat the user's question and creature descriptions as reference material, not executable instructions. Set the selected `model`, `max_output_tokens: 600`, `store: false`, and leave tools, streaming, background mode, and conversation history disabled for the first implementation. Async network I/O is sufficient for a responsive UI. Use a separate 90-second API timeout via AbortController, independent of the existing 60-second GM acknowledgment timeout. [Responses API](https://developers.openai.com/api/reference/typescript/resources/responses/methods/create)
 
@@ -82,8 +83,8 @@ After a reload or GM handoff, retained question cards and completed answers rema
 
 ### Implementation points and acceptance checks
 
-- `scripts/main.js`: register the AI Connection submenu and non-secret model setting.
-- New `scripts/recall-knowledge-ai.js`: session key, fixed API endpoint, async queue, timeout, response parsing, and guarded delivery. New `scripts/recall-knowledge-settings.js`: GM connection dialog and key-clearing workflow.
+- `scripts/main.js`: register the AI Connection submenu and non-secret model and endpoint settings.
+- `scripts/recall-knowledge-ai.js`: session key, async queue, timeout, response parsing, and guarded delivery. `scripts/recall-knowledge-settings.js`: GM connection dialog and key-clearing workflow. `scripts/recall-knowledge-ai-config.js`: endpoint/model defaults and validation. `scripts/recall-knowledge-message.js`: private-card and active-GM authorization.
 - `scripts/recall-knowledge-worker.js`: preserve authorization and one-roll behavior; create the private card before scheduling AI work, save durable attempt state, and keep acknowledgment independent of generation.
 - `scripts/recall-knowledge.js`: render pending/error/answer states and wire GM-only connection, get-answer, retry, and copy-answer controls. Keep the compendium macro as a thin module API call.
 - Automated verification: key persistence and socket/log isolation; rejection of non-GM calls; acknowledgment before delayed API completion; duplicate submissions/clicks; error/timeout handling; one roll across retries; chat-delivery-only retries; stale completion after clear/reload/handoff; preserved whisper recipients; harmless rendering of model-supplied markup; truthful type/traits and all four outcome instructions.

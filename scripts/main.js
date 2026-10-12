@@ -7,6 +7,8 @@ import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
 import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
 import { openAskQuestion, requestAskQuestion, registerQuestionChat } from "./recall-knowledge.js";
 import { registerKnowledgePromptSetting } from "./recall-knowledge-prompt.js";
+import { registerKnowledgeAISettings } from "./recall-knowledge-settings.js";
+import { registerKnowledgeAI } from "./recall-knowledge-ai.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -14,6 +16,7 @@ const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
 /** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
   registerKnowledgePromptSetting();
+  registerKnowledgeAISettings();
   game.settings.register(MODULE_ID, SHARED_IMMUNITIES_SETTING, {
     name: "Shared temporary immunities",
     hint: "Internal PF2e Zone Automation state for temporary immunity groups.",
@@ -63,6 +66,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 /** Starts cross-client requests and runtime reconciliation only after Foundry services and documents are available. */
 Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") return;
+  registerKnowledgeAI();
   registerHeroPointReminders();
   try {
     installZoneOutlines();

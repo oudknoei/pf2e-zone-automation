@@ -1,7 +1,9 @@
 import { actorLoreSkills } from "./recall-knowledge-rules.js";
 import { requestGMWorker } from "./transport.js";
 import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
-import { QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-worker.js";
+import { QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID, isKnowledgeActiveGM, knowledgeAnswerText, privateKnowledgeQuestion } from "./recall-knowledge-message.js";
+import { hasKnowledgeApiKey, knowledgeLocalAIStatus, queueKnowledgeAnswer } from "./recall-knowledge-ai.js";
+import { openKnowledgeAIConnection } from "./recall-knowledge-settings.js";
 
 let questionDialog = null;
 let chatHook = null;
@@ -119,8 +121,93 @@ export async function openAskQuestion() {
 
 /** Keeps clipboard access limited to GMs who can see the private prompt. */
 function canCopyQuestion(message) {
-  return game.user?.isGM && message.whisper?.includes(game.user.id)
-    && Boolean(readDocumentFlag(message, QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG));
+  return Boolean(privateKnowledgeQuestion(message));
+}
+
+/** Copies literal prompt or answer text, with a selectable fallback when clipboard permission is unavailable. */
+async function copyKnowledgeText(text, element, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    ui.notifications.info(`${label} copied.`);
+  } catch (_error) {
+    if (element.closest("details")) element.closest("details").open = true;
+    // The answer fallback includes factual identification exactly as Copy answer would.
+    element.textContent = text;
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    const selection = element.ownerDocument.defaultView.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    ui.notifications.warn(`Clipboard access is unavailable. The ${label.toLowerCase()} is selected; use your usual Copy shortcut.`);
+  }
+}
+
+/** Renders generated text only after Foundry enrichment, so it cannot create HTML, rolls, or UUID actions. */
+function renderKnowledgeAI(message, html) {
+  const marker = privateKnowledgeQuestion(message);
+  let section = html.querySelector("[data-pza-knowledge-ai]");
+  if (!section) {
+    const card = html.querySelector(".pza-knowledge-card");
+    if (!card) return;
+    section = html.ownerDocument?.createElement("section") ?? html.createElement("section");
+    section.dataset.pzaKnowledgeAi = "";
+    card.append(section);
+  }
+  section.replaceChildren();
+  if (!marker) return;
+  const doc = section.ownerDocument;
+  const ai = knowledgeLocalAIStatus(message.id) ?? marker.ai ?? { status: "needs-key" };
+  const status = doc.createElement("p");
+  status.setAttribute("aria-live", "polite");
+  const pending = ["queued", "thinking"].includes(ai.status);
+  status.textContent = ai.status === "complete" ? "Answer" : ai.status === "queued" ? "Queued…" : ai.status === "thinking" ? "Thinking…"
+    : ai.error || (isKnowledgeActiveGM() && hasKnowledgeApiKey() ? "Ready to get an answer." : "Enter an API key to get an answer.");
+  section.append(status);
+  if (ai.status === "complete" && typeof ai.answer === "string") {
+    const answer = doc.createElement("pre");
+    answer.dataset.pzaKnowledgeAnswer = "";
+    answer.textContent = ai.answer;
+    section.append(answer);
+    const copy = doc.createElement("button");
+    copy.type = "button";
+    copy.textContent = "Copy answer";
+    copy.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const current = privateKnowledgeQuestion(message);
+      if (!current || copy.disabled) return;
+      copy.disabled = true;
+      try { await copyKnowledgeText(knowledgeAnswerText(current), answer, "Answer"); }
+      finally { copy.disabled = false; }
+    });
+    section.append(copy);
+    return;
+  }
+  if (!isKnowledgeActiveGM()) {
+    const note = doc.createElement("p");
+    note.textContent = "The active GM handles AI requests.";
+    section.append(note);
+    return;
+  }
+  for (const [action, label] of [["connection", "AI Connection"], ["answer", ["error", "interrupted", "delivery-error"].includes(ai.status) ? "Retry" : "Get answer"]]) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.dataset.pzaKnowledgeAiAction = action;
+    button.disabled = action === "answer" && pending;
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (button.disabled || !isKnowledgeActiveGM() || !privateKnowledgeQuestion(message)) return;
+      button.disabled = true;
+      try {
+        if (action === "connection" || !hasKnowledgeApiKey()) await openKnowledgeAIConnection();
+        else await queueKnowledgeAnswer(message.id);
+      } catch (_error) { ui.notifications.warn("The AI action could not be completed. Check AI Connection or retry the private question."); }
+      finally { button.disabled = action === "answer" && ["queued", "thinking"].includes(privateKnowledgeQuestion(message)?.ai?.status); }
+    });
+    section.append(button);
+  }
 }
 
 /** Wires saved chat cards on every render and leaves the complete prompt selectable if copying fails. */
@@ -128,12 +215,14 @@ function renderQuestionChat(message, html) {
   const buttons = [...html.querySelectorAll("button[data-pza-copy-knowledge]")];
   if (!canCopyQuestion(message)) {
     for (const button of buttons) button.remove();
+    html.querySelector("[data-pza-knowledge-ai]")?.replaceChildren();
     return;
   }
   // Restore literal text after Foundry enrichment so @UUID links and inline rolls remain intact in the copied data.
   const savedPrompt = readDocumentFlag(message, QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG)?.prompt;
   const promptText = html.querySelector("[data-pza-knowledge-prompt]");
   if (typeof savedPrompt === "string" && promptText) promptText.textContent = savedPrompt;
+  renderKnowledgeAI(message, html);
   for (const button of buttons) {
     if (wiredCopyButtons.has(button)) continue;
     wiredCopyButtons.add(button);
@@ -145,16 +234,7 @@ function renderQuestionChat(message, html) {
       if (!prompt) return;
       button.disabled = true;
       try {
-        await navigator.clipboard.writeText(prompt.textContent);
-        ui.notifications.info("Prompt copied.");
-      } catch (_error) {
-        prompt.closest("details").open = true;
-        const range = prompt.ownerDocument.createRange();
-        range.selectNodeContents(prompt);
-        const selection = prompt.ownerDocument.defaultView.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        ui.notifications.warn("Clipboard access is unavailable. The prompt is selected; use your usual Copy shortcut.");
+        await copyKnowledgeText(prompt.textContent, prompt, "Prompt");
       } finally {
         button.disabled = false;
       }

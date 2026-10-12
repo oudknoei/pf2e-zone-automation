@@ -1,11 +1,12 @@
 import { bestKnowledgeSkill, creatureKnowledgeDC, creatureTraits, creatureType, knowledgeDegree, traitLabel } from "./recall-knowledge-rules.js";
 import { compactCreatureData } from "./recall-knowledge-data.js";
 import { knowledgePromptInstructions } from "./recall-knowledge-prompt.js";
+import { scheduleKnowledgeAnswer } from "./recall-knowledge-ai.js";
+import { QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
 import { oncePerOperation } from "./request-cache.js";
 import { escapeHtml, readDocumentFlag } from "./utils.js";
 
-export const QUESTION_MODULE_ID = "pf2e-zone-automation";
-export const QUESTION_MESSAGE_FLAG = "recallKnowledgeQuestion";
+export { QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
 const preparedQuestions = new Map();
 const deliveries = new Map();
 const REQUEST_TTL_MS = 10 * 60 * 1000;
@@ -59,12 +60,13 @@ async function questionToken(uuid, label) {
 }
 
 /** Builds a portable prompt whose answer instructions stay separate from untrusted question and creature text. */
-export function buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total, degree }) {
+export function buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total, degree,
+  instructions = knowledgePromptInstructions() }) {
   const traits = creatureTraits(creature).map(traitLabel).join(", ") || "None listed";
   const type = creatureType(creature);
   const data = compactCreatureData(creature.toObject(), creature.toObject(false).system);
   return [
-    knowledgePromptInstructions(),
+    instructions,
     "",
     `PLAYER: ${JSON.stringify(requester.name)}`,
     `CHARACTER: ${JSON.stringify(source.name)}`,
@@ -94,7 +96,8 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
     throw new Error("The Recall Knowledge die roll could not be read.");
   }
   const degree = knowledgeDegree(roll.total, dc, natural);
-  const prompt = buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total: roll.total, degree });
+  const instructions = knowledgePromptInstructions();
+  const prompt = buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total: roll.total, degree, instructions });
   const traits = creatureTraits(creature).map(traitLabel).join(", ") || "None listed";
   return {
     user: game.user.id,
@@ -107,6 +110,7 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
       <p>${escapeHtml(request.question)}</p>
       <p><strong>${degree}</strong> · ${escapeHtml(skill.label)}${skill.dcAdjustment ? ` (Lore DC ${skill.dcAdjustment})` : ""} · ${roll.total} vs. DC ${dc}</p>
       <p><strong>Type:</strong> ${escapeHtml(creatureType(creature))}<br><strong>Traits:</strong> ${escapeHtml(traits)}</p>
+      <section data-pza-knowledge-ai></section>
       <button type="button" data-pza-copy-knowledge>Copy</button>
       <details><summary>LLM prompt and full creature data</summary><pre data-pza-knowledge-prompt>${escapeHtml(prompt)}</pre></details>
     </div>`,
@@ -114,7 +118,8 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
       [QUESTION_MODULE_ID]: {
         [QUESTION_MESSAGE_FLAG]: {
           operationId: request.operationId, requesterUserId: request.requesterUserId,
-          fingerprint: questionFingerprint(request), prompt
+          fingerprint: questionFingerprint(request), prompt, instructions, input: prompt.slice(instructions.length + 2),
+          creatureType: creatureType(creature), creatureTraits: traits, ai: { status: "needs-key" }
         }
       }
     }
@@ -153,10 +158,16 @@ export async function executeAskQuestion(rawRequest) {
     try {
       const message = await ChatMessage.create({ ...chatData, whisper });
       if (!message) throw new Error("The GM prompt could not be posted. Retry the same question.");
+      scheduleKnowledgeAnswer(message);
       return { action: "ask-question", messageId: message.id };
     } catch (error) {
       const completed = completedQuestion(request);
-      if (completed) return completed;
+      if (completed) {
+        const message = game.messages?.get?.(completed.messageId)
+          ?? game.messages?.contents?.find((entry) => entry.id === completed.messageId);
+        if (message) scheduleKnowledgeAnswer(message);
+        return completed;
+      }
       error.retryable = true;
       throw error;
     }

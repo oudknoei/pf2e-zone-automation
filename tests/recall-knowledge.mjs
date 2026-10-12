@@ -487,7 +487,7 @@ test("GM Copy button copies the entire prompt after chat renders and provides a 
   const card = f.messages[0];
   const dom = new JSDOM(card.content);
   const html = dom.window.document;
-  const button = html.querySelector("button");
+  const button = html.querySelector("button[data-pza-copy-knowledge]");
   const savedPrompt = card.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt;
   html.querySelector("pre").textContent = "Text changed by Foundry enrichment";
   const nativeNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");

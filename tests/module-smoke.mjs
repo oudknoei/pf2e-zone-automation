@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { DEFAULT_KNOWLEDGE_PROMPT, KNOWLEDGE_PROMPT_SETTING } from "../scripts/recall-knowledge-prompt.js";
+import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING } from "../scripts/recall-knowledge-ai-config.js";
 
 const root = resolve(import.meta.dirname, "..");
 const hooks = new Map();
@@ -11,16 +12,18 @@ globalThis.Hooks = {
   once(name, handler) { hooks.set(name, handler); },
   on(name, handler) { hooks.set(name, handler); }
 };
-globalThis.foundry = { utils: {}, data: { fields: { StringField: class {
+globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } }, data: { fields: { StringField: class {
   constructor(options) { this.options = options; }
   getInitialValue() { return this.options.initial ?? ""; }
 } } } };
 const module = {};
 const settings = new Map();
+const menus = new Map();
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
   settings: {
     register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
+    registerMenu: (namespace, key, config) => menus.set(`${namespace}.${key}`, config),
     get: (namespace, key) => settings.get(`${namespace}.${key}`)?.type?.getInitialValue()
   },
   system: { id: "pf2e" },
@@ -114,6 +117,20 @@ test("Recall Knowledge instructions are editable as literal multiline text in wo
     else globalThis.document = previousDocument;
     dom.window.close();
   }
+});
+
+test("AI settings expose the endpoint and model, and restrict key entry to a GM submenu", () => {
+  const endpoint = settings.get(`pf2e-zone-automation.${KNOWLEDGE_API_ENDPOINT_SETTING}`);
+  const model = settings.get(`pf2e-zone-automation.${KNOWLEDGE_MODEL_SETTING}`);
+  assert.equal(endpoint.default, DEFAULT_KNOWLEDGE_API_ENDPOINT);
+  assert.equal(endpoint.scope, "world");
+  assert.equal(endpoint.type.options.initial, DEFAULT_KNOWLEDGE_API_ENDPOINT);
+  assert.equal(model.default, DEFAULT_KNOWLEDGE_MODEL);
+  assert.equal(model.scope, "world");
+  assert.equal(menus.get("pf2e-zone-automation.recallKnowledgeAIConnection").restricted, true);
+  assert.deepEqual([...settings.keys()].filter((key) => /api.?key|token|credential/i.test(key)), []);
+  assert.equal(module.api.setKnowledgeApiKey, undefined);
+  assert.equal(module.api.queueKnowledgeAnswer, undefined);
 });
 
 test("a source owner can dismiss a zone regardless of its retired dismissal flag", async () => {

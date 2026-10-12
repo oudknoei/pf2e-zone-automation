@@ -224,3 +224,8 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
   gap: 4px;
   margin-bottom: 12px;
 }
+.pza-knowledge-card [data-pza-knowledge-answer] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
