@@ -13,12 +13,16 @@ globalThis.Hooks = {
 };
 globalThis.foundry = { utils: {}, data: { fields: { StringField: class {
   constructor(options) { this.options = options; }
+  getInitialValue() { return this.options.initial ?? ""; }
 } } } };
 const module = {};
 const settings = new Map();
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
-  settings: { register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config) },
+  settings: {
+    register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
+    get: (namespace, key) => settings.get(`${namespace}.${key}`)?.type?.getInitialValue()
+  },
   system: { id: "pf2e" },
   user: { id: "gm", isGM: true }
 };
@@ -81,10 +85,20 @@ test("Recall Knowledge instructions are editable as literal multiline text in wo
   assert.equal(setting.type.options.blank, false);
   const dom = new JSDOM("<form></form>");
   const previousDocument = globalThis.document;
+  const previousSettingsGet = game.settings.get;
   globalThis.document = dom.window.document;
   try {
     const name = `pf2e-zone-automation.${KNOWLEDGE_PROMPT_SETTING}`;
+    assert.equal(game.settings.get("pf2e-zone-automation", KNOWLEDGE_PROMPT_SETTING), DEFAULT_KNOWLEDGE_PROMPT);
+    for (const value of [undefined, null, "", " \n "]) {
+      const initial = setting.input(setting.type, { name, value });
+      assert.equal(initial.value, DEFAULT_KNOWLEDGE_PROMPT, "Show active default instructions when no saved value is supplied");
+    }
     const value = 'Speak as a scholar.\n<script>literal reference</script>\nKeep it short.';
+    game.settings.get = () => value;
+    assert.equal(setting.input(setting.type, { name }).value, value, "An omitted form value must show the current saved instructions");
+    assert.equal(setting.input(setting.type, { name, value: DEFAULT_KNOWLEDGE_PROMPT }).value, DEFAULT_KNOWLEDGE_PROMPT,
+      "An explicit form value must take precedence over saved instructions, including when resetting defaults");
     const input = setting.input(setting.type, { name, value, rootId: "settings-config" });
     dom.window.document.querySelector("form").append(input);
     assert.equal(input.tagName, "TEXTAREA");
@@ -95,6 +109,7 @@ test("Recall Knowledge instructions are editable as literal multiline text in wo
     assert.equal(disabled.disabled, true);
     assert.equal(disabled.readOnly, true);
   } finally {
+    game.settings.get = previousSettingsGet;
     if (previousDocument === undefined) delete globalThis.document;
     else globalThis.document = previousDocument;
     dom.window.close();

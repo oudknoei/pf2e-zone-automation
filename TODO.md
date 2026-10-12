@@ -33,7 +33,7 @@ Add **Configure Settings → PF2e Zone Automation → AI Connection**, using a G
 
 The dialog contains:
 
-- **API key:** a blank, masked input. Never prefill it with the current key.
+- **API key:** a blank non-masked input. Never prefill it with the current key.
 - Helper: **"Kept only until you reload or close this tab."**
 - **Use for this session**, **Clear key**, and **Close** buttons.
 - Status: **"Key entered for this session"** or **"No key entered"**. Entering a key does not imply that OpenAI has validated it.
