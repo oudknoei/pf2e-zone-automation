@@ -17,12 +17,169 @@ Hooks.once("init", () => {
     type: Object,
     default: {}
   });
+  
+  // Define the setHeroPoints function separately
+  const setHeroPoints = (amount, character) => {
+    // Implementation to set hero points
+    if (!game.user.isGM) return;
+    
+    const tokens = game.canvas.tokens?.placeables || [];
+    let selectedToken = null;
+    
+    if (character === "selected") {
+      // Use the currently selected token
+      const selectedTokens = canvas.tokens?.controlled || [];
+      if (selectedTokens.length > 0) {
+        selectedToken = selectedTokens[0];
+      }
+    } else if (character === "target") {
+      // Use a target token if available
+      const targetedTokens = game.user.targets || new Set();
+      if (targetedTokens.size > 0) {
+        selectedToken = Array.from(targetedTokens)[0];
+      }
+    }
+    
+    // If we have a specific character, use that one
+    if (character && character !== "selected" && character !== "target") {
+      const token = tokens.find(t => t.name === character);
+      if (token) selectedToken = token;
+    }
+    
+    // Use the first token if no selection made or found
+    if (!selectedToken && tokens.length > 0) {
+      selectedToken = tokens[0];
+    }
+    
+    if (selectedToken) {
+      const heroPointsKey = "heroPoints";
+      const currentPoints = selectedToken.actor?.getFlag("pf2e", heroPointsKey) || 0;
+      let newPoints = Math.max(0, currentPoints + amount);
+      
+      // Ensure points don't exceed maximum of 3
+      newPoints = Math.min(3, newPoints);
+      
+      // Update the token's actor with new hero points
+      if (selectedToken.actor) {
+        selectedToken.actor.setFlag("pf2e", heroPointsKey, newPoints);
+        
+        // Show chat message with changes for GM only by default
+        const changeAmount = newPoints - currentPoints;
+        if (changeAmount !== 0) {
+          const characterName = selectedToken.name;
+          const chatMessage = `Hero Points changed for ${characterName}: ${currentPoints} → ${newPoints}`;
+          
+          // Create the message with GM only visibility by default
+          const messageData = {
+            content: chatMessage,
+            user: game.user.id
+          };
+          
+          if (game.user.isGM) {
+            ChatMessage.create(messageData);
+          }
+        }
+      }
+    } else {
+      ui.notifications.warn("No character found to set hero points for.");
+    }
+  };
+  
+// Define a method that handles UI prompts for setHeroPoints with checkboxes and select/clear buttons
+  const promptSetHeroPoints = async () => {
+    if (!game.modules.get(MODULE_ID)?.active || !game.modules.get(MODULE_ID)?.api?.setHeroPoints) {
+      ui.notifications.error("Enable PF2e Zone Automation first.");
+      return;
+    }
+    
+    // Prompt for hero point amount
+    const amountInput = await DialogV2.prompt({
+      window: { title: "Set Hero Points Amount" },
+      content: `<div class="form-group">
+        <label>Amount:</label>
+        <input type="number" name="amount" value="1" min="-999" max="999" />
+      </div>`,
+      ok: { label: "Set Points" }
+    });
+    
+    if (amountInput) {
+      const amount = parseInt(amountInput.amount);
+      
+      // Get all actors for selection
+      const actors = game.actors?.filter(a => a.type === "character") || [];
+      
+      if (actors.length > 0) {
+        // Create character selection options with checkboxes and select/clear buttons
+        let content = `<div class="form-group">
+          <label>Character:</label>
+          <select name="character" id="character-select">
+            <option value="selected">Selected Token</option>
+            <option value="target">Targeted Token</option>`;
+        
+        for (const actor of actors) {
+          content += `<option value="${actor.name}">${actor.name}</option>`;
+        }
+        
+        content += `</select></div><div class="form-group"><label>Check Characters:</label><br>`;
+        
+        // Add checkboxes for all characters
+        const characterCheckboxes = actors.map(actor => 
+          `<input type="checkbox" name="characters" value="${actor.name}" id="char-${actor.name}"> 
+           <label for="char-${actor.name}">${actor.name}</label><br>`
+        ).join('');
+        
+        content += `<div style="max-height: 200px; overflow-y: auto;">${characterCheckboxes}</div>`;
+        content += `<button type="button" id="select-all">Select All</button> 
+                   <button type="button" id="clear-all">Clear All</button></div>`;
+        
+        // Create a custom dialog with event listeners
+        const dialog = new Dialog({
+          title: "Select Characters",
+          content,
+          buttons: {
+            set: {
+              label: "Set Points",
+              callback: (html) => {
+                // Get selected checkboxes from the DOM after dialog is closed
+                const checkboxes = html.find('input[name="characters"]:checked');
+                const selectedCharacters = Array.from(checkboxes).map(cb => cb.value);
+                
+                if (selectedCharacters.length > 0) {
+                  for (const characterName of selectedCharacters) {
+                    setHeroPoints(amount, characterName);
+                  }
+                } else {
+                  // If no checkboxes are checked, use the dropdown selection
+                  const characterSelect = html.find('#character-select');
+                  if (characterSelect && characterSelect.val() !== "selected" && characterSelect.val() !== "target") {
+                    setHeroPoints(amount, characterSelect.val());
+                  }
+                }
+              }
+            },
+            cancel: {
+              label: "Cancel"
+            }
+          },
+          default: "set"
+        });
+        
+        dialog.render(true);
+      } else {
+        // No actors available
+        ui.notifications.warn("No characters found.");
+      }
+    }
+  };
+  
   const module = game.modules.get(MODULE_ID);
   module.api = {
     openBuilder: openZoneBuilder,
     openShieldingTaunt,
     requestShieldingTaunt,
-    handleRegionEvent: zoneRuntimeEntrypoint
+    handleRegionEvent: zoneRuntimeEntrypoint,
+    setHeroPoints,
+    promptSetHeroPoints
   };
 });
 

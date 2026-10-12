@@ -1,0 +1,16 @@
+{
+  "name": "Set Hero Points",
+  "type": "script",
+  "scope": "global",
+  "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.promptSetHeroPoints) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  // Call the new prompt function to handle UI logic\n  zoneModule.api.promptSetHeroPoints();\n}\n",
+  "author": null,
+  "img": "modules/pf2e-zone-automation/assets/macros/SetHeroPoints.webp",
+  "folder": null,
+  "sort": 2,
+  "ownership": {
+    "default": 2
+  },
+  "flags": {},
+  "_id": "pzaSetHeroPoints01",
+  "_key": "!macros!pzaSetHeroPoints01"
+}
