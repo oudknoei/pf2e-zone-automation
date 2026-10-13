@@ -153,6 +153,40 @@ test("cost estimates use actual cache and output counts without charging reasoni
   } }).estimatedCostUSD, mini.estimatedCostUSD);
 });
 
+test("long-context pricing starts strictly above the input threshold for every supported Luna tier", () => {
+  const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
+  for (const [input, expectedInputCost, expectedOutputCost] of [[272000, 0.02716, 0.0005], [272001, 0.0543202, 0.00075]]) {
+    for (const [tier, factor] of [["default", 1], ["flex", 0.5], ["fast", 2], ["priority", 2]]) {
+      const cost = knowledgeCostSummary(profile, { service_tier: tier, usage: {
+        input_tokens: input, input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 2000 },
+        output_tokens: 1000, output_tokens_details: { reasoning_tokens: 500 }, total_tokens: input + 1000
+      } });
+      assert.ok(Math.abs(cost.estimatedInputCostUSD - expectedInputCost * factor) < 1e-12);
+      assert.ok(Math.abs(cost.estimatedOutputCostUSD - expectedOutputCost * factor) < 1e-12);
+    }
+  }
+});
+
+test("unverified model names, tier combinations and cache-write rates keep numeric usage with unknown cost", () => {
+  const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
+  const usage = { input_tokens: 1000, output_tokens: 100, total_tokens: 1100 };
+  const unverified = [
+    ...["flex", "fast", "priority"].map((tier) => ({ model: "gpt-4.1-mini", service_tier: tier, usage })),
+    ...["gpt-4.1-mini-2099-01-01", "gpt-6-luna-2099-01-01", "constructor", "__proto__"]
+      .map((model) => ({ model, usage })),
+    ...["auto", "batch", "constructor", "__proto__"].map((tier) => ({ service_tier: tier, usage })),
+    { model: "gpt-4.1-mini", usage: { ...usage, input_tokens_details: { cache_write_tokens: 1 } } }
+  ];
+  for (const data of unverified) {
+    const cost = knowledgeCostSummary(profile, data);
+    assert.equal(cost.estimatedCostUSD, null);
+    assert.equal(cost.estimatedInputCostUSD, null);
+    assert.equal(cost.estimatedOutputCostUSD, null);
+    assert.equal(cost.usage.totalTokens, 1100);
+    assert.match(cost.note, /unknown/);
+  }
+});
+
 test("unknown providers, pricing and malformed usage never produce a misleading cost or leak provider strings", () => {
   const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
   const valid = { input_tokens: 1000, output_tokens: 100, total_tokens: 1100 };

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createZoneDocument, requireValidConfig } from "../scripts/zone-creation.js";
+import { createZoneDocument, creationRequestFingerprint, requireValidConfig } from "../scripts/zone-creation.js";
 import { defaultConfig, validateConfig } from "../scripts/zone-config.js";
 import { handleWorkerRequest } from "../scripts/worker.js";
 
@@ -54,14 +54,14 @@ globalThis.CONFIG = {
 };
 globalThis.game = {
   system: { id: "pf2e" }, user: gm, users: new Map([[gm.id, gm]]),
-  scenes: { get: (id) => id === scene.id ? scene : null },
+  scenes: new Map([[scene.id, scene]]),
   time: { worldTime: 100 }, combat: null,
   i18n: { localize: (key) => key }
 };
 const effectDocuments = new Map();
 globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : effectDocuments.get(uuid) ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.20", installHooks() {},
+  version: "0.5.21", installHooks() {},
   async activateRegion(region) { activated.push(region); }
 };
 
@@ -73,6 +73,33 @@ function validConfig() {
   config.effects[0].triggers.activation = true;
   config.effects[0].chatAlert.enabled = true;
   return config;
+}
+
+let fingerprintOperationCounter = 0;
+
+function fingerprintRequest(extra = {}) {
+  return {
+    protocol: 1, action: "create", requesterUserId: gm.id,
+    operationId: `creation-fingerprint-${++fingerprintOperationCounter}`,
+    sceneId: scene.id, sourceTokenUuid: token.uuid, config: validConfig(),
+    savedPresetId: null, savedPresetRevision: null, chosenDamageType: null,
+    color: gm.color, areaCenter: null, ...extra
+  };
+}
+
+function reverseObjectKeys(value) {
+  if (Array.isArray(value)) return value.map(reverseObjectKeys);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).reverse().map(([key, entry]) => [key, reverseObjectKeys(entry)]));
+  }
+  return value;
+}
+
+async function rejectedCreation(worker, request) {
+  const prior = console.error;
+  console.error = () => {};
+  try { return await worker(request); }
+  finally { console.error = prior; }
 }
 
 test("direct GM and worker creation persist identical normalized config and initial state", async () => {
@@ -576,8 +603,282 @@ test("a retried creation request returns one Region during and after GM processi
     assert.equal(retryAfterReload.regionId, firstResult.regionId);
     assert.equal(calls, 1, "persisted operation ID also survives a GM refresh");
     assert.equal(scene.regions.get(firstResult.regionId).getFlag("world", "pf2eZone").state.creationOperationId, operationId);
+    assert.equal(scene.regions.get(firstResult.regionId).getFlag("world", "pf2eZone").state.creationFingerprint, creationRequestFingerprint(request));
   } finally {
     finishCreation();
     CONFIG.Region.documentClass.createTokenEmanation = originalCreate;
   }
+});
+
+for (const [name, change] of [
+  ["zone name", (request) => { request.config.name = "Changed zone"; }],
+  ["nested configuration", (request) => { request.config.effects[0].chatAlert.text = "Changed alert"; }],
+  ["effect order", (request) => { request.config.effects.reverse(); }],
+  ["preset identity", (request) => { request.savedPresetId = "another-preset"; }],
+  ["preset revision", (request) => { request.savedPresetRevision = 2; }],
+  ["activation choice", (request) => { request.chosenDamageType = "fire"; }],
+  ["color", (request) => { request.color = "#ff0000"; }],
+  ["area placement", (request) => { request.areaCenter.x += 100; }]
+]) {
+  test(`creation rejects changed ${name} both in memory and after a worker refresh`, async () => {
+    const config = validConfig();
+    config.mode = "area";
+    const second = structuredClone(config.effects[0]);
+    second.id = "another-effect";
+    second.chatAlert.text = "Second alert";
+    config.effects.push(second);
+    const request = fingerprintRequest({ config, areaCenter: { x: 100, y: 200 } });
+    const original = await handleWorkerRequest(request);
+    assert.equal(original.ok, true, original.error);
+    const before = created.length;
+    const beforeActivations = activated.length;
+    const state = scene.regions.get(original.regionId).getFlag("world", "pf2eZone").state;
+    assert.equal(state.creationFingerprint, creationRequestFingerprint(request));
+    const changed = structuredClone(request);
+    change(changed);
+    const cached = await rejectedCreation(handleWorkerRequest, changed);
+    assert.equal(cached.ok, false);
+    assert.match(cached.error, /reused with different zone details/);
+    const fresh = await import(`../scripts/worker.js?fingerprint=${request.operationId}`);
+    const reloaded = await rejectedCreation(fresh.handleWorkerRequest, changed);
+    assert.equal(reloaded.ok, false);
+    assert.equal(reloaded.error, cached.error);
+    const identical = await fresh.handleWorkerRequest(request);
+    assert.equal(identical.ok, true, identical.error);
+    assert.equal(identical.regionId, original.regionId);
+    assert.equal(created.length, before);
+    assert.equal(activated.length, beforeActivations);
+  });
+}
+
+test("a changed source token cannot reuse a creation after refresh", async () => {
+  const request = fingerprintRequest();
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const before = created.length;
+  const prior = fromUuid;
+  const otherToken = { ...token, uuid: "Scene.scene.Token.other-source" };
+  globalThis.fromUuid = async (uuid) => uuid === otherToken.uuid ? otherToken : prior(uuid);
+  try {
+    const fresh = await import(`../scripts/worker.js?source=${request.operationId}`);
+    const changed = await rejectedCreation(fresh.handleWorkerRequest, { ...request, sourceTokenUuid: otherToken.uuid });
+    assert.equal(changed.ok, false);
+    assert.match(changed.error, /reused with different zone details/);
+    assert.equal(created.length, before);
+  } finally { globalThis.fromUuid = prior; }
+});
+
+test("a creation operation is checked across Scenes after refresh", async () => {
+  const request = fingerprintRequest();
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const before = created.length;
+  const otherScene = { id: "another-scene", regions: new Map() };
+  const otherToken = { ...token, uuid: "Scene.another-scene.Token.source", parent: otherScene };
+  const prior = fromUuid;
+  game.scenes.set(otherScene.id, otherScene);
+  globalThis.fromUuid = async (uuid) => uuid === otherToken.uuid ? otherToken : prior(uuid);
+  try {
+    const fresh = await import(`../scripts/worker.js?scene=${request.operationId}`);
+    const changed = await rejectedCreation(fresh.handleWorkerRequest, {
+      ...request, sceneId: otherScene.id, sourceTokenUuid: otherToken.uuid
+    });
+    assert.equal(changed.ok, false);
+    assert.match(changed.error, /reused with different zone details/);
+    assert.equal(created.length, before);
+    assert.equal(otherScene.regions.size, 0);
+  } finally {
+    game.scenes.delete(otherScene.id);
+    globalThis.fromUuid = prior;
+  }
+});
+
+test("canonical creation fingerprints ignore object key order and omitted optional fields, preserving array order", async () => {
+  const request = fingerprintRequest();
+  const second = structuredClone(request.config.effects[0]);
+  second.id = "second-effect";
+  second.chatAlert.text = "Second effect";
+  request.config.effects.push(second);
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const reordered = reverseObjectKeys(request);
+  for (const field of ["savedPresetId", "savedPresetRevision", "chosenDamageType", "areaCenter"]) delete reordered[field];
+  assert.equal(creationRequestFingerprint(reordered), creationRequestFingerprint(request));
+  assert.equal((await handleWorkerRequest(reordered)).regionId, original.regionId);
+  const before = created.length;
+  const fresh = await import(`../scripts/worker.js?canonical=${request.operationId}`);
+  assert.equal((await fresh.handleWorkerRequest(reordered)).regionId, original.regionId);
+  assert.equal(created.length, before);
+  const changed = structuredClone(reordered);
+  changed.config.effects.reverse();
+  assert.notEqual(creationRequestFingerprint(changed), creationRequestFingerprint(request));
+});
+
+test("creation snapshots the request before waiting and fingerprints the accepted raw configuration", async () => {
+  const request = fingerprintRequest();
+  // Normalization repairs this ID, so fingerprinting the normalized Region config would reject a genuine retry.
+  request.config.effects.push(structuredClone(request.config.effects[0]));
+  const originalRequest = structuredClone(request);
+  const prior = fromUuid;
+  let entered;
+  const started = new Promise((resolve) => { entered = resolve; });
+  let release;
+  const wait = new Promise((resolve) => { release = resolve; });
+  globalThis.fromUuid = async (uuid) => { entered(); await wait; return prior(uuid); };
+  try {
+    const pending = handleWorkerRequest(request);
+    await started;
+    request.config.name = "Changed while waiting";
+    request.color = "#ff0000";
+    release();
+    const result = await pending;
+    assert.equal(result.ok, true, result.error);
+    const payload = scene.regions.get(result.regionId).getFlag("world", "pf2eZone");
+    assert.equal(payload.config.name, originalRequest.config.name);
+    assert.notEqual(payload.config.effects[0].id, payload.config.effects[1].id);
+    assert.equal(payload.state.creationFingerprint, creationRequestFingerprint(originalRequest));
+    const before = created.length;
+    const fresh = await import(`../scripts/worker.js?snapshot=${originalRequest.operationId}`);
+    assert.equal((await fresh.handleWorkerRequest(originalRequest)).regionId, result.regionId);
+    assert.equal(created.length, before);
+  } finally { release(); globalThis.fromUuid = prior; }
+});
+
+test("durable creation validation still rejects changed details when the ten-minute cache expires", async () => {
+  const request = fingerprintRequest();
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const before = created.length;
+  const prior = Date.now;
+  Date.now = () => prior() + 10 * 60 * 1000 + 1;
+  try {
+    const changed = await rejectedCreation(handleWorkerRequest, { ...request, color: "#ff0000" });
+    assert.equal(changed.ok, false);
+    assert.match(changed.error, /reused with different zone details/);
+    assert.equal((await handleWorkerRequest(request)).regionId, original.regionId);
+    assert.equal(created.length, before);
+  } finally { Date.now = prior; }
+});
+
+for (const fingerprint of [undefined, null, "", 42]) {
+  test(`legacy creation retry fails safely for a ${String(fingerprint)} fingerprint`, async () => {
+    const request = fingerprintRequest();
+    const original = await handleWorkerRequest(request);
+    assert.equal(original.ok, true, original.error);
+    const region = scene.regions.get(original.regionId);
+    const state = region.getFlag("world", "pf2eZone").state;
+    if (fingerprint === undefined) delete state.creationFingerprint;
+    else state.creationFingerprint = fingerprint;
+    const before = created.length;
+    const beforeActivations = activated.length;
+    const fresh = await import(`../scripts/worker.js?legacy=${request.operationId}`);
+    const result = await rejectedCreation(fresh.handleWorkerRequest, request);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /cannot verify the retry details.*Manage Existing Zones/);
+    assert.equal(created.length, before);
+    assert.equal(activated.length, beforeActivations);
+    assert.equal(scene.regions.get(original.regionId), region, "Existing zones remain intact");
+    assert.equal(state.creationFingerprint, fingerprint, "Never infer or backfill an unverified original request");
+  });
+}
+
+test("a fingerprint is scoped to the creator, allowing different users to use the same operation ID", async () => {
+  const request = fingerprintRequest();
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const other = { ...gm, id: "another-gm", name: "Another GM" };
+  game.users.set(other.id, other);
+  try {
+    const fresh = await import(`../scripts/worker.js?creator=${request.operationId}`);
+    const otherRequest = { ...request, requesterUserId: other.id };
+    const result = await fresh.handleWorkerRequest(otherRequest);
+    assert.equal(result.ok, true, result.error);
+    assert.notEqual(result.regionId, original.regionId);
+    const state = scene.regions.get(result.regionId).getFlag("world", "pf2eZone").state;
+    assert.equal(state.createdBy.userId, other.id);
+    assert.equal(state.creationFingerprint, creationRequestFingerprint(otherRequest));
+    assert.notEqual(state.creationFingerprint, creationRequestFingerprint(request));
+  } finally { game.users.delete(other.id); }
+});
+
+test("post-refresh creation recovery retains a rolled duration without repeating activation or chat", async () => {
+  const priorRoll = globalThis.Roll;
+  const priorChat = globalThis.ChatMessage;
+  let rolls = 0;
+  let announcements = 0;
+  globalThis.Roll = class {
+    static validate() { return true; }
+    async evaluate() { rolls++; return { total: 3 }; }
+  };
+  globalThis.ChatMessage = { getSpeaker: () => ({}), async create() { announcements++; return { id: "duration-message" }; } };
+  try {
+    const request = fingerprintRequest();
+    request.config.visibility = "all";
+    request.config.duration = { type: "custom-rounds", rounds: "1d4" };
+    const original = await handleWorkerRequest(request);
+    assert.equal(original.ok, true, original.error);
+    const before = activated.length;
+    const fresh = await import(`../scripts/worker.js?duration=${request.operationId}`);
+    const retry = await fresh.handleWorkerRequest(request);
+    assert.equal(retry.ok, true, retry.error);
+    assert.equal(retry.regionId, original.regionId);
+    assert.deepEqual(retry.duration, { formula: "1d4", rounds: 3 });
+    assert.equal(rolls, 1);
+    assert.equal(announcements, 1);
+    assert.equal(activated.length, before);
+  } finally {
+    if (priorRoll === undefined) delete globalThis.Roll; else globalThis.Roll = priorRoll;
+    if (priorChat === undefined) delete globalThis.ChatMessage; else globalThis.ChatMessage = priorChat;
+  }
+});
+
+test("creation fingerprint recovery survives an executing-GM handoff for the same requester", async () => {
+  const request = fingerprintRequest();
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const before = created.length;
+  const otherGM = { ...gm, id: "handoff-gm", name: "Handoff GM" };
+  const previousUser = game.user;
+  const previousActiveGM = game.users.activeGM;
+  game.users.set(otherGM.id, otherGM);
+  game.user = otherGM;
+  game.users.activeGM = otherGM;
+  try {
+    const fresh = await import(`../scripts/worker.js?handoff=${request.operationId}`);
+    const retry = await fresh.handleWorkerRequest(request);
+    assert.equal(retry.ok, true, retry.error);
+    assert.equal(retry.regionId, original.regionId);
+    assert.equal(created.length, before);
+  } finally {
+    game.user = previousUser;
+    if (previousActiveGM === undefined) delete game.users.activeGM;
+    else game.users.activeGM = previousActiveGM;
+    game.users.delete(otherGM.id);
+  }
+});
+
+test("creation retries compare the original request after the Region is moved or its live configuration changes", async () => {
+  const request = fingerprintRequest({ areaCenter: { x: 100, y: 200 } });
+  request.config.mode = "area";
+  const original = await handleWorkerRequest(request);
+  assert.equal(original.ok, true, original.error);
+  const region = scene.regions.get(original.regionId);
+  const payload = region.getFlag("world", "pf2eZone");
+  payload.config.radius += 5;
+  payload.state.activationProcessed = true;
+  await region.update({ shapes: [{ type: "circle", x: 400, y: 500, radius: 600, gridBased: true }] });
+  const before = created.length;
+  const beforeActivations = activated.length;
+  const fresh = await import(`../scripts/worker.js?edited=${request.operationId}`);
+  const retry = await fresh.handleWorkerRequest(request);
+  assert.equal(retry.ok, true, retry.error);
+  assert.equal(retry.regionId, original.regionId);
+  assert.equal(payload.state.creationFingerprint, creationRequestFingerprint(request));
+  assert.equal(region.shapes[0].toObject().x, 400, "A retry must not undo a later move");
+  assert.equal(payload.config.radius, request.config.radius + 5);
+  assert.equal(created.length, before);
+  assert.equal(activated.length, beforeActivations);
+  const changed = await rejectedCreation(fresh.handleWorkerRequest, { ...request, config: payload.config });
+  assert.equal(changed.ok, false);
+  assert.match(changed.error, /reused with different zone details/);
 });

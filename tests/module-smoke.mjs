@@ -142,7 +142,7 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
     game.scenes = { get: (id) => id === scene.id ? scene : null };
     globalThis.fromUuid = async (uuid) => uuid === "Actor.source" ? sourceActor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.20",
+      version: "0.5.21",
       installHooks: () => undefined,
       endZone: async (target, reason) => { ended = { target, reason }; }
     };

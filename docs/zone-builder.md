@@ -52,7 +52,15 @@ Each record carries ID, name, normalized config, creator/modifier identities, ti
 
 Serialize library reads/writes on the active GM to avoid lost concurrent changes. Export/import JSON for portability; preserve unsupported condition/damage choices as visible validation issues where supported by the editor. A loaded configuration keeps its preset origin and revision. Dismissing a zone restores the revision it actually used, so an older zone cannot silently overwrite a newer preset.
 
-Library serialization currently prevents overlap within one active-GM client but does not make a timed-out Save As idempotent. Track operation identity and uncertain acknowledgments as described in TODO.md.
+Freeze a save operation ID and its full request before sending **Save** or **Save As**. A timeout, transport failure, or unconfirmed Journal write retains that attempt while the builder remains open. Enable the same save control to confirm the earlier request and disable switching to the other kind of save until confirmation. Retry the frozen request even if the editor has changed; apply its response only when the original editor snapshot is still current. Otherwise keep the newer edits and report that the earlier preset was saved. An ordinary worker rejection releases the attempt. Closing or reloading the builder loses its local pending attempt; review the library before starting a fresh save in that case.
+
+Copy incoming requests before queueing. Matching requester/operation IDs join one GM-client request for ten minutes; reject reuse with different details. Canonical fingerprints include requester, record ID, expected revision, source Actor UUID, and the full accepted raw configuration. Sort object keys without changing array order or the existing creation fingerprint format.
+
+Keep the library schema at version 1 and add an optional `saveOperations` map, empty for older libraries. Each completion receipt records the operation/requester IDs, fingerprint, completion time, and original client-visible record snapshot. Commit the receipt and preset together in one Journal flag replacement. Identified **Save As** requests use a stable record ID based on requester and operation, allowing independent workers to converge on one record. Validate receipt metadata and compare its fingerprint before returning a completion; missing or incomplete proof requires review rather than another creation or inferred success.
+
+An authenticated repeat request returns its original record ID and revision before revalidating source ownership or Effect Item references. This read-only recovery survives GM refresh, cache expiry, and handoff, and does not change later preset edits or recreate a deleted record. Retain completion receipts, including historical configuration snapshots, for the library's lifetime; deletion removes the current preset but not its receipt. The library therefore grows with completed saves.
+
+If the write acknowledgment fails, confirm completion from the exact stored receipt. If the write remains unconfirmed, return the retryable `PF2E_ZONE_PRESET_SAVE_UNCERTAIN` error so the builder retains its request. Index rendering failures remain warnings after a confirmed commit. Legacy worker callers without an operation ID keep their existing behavior and do not receive retry guarantees. Queues serialize one active-GM client; a document write already dispatched by an earlier GM can still finish after handoff.
 
 ## Region creation and persistence
 
@@ -64,11 +72,15 @@ Use `RegionDocument.createTokenEmanation` for emanations and a placement adapter
 | --- | --- |
 | `runtimeVersion` | Runtime migration compatibility |
 | `config` | Normalized zone definition |
-| `state` | Source and creator identity, creation operation, preset origin/revision, duration clocks, activation progress, saves, repeats, immunities, applied items, HP baselines, and roll batches |
+| `state` | Source and creator identity, creation operation and request fingerprint, preset origin/revision, duration clocks, activation progress, saves, repeats, immunities, applied items, HP baselines, and roll batches |
 
 Region behavior events call the installed `api.handleRegionEvent` rather than embedding a frozen runtime implementation. Keep legacy Regions compatible with the shared singleton and retained world flags.
 
-Player requests carry a frozen creation operation ID and area center. Join concurrent identical requests and reuse the ID on timeout retry; locate an already-created Region using persisted operation and creator identity after a GM refresh. The current durable lookup does not persist/check the complete request fingerprint, which is an open correctness issue in TODO.md.
+Player requests carry a frozen creation operation ID and area center. The worker copies the request before awaiting and uses one versioned, canonical JSON fingerprint for both its ten-minute cache and `state.creationFingerprint`, saved with `state.creationOperationId` in the initial Region payload. Include requester, Scene, source token, complete accepted configuration, preset ID/revision, activation choice, color, and area center. Sort object keys recursively, retain array order, and treat absent optional fields as null. Fingerprint the accepted raw configuration rather than repaired or subsequently edited Region data.
+
+After refresh, cache expiry, or GM handoff, search Regions across all Scenes by operation ID and creator. Reuse a completion only when the full fingerprint and owning Scene match. Changed requests fail without creating another Region, repeating activation, rerolling duration, or undoing later movement or configuration edits. Recover the original stored duration result for an identical retry.
+
+Older Regions without a usable fingerprint remain playable and manageable. Reject an uncertain creation retry against their operation marker with instructions to review **Manage Existing Zones** before creating another. Do not infer the original request from live Region data, backfill an unverified fingerprint, or create a duplicate to repair missing metadata. Requests without an operation ID retain their existing creation behavior.
 
 Placement must use the intended Scene, release input listeners on completion/cancellation, and consume the placement click without moving a token. The GM uses Foundry Region placement; the player chooses a center before the GM constructs the fixed footprint.
 
@@ -76,7 +88,9 @@ Placement must use the intended Scene, release input listeners on completion/can
 
 `PF2EZoneRuntime` is a versioned singleton with one hook registry. Runtime upgrades tear down the old hooks/timers, retain compatible APIs, and avoid downgrading a newer runtime. Every client receives hooks, but only the active authoritative GM should apply zone effects.
 
-Serialize state changes per Region. Read a current payload inside the lock, perform the transaction, replace the complete persisted flag using Foundry v14 replacement semantics, and execute deferred actions only after commit. Prune completed save and damage/healing history when no unresolved save needs it. Local locks need authority rechecks across handoff; the reproduced queued-work gap is in TODO.md.
+Serialize state changes per Region. Capture the accepting GM's authority lease before waiting, read a current payload inside the lock, and retain that lease across nested calls and fresh payload reads. Revalidate when queued work starts, before Item/chat changes and Region/world-state persistence, and before deferred actions. Replace the complete persisted flag using Foundry v14 replacement semantics and execute deferred actions only after commit. Prune completed save and damage/healing history when no unresolved save needs it.
+
+Observed active-GM or current-user changes invalidate earlier leases, cancel old timers, and clear transient occupancy/alert caches. Runtime retirement also invalidates accepted work. The new authority can start a fresh recovery pass and reconstruct activation deadlines and undelivered save cards. Direct GM dismissal remains deliberately unscoped so secondary-GM management works. A Foundry document operation already dispatched may still finish after handoff; the runtime cannot recall it, but stops subsequent effects, stale commits, and follow-up actions as control returns.
 
 For each trigger, check operational state, target eligibility, physical line of effect, temporary immunity, and repeat policy. Continuous effects restore maintained conditions/Effect Items after re-entry even when repeat limits suppress new alerts or damage/healing. Preserve conditions from unrelated sources and let PF2e determine the effective strongest value.
 
@@ -106,6 +120,7 @@ Draw module Regions as a dark outer boundary with a colored inner boundary and n
 | `scripts/zone-config.js` / `config-input.js` | Schema, normalization, supported choices, and input validation |
 | `scripts/zone-creation.js` | Shared validation, Region payload, duration resolution, and activation |
 | `scripts/worker.js` / `transport.js` | Authenticated GM operations, library authorization, and retries |
+| `scripts/preset-save.js` / `utils.js` | Full preset-save fingerprints and stable JSON serialization shared with creation |
 | `scripts/runtime.js` | Trigger processing, state transactions, saves, applied effects, and lifecycle recovery |
 | `scripts/area-shape.js` / `line-of-effect.js` / `targeting.js` | Geometry, swept movement, barriers, and recipient selection |
 | `scripts/duration*.js` / `scene-combat.js` | Time and encounter clocks |
@@ -113,6 +128,6 @@ Draw module Regions as a dark outer boundary with a colored inner boundary and n
 | `scripts/zone-outline.js` / `styles/pf2e-zone.css` | Canvas outline and dialog presentation |
 | `scripts/main.js` / `packs/src/zone-macros/open-pf2e-zone-builder.json` | Registration and thin macro |
 
-The automated suite covers editor/source races, validation, library concurrency/revisions, creation retries, saves and authorization, source conditions, immunity, duration recovery, deletion, movement, line of effect, and outlines. Refactoring must preserve those contracts and add regressions for the review findings.
+The automated suite covers editor/source races, validation, library concurrency/revisions, creation retries, saves and authorization, source conditions, immunity, duration recovery, deletion, movement, line of effect, and outlines. Creation fingerprint regressions cover every changed request field after fresh worker imports, cache expiry, object-key ordering, raw-config repair, request snapshots, legacy metadata, creator isolation, GM handoff, rolled duration recovery, and later Region edits. Twenty-three preset-save regressions cover lost/unconfirmed acknowledgments, joined operations, repeated overwrites, changed fingerprints, historical results after deletion, incomplete receipts, queued snapshots, independent workers, GM handoff, index warnings, and builder retries that preserve newer edits. All 421 tests and full ESLint pass on 2026-10-13. Refactoring must preserve those contracts and add regressions for the review findings.
 
-Live Forge checks remain necessary for actual Region containment, token-following emanations, placement cancellation, moved/resized/rotated areas, physical barriers, PF2e condition interaction, outline appearance, and multi-client GM handoff. The optional local integration harness in `tests/foundry` requires a licensed installation; it is not an installation requirement for a Forge user.
+Live Forge checks remain necessary for actual Region containment, token-following emanations, placement cancellation, moved/resized/rotated areas, physical barriers, PF2e condition interaction, outline appearance, multi-client GM handoff, and Save/Save As retries after lost socket replies or GM reconnects. The optional local integration harness in `tests/foundry` requires a licensed installation; it is not an installation requirement for a Forge user.

@@ -5,8 +5,9 @@ import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { damageTypeAvailable, normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
+import { canonicalJson } from "./utils.js";
 
-const RUNTIME_VERSION = "0.5.20";
+const RUNTIME_VERSION = "0.5.21";
 const FLAG_SCOPE = "world";
 const FLAG_KEY = "pf2eZone";
 
@@ -16,6 +17,18 @@ export function requireValidConfig(raw, sourceActor) {
   const validation = validateConfig(config, { sourceActor });
   if (validation.errors.length) throw new Error(validation.errors[0]);
   return config;
+}
+
+/** Identifies the frozen creation request consistently in memory and in durable Region state. */
+export function creationRequestFingerprint(request) {
+  // Serialize first so Color/Number wrappers and omitted fields follow the socket's JSON representation.
+  return canonicalJson({
+    version: 1, requesterUserId: request.requesterUserId ?? null,
+    sceneId: request.sceneId ?? null, sourceTokenUuid: request.sourceTokenUuid ?? null,
+    config: request.config ?? null, savedPresetId: request.savedPresetId ?? null,
+    savedPresetRevision: request.savedPresetRevision ?? null, chosenDamageType: request.chosenDamageType ?? null,
+    color: request.color ?? null, areaCenter: request.areaCenter ?? null
+  });
 }
 
 /** Gives the outline a legible color for both GM and player requests. */
@@ -71,7 +84,7 @@ export function savedPresetFromZone(record, zoneState) {
 }
 
 /** Gives finite zones the same duration metadata regardless of who created them. */
-function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId }) {
+function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId, creationFingerprint }) {
   const { combat = null, sourceCombatant = null } = combatForZone({
     sceneId: sourceToken.parent?.id,
     sourceTokenUuid: sourceToken.uuid,
@@ -86,6 +99,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
     createdWorldTime: Number(game.time?.worldTime ?? 0),
     createdBy: { userId: requester.id, name: requester.name },
     creationOperationId: operationId ?? null,
+    creationFingerprint: operationId ? creationFingerprint ?? null : null,
     savedPresetId: savedPresetId ?? null,
     savedPresetRevision: savedPresetId ? presetRevision(savedPresetRevision) : null,
     sourceActorUuid: sourceActor.uuid,
@@ -121,7 +135,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
 }
 
 /** Shares validation, payload, activation, and duration handling while allowing each client to place an area in its own UI. */
-export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea, operationId = null }) {
+export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea, operationId = null, creationFingerprint = null }) {
   if (!scene || sourceToken?.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
   const config = requireValidConfig(rawConfig, sourceActor);
   const effectValidation = await validateEffectItems(config);
@@ -134,7 +148,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
   const payload = {
     runtimeVersion: RUNTIME_VERSION,
     config,
-    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId })
+    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId, creationFingerprint })
   };
   const regionData = {
     name: config.name,

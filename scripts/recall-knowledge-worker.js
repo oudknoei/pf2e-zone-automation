@@ -2,9 +2,9 @@ import { bestKnowledgeSkill, creatureKnowledgeDC, creatureTraits, creatureType, 
 import { compactCreatureData } from "./recall-knowledge-data.js";
 import { DEFAULT_KNOWLEDGE_PROMPT } from "./recall-knowledge-prompt.js";
 import { scheduleKnowledgeAnswer } from "./recall-knowledge-ai.js";
-import { QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
+import { privateKnowledgeQuestion, QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
 import { oncePerOperation } from "./request-cache.js";
-import { escapeHtml, readDocumentFlag } from "./utils.js";
+import { escapeHtml } from "./utils.js";
 
 export { QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
 const preparedQuestions = new Map();
@@ -37,7 +37,8 @@ function questionFingerprint(request) {
 /** Finds durable chat markers so a successful submission cannot roll again after a GM refresh. */
 function completedQuestion(request) {
   for (const message of game.messages?.contents ?? []) {
-    const marker = readDocumentFlag(message, QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG);
+    const marker = privateKnowledgeQuestion(message);
+    if (typeof message?.id !== "string" || !message.id) continue;
     if (marker?.operationId !== request.operationId || marker?.requesterUserId !== request.requesterUserId) continue;
     if (marker.fingerprint !== questionFingerprint(request)) {
       throw new Error("Question operation ID was reused with different details.");

@@ -14,6 +14,20 @@ export function cloneData(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+/** Sorts JSON object keys without changing the meaningful order of arrays. */
+function orderedJsonData(value) {
+  if (Array.isArray(value)) return value.map(orderedJsonData);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, orderedJsonData(value[key])]));
+  }
+  return value;
+}
+
+/** Gives operation fingerprints a stable representation using the same value conversions as socket JSON. */
+export function canonicalJson(value) {
+  return JSON.stringify(orderedJsonData(JSON.parse(JSON.stringify(value))));
+}
+
 /** Makes stored slugs readable without changing their data identity. */
 export function titleCase(value) {
   return String(value ?? "").replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -44,4 +58,11 @@ export function newDocumentId() {
 /** Reads flags from live Foundry documents or source-shaped data used during recovery. */
 export function readDocumentFlag(document, scope, key) {
   return document?.getFlag?.(scope, key) ?? document?.flags?.[scope]?.[key] ?? null;
+}
+
+/** Checks the chat's actual author against world Users, retaining the legacy user field for saved cards. */
+export function isGMAuthoredMessage(message) {
+  const author = message?.author !== undefined ? message.author : message?.user;
+  const authorId = typeof author === "string" ? author : author?.id;
+  return Boolean(typeof authorId === "string" && game.users?.get(authorId)?.isGM);
 }

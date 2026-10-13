@@ -29,6 +29,7 @@ globalThis.game = {
 const { registerZoneSocket, requestGMWorker } = await import("../scripts/transport.js");
 const { requestShieldingTaunt } = await import("../scripts/shielding-taunt.js");
 const { setHeroPoints } = await import("../scripts/hero-points.js");
+const { createHeroPointReminder } = await import("../scripts/hero-point-reminders.js");
 registerZoneSocket();
 
 test("player request reaches the module GM Worker without a world macro", async () => {
@@ -199,6 +200,68 @@ test("a secondary GM routes save cancellation to the authoritative GM", async ()
     users.delete(otherGM.id);
     game.user = player;
   }
+});
+
+test("concurrent reminder requests from a secondary GM share one authenticated active-GM save", async () => {
+  const otherGM = {
+    id: "reminder-other-gm", isGM: true, active: true,
+    flags: { "pf2e-zone-automation": { heroPointReminders: {} } }
+  };
+  users.set(otherGM.id, otherGM);
+  let release;
+  let markStarted;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let writes = 0;
+  otherGM.update = async data => {
+    writes++;
+    markStarted();
+    await blocked;
+    for (const [path, record] of Object.entries(data)) otherGM.flags["pf2e-zone-automation"].heroPointReminders[path.split(".").at(-1)] = record;
+  };
+  try {
+    game.user = otherGM;
+    const first = createHeroPointReminder("20:00");
+    const second = createHeroPointReminder("20:00");
+    const requests = [sent.shift(), sent.shift()];
+    assert.ok(requests.every(request => request.gmId === gm.id && request.request.action === "create-hero-point-reminder"));
+    assert.ok(requests.every(request => request.request.requesterUserId === otherGM.id));
+    assert.equal(requests[0].request.remindAt, requests[1].request.remindAt, "The sender supplies an absolute timestamp");
+    game.user = gm;
+    const processing = Promise.all(requests.map(request => listener(request, otherGM.id)));
+    await started;
+    assert.equal(writes, 1);
+    release();
+    await processing;
+    const replies = [sent.shift(), sent.shift()];
+    assert.ok(replies.every(reply => reply.recipientUserId === otherGM.id && reply.response.ok));
+    game.user = otherGM;
+    for (const reply of replies) await listener(reply, gm.id);
+    const [a, b] = await Promise.all([first, second]);
+    assert.deepEqual(a, b);
+    assert.equal(a.recipientUserId, otherGM.id);
+    assert.equal(Object.keys(otherGM.flags["pf2e-zone-automation"].heroPointReminders).length, 1);
+  } finally {
+    release();
+    users.delete(otherGM.id);
+    game.user = player;
+  }
+});
+
+test("the authenticated reminder worker rejects player scheduling", async () => {
+  game.user = player;
+  const creating = requestGMWorker({ protocol: 1, action: "create-hero-point-reminder", requesterUserId: player.id, remindAt: Date.now() + 60000 });
+  const request = sent.shift();
+  game.user = gm;
+  const previousError = console.error;
+  console.error = () => {};
+  try { await listener(request, player.id); } finally { console.error = previousError; }
+  const reply = sent.shift();
+  game.user = player;
+  await listener(reply, gm.id);
+  const result = await creating;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Only an active GM/);
 });
 
 test("Shielding Taunt sends one operation ID for concurrent client retries", async () => {
@@ -398,7 +461,7 @@ test("player creates and dismisses a Region through the authenticated GM socket"
     globalThis.fromUuid = async (uuid) =>
       uuid === token.uuid ? token : uuid === actor.uuid ? actor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.20",
+      version: "0.5.21",
       installHooks() {},
       async activateRegion(region) { activated.push(region); },
       async endZone(region) {

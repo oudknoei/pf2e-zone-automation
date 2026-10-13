@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { clearHeroPointReminders, createHeroPointReminder, deliverHeroPointReminders, hasHeroPointReminders, registerHeroPointReminderChat, registerHeroPointReminders, reminderTimestamp } from "../scripts/hero-point-reminders.js";
+import { registerZoneSocket } from "../scripts/transport.js";
+import { executeCreateHeroPointReminder } from "../scripts/hero-point-reminder-worker.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const nativeNow = Date.now;
@@ -17,13 +19,15 @@ let writes;
 let chatCleanup;
 let opened;
 let notices;
+let socketListener;
+let socketMessages;
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 
 class ForcedDeletion {}
 
 function user(id, isGM = true) {
   return {
-    id, isGM, flags: { [MODULE_ID]: { heroPointReminders: {} } },
+    id, isGM, active: true, flags: { [MODULE_ID]: { heroPointReminders: {} } },
     getFlag(scope, key) { return this.flags[scope]?.[key]; },
     async update(data) {
       writes.push({ userId: this.id, data });
@@ -40,6 +44,11 @@ function user(id, isGM = true) {
 }
 
 function pending(recipient = game.user) { return recipient.flags[MODULE_ID].heroPointReminders; }
+
+function deferred() {
+  let resolve;
+  return { promise: new Promise(done => { resolve = done; }), release: () => resolve() };
+}
 
 function fire(name, ...args) {
   for (const handler of hooks.get(name)?.values() ?? []) handler(...args);
@@ -78,6 +87,7 @@ beforeEach(() => {
   chatCleanup = null;
   opened = 0;
   notices = [];
+  socketMessages = [];
   Date.now = () => now;
   globalThis.setTimeout = (callback, delay) => { const id = ++sequence; timers.set(id, { callback, delay }); return id; };
   globalThis.clearTimeout = (id) => timers.delete(id);
@@ -99,8 +109,13 @@ beforeEach(() => {
   const otherGM = user("other-gm");
   const users = [gm, otherGM, user("player", false)];
   users.activeGM = gm;
+  users.get = id => users.find(entry => entry.id === id);
   const api = { promptSetHeroPoints: async () => { opened++; } };
-  globalThis.game = { user: gm, users, messages: new Map(), modules: { get: (id) => id === MODULE_ID ? { api } : undefined } };
+  globalThis.game = {
+    system: { id: "pf2e" }, user: gm, users, messages: new Map(), modules: { get: (id) => id === MODULE_ID ? { api } : undefined },
+    socket: { connected: true, on: (_channel, callback) => { socketListener = callback; }, emit: (_channel, message) => socketMessages.push(message) }
+  };
+  registerZoneSocket();
   globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
   globalThis.ChatMessage = {
     async create(data, options) {
@@ -141,6 +156,170 @@ test("creating a reminder persists it for the current GM and reuses the same sch
   assert.equal(writes.length, 1);
   await createHeroPointReminder("21:30");
   assert.equal(Object.keys(pending()).length, 2, "Adding a reminder preserves other records");
+});
+
+test("simultaneous reminder creation shares one pending save and delivers one message", async () => {
+  cleanup = registerHeroPointReminders();
+  const save = game.user.update;
+  const started = deferred();
+  const blocked = deferred();
+  let attempts = 0;
+  game.user.update = async function(data) {
+    attempts++;
+    started.release();
+    await blocked.promise;
+    return save.call(this, data);
+  };
+  const first = createHeroPointReminder("20:00");
+  const second = createHeroPointReminder("20:00");
+  await started.promise;
+  assert.equal(attempts, 1);
+  assert.deepEqual(pending(), {});
+  blocked.release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b);
+  assert.equal(writes.length, 1);
+  assert.equal(Object.keys(pending()).length, 1);
+  await runNextTimer();
+  assert.deepEqual(messages.map(message => message.id), [a.id]);
+});
+
+test("separate worker instances converge on one reminder ID for the same recipient and time", async () => {
+  const { executeCreateHeroPointReminder: otherWorker } = await import("../scripts/hero-point-reminder-worker.js?other-tab");
+  const save = game.user.update;
+  const bothStarted = deferred();
+  const blocked = deferred();
+  let attempts = 0;
+  const paths = [];
+  game.user.update = async function(data) {
+    paths.push(Object.keys(data)[0]);
+    if (++attempts === 2) bothStarted.release();
+    await blocked.promise;
+    return save.call(this, data);
+  };
+  const request = { requesterUserId: game.user.id, remindAt: reminderTimestamp("20:00") };
+  const first = executeCreateHeroPointReminder(request);
+  const second = otherWorker(request);
+  await bothStarted.promise;
+  assert.equal(paths[0], paths[1], "Separate GM tabs write the same flag key");
+  blocked.release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a.reminder, b.reminder);
+  assert.equal(Object.keys(pending()).length, 1);
+  now = request.remindAt;
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 1);
+});
+
+test("queued creation rereads saved reminders and reuses a legacy record that appeared while waiting", async () => {
+  const save = game.user.update;
+  const started = deferred();
+  const blocked = deferred();
+  game.user.update = async function(data) { started.release(); await blocked.promise; return save.call(this, data); };
+  const first = createHeroPointReminder("20:00");
+  const second = createHeroPointReminder("21:00");
+  await started.promise;
+  const legacyId = "LegacyReminder01";
+  pending()[legacyId] = { remindAt: reminderTimestamp("21:00") };
+  blocked.release();
+  const [, reminder] = await Promise.all([first, second]);
+  assert.equal(reminder.id, legacyId);
+  assert.equal(writes.length, 1, "The queued request must not add a second record at the same time");
+  assert.equal(Object.keys(pending()).length, 2);
+});
+
+test("a lost acknowledgment after a committed save is confirmed without creating another reminder", async () => {
+  const save = game.user.update;
+  let attempts = 0;
+  game.user.update = async function(data) { attempts++; await save.call(this, data); throw new Error("Acknowledgment lost"); };
+  const reminder = await createHeroPointReminder("20:00");
+  assert.deepEqual(await createHeroPointReminder("20:00"), reminder);
+  assert.equal(attempts, 1);
+  game.user.update = save;
+  now = reminder.remindAt;
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 1);
+  assert.deepEqual(pending(), {});
+});
+
+test("an uncertain save and its late update reuse the retry's ID without a second delivery", async () => {
+  const save = game.user.update;
+  let lateUpdate;
+  game.user.update = async data => { lateUpdate = data; throw new Error("Acknowledgment lost before local update"); };
+  await assert.rejects(createHeroPointReminder("20:00"), /Acknowledgment lost/);
+  game.user.update = save;
+  const reminder = await createHeroPointReminder("20:00");
+  assert.equal(Object.keys(lateUpdate)[0], Object.keys(writes[0].data)[0]);
+  now = reminder.remindAt;
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 1);
+  await save.call(game.user, lateUpdate);
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 1, "A late saved record must find its already-delivered message");
+  assert.deepEqual(pending(), {});
+});
+
+test("a rejected shared creation releases its reservation and allows a fresh retry", async () => {
+  const save = game.user.update;
+  let attempts = 0;
+  game.user.update = async () => { attempts++; throw new Error("Save rejected"); };
+  const results = await Promise.allSettled([createHeroPointReminder("20:00"), createHeroPointReminder("20:00")]);
+  assert.ok(results.every(result => result.status === "rejected" && /Save rejected/.test(result.reason.message)));
+  assert.equal(attempts, 1);
+  game.user.update = save;
+  await createHeroPointReminder("20:00");
+  assert.equal(writes.length, 1);
+  assert.equal(Object.keys(pending()).length, 1);
+});
+
+test("queued reminder creation stops when the elected GM changes", async () => {
+  const save = game.user.update;
+  const started = deferred();
+  const blocked = deferred();
+  game.user.update = async function(data) { started.release(); await blocked.promise; return save.call(this, data); };
+  const outcomes = Promise.allSettled([createHeroPointReminder("20:00"), createHeroPointReminder("21:00")]);
+  await started.promise;
+  game.users.activeGM = game.users[1];
+  blocked.release();
+  const results = await outcomes;
+  assert.equal(results[0].status, "fulfilled", "An already-dispatched save may finish");
+  assert.equal(results[1].status, "rejected");
+  assert.match(results[1].reason.message, /active GM/);
+  assert.equal(writes.length, 1);
+});
+
+test("reminder worker rejects players, inactive GMs, invalid times, and a non-authoritative executor", () => {
+  const request = { requesterUserId: game.users[0].id, remindAt: reminderTimestamp("20:00") };
+  for (const remindAt of [null, NaN, Infinity, "20:00", 1.5, 0, -1, 8_640_000_000_000_001]) {
+    assert.throws(() => executeCreateHeroPointReminder({ ...request, remindAt }), /valid.*timestamp/);
+  }
+  assert.throws(() => executeCreateHeroPointReminder({ ...request, requesterUserId: "player" }), /Only an active GM/);
+  game.users[1].active = false;
+  assert.throws(() => executeCreateHeroPointReminder({ ...request, requesterUserId: "other-gm" }), /Only an active GM/);
+  game.user = game.users[1];
+  assert.throws(() => executeCreateHeroPointReminder(request), /active GM/);
+  assert.equal(writes.length, 0);
+});
+
+test("a conflicting reminder ID fails without overwriting a different reminder", async () => {
+  const reminder = await createHeroPointReminder("20:00");
+  pending()[reminder.id] = { remindAt: reminderTimestamp("21:00") };
+  await assert.rejects(createHeroPointReminder("20:00"), /ID is already in use/);
+  assert.equal(writes.length, 1);
+  assert.equal(pending()[reminder.id].remindAt, reminderTimestamp("21:00"));
+});
+
+test("the same absolute time for different GMs retains separate reminder identities and recipients", async () => {
+  const remindAt = reminderTimestamp("20:00");
+  const [a, b] = await Promise.all([
+    executeCreateHeroPointReminder({ requesterUserId: "gm", remindAt }),
+    executeCreateHeroPointReminder({ requesterUserId: "other-gm", remindAt })
+  ]);
+  assert.notEqual(a.reminder.id, b.reminder.id);
+  now = remindAt;
+  await deliverHeroPointReminders();
+  assert.equal(messages.length, 2);
+  assert.deepEqual(messages.map(message => message.whisper).sort(), [["gm"], ["other-gm"]]);
 });
 
 test("players, invalid input, and failed saves cannot schedule reminders", async () => {
@@ -269,7 +448,14 @@ test("refresh recovery restores future reminders and delivers missed reminders a
 
 test("only the active GM delivers reminders, including reminders for another GM", async () => {
   game.user = game.users[1];
-  const reminder = await createHeroPointReminder("20:00");
+  const creating = createHeroPointReminder("20:00");
+  const request = socketMessages.shift();
+  game.user = game.users[0];
+  await socketListener(request, game.users[1].id);
+  const response = socketMessages.shift();
+  game.user = game.users[1];
+  await socketListener(response, game.users[0].id);
+  const reminder = await creating;
   now = reminder.remindAt;
   cleanup = registerHeroPointReminders();
   await deliverHeroPointReminders();

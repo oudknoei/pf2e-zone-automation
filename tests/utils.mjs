@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { cloneData, escapeHtml, localize, newDocumentId, newOperationId, randomId, readDocumentFlag, titleCase } from "../scripts/utils.js";
+import { cloneData, escapeHtml, isGMAuthoredMessage, localize, newDocumentId, newOperationId, randomId, readDocumentFlag, titleCase } from "../scripts/utils.js";
 
 test("shared HTML escaping preserves names in text and attributes without creating markup", () => {
   const value = `<Hero & "friend" 'ally'>`;
@@ -63,4 +63,21 @@ test("shared document flags support live documents, source data, and absent flag
   assert.equal(readDocumentFlag({ getFlag: () => null, flags: { world: { flag: marker } } }, "world", "flag"), marker);
   assert.equal(readDocumentFlag(null, "world", "flag"), null);
   assert.equal(readDocumentFlag({}, "world", "flag"), null);
+});
+
+test("chat authorship uses world roles and canonical author precedence while preserving legacy cards", () => {
+  const gm = { id: "gm", isGM: true, active: false };
+  const player = { id: "player", isGM: false };
+  globalThis.game = { users: { get: (id) => [gm, player].find((user) => user.id === id) } };
+  for (const card of [{ author: gm }, { author: gm.id }, { user: gm }, { user: gm.id }]) {
+    assert.equal(isGMAuthoredMessage(card), true);
+  }
+  for (const card of [null, {}, { author: player, user: gm }, { author: null, user: gm },
+    { author: { id: player.id, isGM: true } }, { author: { id: "unknown", isGM: true } }]) {
+    assert.equal(isGMAuthoredMessage(card), false);
+  }
+  player.isGM = true;
+  assert.equal(isGMAuthoredMessage({ author: player.id }), true);
+  gm.isGM = false;
+  assert.equal(isGMAuthoredMessage({ user: gm.id }), false);
 });

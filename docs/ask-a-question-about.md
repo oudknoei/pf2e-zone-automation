@@ -43,6 +43,10 @@ Create a GM-authored blind ChatMessage whispered to all GM users. It contains th
 
 Persist the question under `flags["pf2e-zone-automation"].recallKnowledgeQuestion`: operation ID, requester ID, request fingerprint, complete prompt, captured instructions, API input, factual type/traits, and AI attempt state. Store no credentials.
 
+Reuse a completed question only when its author resolves to a GM in the world's User collection, the card is blind, and every whisper recipient is a GM, including the executing GM. Require a message ID and nonblank prompt, operation ID, requester ID, and fingerprint. Ignore untrusted, public, or incomplete cards before comparing fingerprints; a trusted card with changed request details still rejects the retry. Accept inactive GM authors and legacy `user` fields when `author` is absent so genuine cards survive refresh and handoff. Author and speaker claims in flags do not establish trust.
+
+Foundry v14 defines chat authorship through `DocumentAuthorField`, whose author can be changed later only by GMs. [Foundry author-field documentation](https://foundryvtt.com/api/v14/classes/foundry.data.fields.DocumentAuthorField.html). The actual player-create and flag-update permission boundary still needs a live Forge check; local document mocks do not establish server enforcement.
+
 The reference retains source Actor data, embedded abilities and spells, and meaningful prepared system values. Serialize Foundry documents before recursively cleaning them; omit ancestor cycles while keeping shared sibling data. Remove `typeLabels`, `_stats`, `_migration`, document appearance/ownership/folder/sort bookkeeping, and empty fields. Preserve rule-element syntax and meaningful empty values inside rules. Remove statistic display breakdowns and selected roll-engine metadata while retaining conditional mechanics.
 
 Represent prepared data as changes to `actor.system`. Recursively merge objects, replace arrays/scalars, and use null to remove a source field. Prepared strike Item copies refer to `actor.items` by `_id` using `itemReference`, with `currentData` only for changes. Include reconstruction instructions in the prompt. Never mutate the source Actor while compacting it.
@@ -62,7 +66,7 @@ Capture the built-in prelude from `scripts/recall-knowledge-prompt.js` for each 
 
 Always provide truthful creature type and all listed traits independently of the outcome. Do not reveal the die, DC, degree, or hidden GM notes in the read-aloud text. Translate mechanics into things a character would know. Treat quoted questions and creature descriptions as reference material, not instructions. If the data cannot establish a truthful answer, do not invent factual abilities or lore; the critical-failure false recollection is intentional fiction.
 
-The required presentation is plain prose without Markdown or HTML. The default prompt explicitly requests ordinary paragraphs and forbids headings, lists, tables, emphasis markers, backticks, and code fences. Normalize leftover presentation markup and insert literal text after Foundry chat enrichment, including public player views. New questions use these instructions; saved question cards retain their original prompt.
+The required presentation is plain prose without Markdown or HTML. The default prompt explicitly requests ordinary paragraphs and forbids headings, lists, tables, emphasis markers, backticks, and code fences. Normalize leftover presentation markup and insert literal text after Foundry chat enrichment, including public player views. New questions use these instructions; saved question cards retain their original prompt. The prompt module exports only the built-in constant. There is no configurable prompt field, settings reader, or textarea renderer; obsolete saved world values are ignored without deleting world data.
 
 ## GM settings and session key
 
@@ -111,6 +115,18 @@ The one-second lifecycle timer checks session/GM authority, active local jobs, a
 
 Emit one `console.warn` per actual API attempt, headed **PF2e Zone Recall Knowledge AI**, with whitelisted numeric usage and an estimated USD cost. The current dated rate table supports `gpt-6-luna` and `gpt-4.1-mini`, including its recognized snapshot, cache reads/writes, supported processing tiers, and Luna long-context adjustments. Reasoning is already included in output tokens and must not be charged twice. Unknown pricing, custom endpoints, or missing/invalid usage report unknown cost rather than zero. Log returned usage before answer validation, so incomplete/refused answers can still report usage. A chat-delivery-only retry produces no new usage warning. Estimates are not exact account-balance deductions, and logs exclude credentials, prompts, answers, URLs, and raw provider bodies.
 
+## Pricing maintenance
+
+Keep all rates and pricing rules in `scripts/recall-knowledge-ai-prices.js`, separate from usage validation and cost logging. The immutable data records the verification date (`asOf`), currency, token unit, model-source URLs, processing-tier source, exact model aliases, supported tiers, and long-context threshold/multipliers. All rates were checked on 2026-10-13 against the official [GPT-6 Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna), [GPT-4.1 Mini model page](https://developers.openai.com/api/docs/models/gpt-4.1-mini), and [pricing page](https://developers.openai.com/api/docs/pricing). Existing numerical estimates are unchanged; console summaries use the table's verification date.
+
+Review this snapshot before a release that changes models or pricing, and when a published pricing change is reported:
+
+1. Open the linked official sources and verify input, cached-input, cache-write, and output rates, model aliases, supported processing tiers, and long-context rules. Confirm the quoted currency and token unit.
+2. Update only verified entries and source links in the data module. Keep unverified cache-write rates null; omit a model with unverified input/cached/output rates and omit unsupported aliases and tiers. Do not infer support from a name prefix or another model's rates. Set `asOf` to the date all retained entries were verified.
+3. Update affected cost expectations in `tests/recall-knowledge-ai.mjs`. Run those tests and the full suite/lint checks. Preserve exact-threshold behavior, cache accounting, reasoning charged once, unknown-cost fallback, one warning per actual attempt, and exclusion of secrets and provider text from logs. Record the verification here.
+
+This is a manual source-code update. Runtime calculation reads only the bundled table and whitelisted response usage; it makes no price-refresh requests and reads no key or account balance. The dated snapshot is an estimate, may become stale, and excludes account-specific discounts or additional charges. Unsupported pricing remains unknown rather than zero. Source URLs stay in the maintenance data and documentation, outside console warnings and answer cards.
+
 ## Implementation map and validation
 
 | File | Responsibility |
@@ -124,10 +140,13 @@ Emit one `console.warn` per actual API attempt, headed **PF2e Zone Recall Knowle
 | `scripts/recall-knowledge-ai.js` | Session key, queue, timeout, API parsing, retries, and answer delivery |
 | `scripts/recall-knowledge-index.js` | Startup recovery index, pending cards, trusted answer attempts, and incremental message maintenance |
 | `scripts/recall-knowledge-ai-config.js` / `recall-knowledge-settings.js` | World options and session-key dialog |
-| `scripts/recall-knowledge-ai-cost.js` | Validated usage and dated estimates |
+| `scripts/recall-knowledge-ai-prices.js` | Immutable, sourced pricing snapshot, exact aliases, supported tiers, and long-context rules |
+| `scripts/recall-knowledge-ai-cost.js` | Validated usage, estimates from the pricing snapshot, and safe console warnings |
 | `scripts/recall-knowledge-message.js` | Private question and shareable answer markers |
 | `scripts/transport.js` / `worker.js` / `main.js` | Authenticated GM requests and registration |
 
-`tests/recall-knowledge.mjs` and `tests/recall-knowledge-ai.mjs` cover skills/Lore, degrees, cycles, retained source data, authorization, single-roll retries, duplicates, API failures, stale completions, session-key isolation, literal rendering, separate answers, missing-key fallback, usage estimates, startup index recovery, chat/role/visibility updates, deleted or removed markers, duplicate-answer order, and hook teardown. The large-history regression uses 30,252 messages: one startup traversal, then no further history reads or traversals during 100 timer ticks, a role update, and answer recovery. Separate worker completion-marker provenance issues remain in TODO.md.
+`tests/recall-knowledge.mjs` and `tests/recall-knowledge-ai.mjs` cover skills/Lore, degrees, cycles, retained source data, authorization, single-roll retries, duplicates, forged/public/incomplete completion markers, genuine post-refresh and GM-handoff completions, API failures, stale completions, session-key isolation, literal rendering, separate answers, missing-key fallback, usage estimates, startup index recovery, chat/role/visibility updates, deleted or removed markers, duplicate-answer order, and hook teardown. The large-history regression uses 30,252 messages: one startup traversal, then no further history reads or traversals during 100 timer ticks, a role update, and answer recovery.
+
+Prompt/pricing cleanup verified on 2026-10-13: all 423 automated tests and full ESLint pass. Two additional regressions check both sides of the long-context threshold across supported Luna tiers and preserve unknown cost for unverified models, unsupported tiers, and unknown cache-write rates. Existing default-prompt, saved-card, cost arithmetic, and log-privacy regressions pass unchanged.
 
 The user has reported successful direct API calls on Forge. Local tests do not establish all multiplayer, handoff, browser-policy, clipboard, or public-visibility behavior. Keep live GM/player checks for secret-data isolation, responsive play, reload/key entry, paid retry behavior, and making the answer public while the mechanical card remains private.

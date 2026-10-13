@@ -129,6 +129,14 @@ async function reset(actors = []) {
   canvas.tokens.controlled = [];
 }
 
+async function waitForButton(button) {
+  const deadline = Date.now() + 2000;
+  while (button.disabled) {
+    assert.ok(Date.now() < deadline, "The asynchronous reminder action should finish");
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
+
 function change(dialog, selector, value) {
   const element = dialog.element.querySelector(selector);
   element.value = value;
@@ -590,7 +598,7 @@ test("Create reminder saves a private reminder without applying Hero Points or c
   assert.equal(button.textContent, "Create reminder");
   assert.equal(button.disabled, false, "Creating a reminder does not require selected characters");
   button.click();
-  await new Promise(setImmediate);
+  await waitForButton(button);
   assert.equal(reminderWrites.length, 1);
   assert.match(Object.keys(reminderWrites[0])[0], /^flags\.pf2e-zone-automation\.heroPointReminders\.[a-zA-Z0-9]{16}$/);
   assert.match(dialog.element.querySelector('[data-hp-reminder-status]').textContent, /Private reminder set for/);
@@ -599,7 +607,7 @@ test("Create reminder saves a private reminder without applying Hero Points or c
   assert.equal(messages.length, 0);
   assert.equal(dialog.element.querySelector('[data-hp-clear-reminders]').hidden, false);
   button.click();
-  await new Promise(setImmediate);
+  await waitForButton(button);
   assert.equal(reminderWrites.length, 1, "The same scheduled time is reused");
   await dialog.close();
 });
@@ -680,13 +688,13 @@ test("reminder creation prevents duplicate clicks and a save failure lets the GM
   button.click();
   await dialog.submit();
   release();
-  await new Promise(setImmediate);
+  await waitForButton(button);
   assert.equal(reminderWrites.length, 1);
   assert.equal(writes.length, 0);
   change(dialog, '[name="hero-reminder-time"]', "01:00");
   game.user.update = async () => { throw new Error("Reminder save failed."); };
   button.click();
-  await new Promise(setImmediate);
+  await waitForButton(button);
   assert.equal(dialog.rendered, true);
   assert.equal(button.disabled, false);
   assert.equal(notices.at(-1).message, "Reminder save failed.");

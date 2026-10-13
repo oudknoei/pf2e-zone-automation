@@ -127,9 +127,22 @@ export async function openZoneBuilder() {
       requesterUserId: game.user.id
     };
 
-    const response = await requestGMWorker(request);
+    let response;
+    try {
+      response = await requestGMWorker(request);
+    } catch (error) {
+      if (action !== "library-save") throw error;
+      const uncertain = new Error(error?.message ?? String(error), { cause: error });
+      if (typeof error?.code === "string") uncertain.code = error.code;
+      uncertain.retryable = true;
+      throw uncertain;
+    }
     if (!response?.ok) {
-      throw new Error(response?.error || `PF2e Zone GM Worker failed '${action}'.`);
+      const error = new Error(response?.error || `PF2e Zone GM Worker failed '${action}'.`);
+      error.workerRejected = true;
+      if (typeof response?.errorCode === "string") error.code = response.errorCode;
+      if (response?.retryable === true) error.retryable = true;
+      throw error;
     }
     return response;
   }
@@ -300,6 +313,7 @@ export async function openZoneBuilder() {
   let pendingMutation = null;
   let editRevision = 0;
   let creationAttempt = null;
+  let presetSaveAttempt = null;
   let creationCompleted = false;
 
   /** Reserves a write before validation can yield, and keeps its source and preset fixed. */
@@ -1160,9 +1174,10 @@ export async function openZoneBuilder() {
     }
     if (create) create.disabled = errorCount > 0 || pendingCount > 0 || Boolean(pendingMutation) || creationCompleted;
     const save = root.querySelector(".zb-save");
-    if (save) save.disabled = Boolean(pendingMutation) || Boolean(loadedPreset && !canOverwritePreset());
+    if (save) save.disabled = Boolean(pendingMutation) || (presetSaveAttempt?.uncertain
+      ? presetSaveAttempt.asNew : Boolean(loadedPreset && !canOverwritePreset()));
     const saveAs = root.querySelector(".zb-save-as");
-    if (saveAs) saveAs.disabled = Boolean(pendingMutation);
+    if (saveAs) saveAs.disabled = Boolean(pendingMutation) || Boolean(presetSaveAttempt?.uncertain && !presetSaveAttempt.asNew);
     refreshOperationStatus(root);
     return validation;
   }
@@ -1402,28 +1417,48 @@ export async function openZoneBuilder() {
   /** Saves the click-time configuration while leaving later editor changes intact. */
   async function saveCurrentPreset(operation, { asNew = false } = {}) {
     const { root, config: cfg, preset } = operation;
-    const validation = await validateForAction(root, cfg);
-    if (validation.errors.length) {
-      await showValidation(validation);
-      return false;
+    if (presetSaveAttempt?.uncertain) {
+      if (presetSaveAttempt.asNew !== asNew) {
+        ui.notifications.warn(`Retry the earlier ${presetSaveAttempt.asNew ? "Save As" : "Save"} before starting a different save.`);
+        return false;
+      }
+    } else {
+      const validation = await validateForAction(root, cfg);
+      if (validation.errors.length) {
+        await showValidation(validation);
+        return false;
+      }
+      if (!mutationStillCurrent(operation)) {
+        ui.notifications.warn("The editor changed while validating. Save again to use the current configuration.");
+        return false;
+      }
+      if (!asNew && preset && !canOverwritePreset(preset)) {
+        ui.notifications.warn(`You can load ${presetLabel(preset)}, but only its creator or a GM can overwrite it. Use Save As instead.`);
+        return false;
+      }
+      presetSaveAttempt = {
+        operation, asNew, uncertain: false,
+        request: {
+          operationId: newOperationId(), recordId: asNew ? null : (preset?.id ?? null),
+          expectedRevision: asNew ? null : (preset?.revision ?? null),
+          sourceActorUuid: operation.sourceActor.uuid, config: clone(cfg)
+        }
+      };
     }
-    if (!mutationStillCurrent(operation)) {
-      ui.notifications.warn("The editor changed while validating. Save again to use the current configuration.");
-      return false;
+    const attempt = presetSaveAttempt;
+    let response;
+    try {
+      response = await callGMWorker("library-save", attempt.request);
+      presetSaveAttempt = null;
+    } catch (error) {
+      attempt.uncertain = error?.code === "PF2E_ZONE_REQUEST_TIMEOUT" || error?.retryable === true
+        || (attempt.uncertain && error?.workerRejected !== true);
+      if (!attempt.uncertain) presetSaveAttempt = null;
+      else ui.notifications.warn(`The save may have completed. Use ${attempt.asNew ? "Save As" : "Save"} again to confirm the earlier save; newer edits will be kept.`);
+      throw error;
     }
-    if (!asNew && preset && !canOverwritePreset(preset)) {
-      ui.notifications.warn(`You can load ${presetLabel(preset)}, but only its creator or a GM can overwrite it. Use Save As instead.`);
-      return false;
-    }
-
-    const response = await callGMWorker("library-save", {
-      recordId: asNew ? null : (preset?.id ?? null),
-      expectedRevision: asNew ? null : (preset?.revision ?? null),
-      sourceActorUuid: operation.sourceActor.uuid,
-      config: clone(cfg)
-    });
     for (const warning of response.warnings ?? []) ui.notifications.warn(warning);
-    if (!mutationStillCurrent(operation)) {
+    if (!mutationStillCurrent(attempt.operation)) {
       ui.notifications.info(`Saved '${presetLabel(response.record)}' to ${LIBRARY_JOURNAL_NAME}. The editor changed during saving; reopen the preset to see the saved version.`);
       return true;
     }

@@ -94,6 +94,82 @@ function request(fixture, extra = {}) {
   };
 }
 
+function savedQuestion(fixture, payload) {
+  const { sourceTokenUuid, targetTokenUuid, question, loreSlug } = payload;
+  return {
+    id: "saved-question", author: fixture.gm.id, blind: true, whisper: [fixture.gm.id],
+    flags: { [MODULE_ID]: { [QUESTION_MESSAGE_FLAG]: {
+      operationId: payload.operationId, requesterUserId: payload.requesterUserId,
+      fingerprint: JSON.stringify({ sourceTokenUuid, targetTokenUuid, question, loreSlug }),
+      prompt: "Original saved prompt."
+    } } }
+  };
+}
+
+for (const [name, change] of [
+  ["public player card", (card, f) => { card.author = f.player.id; card.blind = false; card.whisper = []; }],
+  ["private player card", (card, f) => { card.author = f.player; }],
+  ["claimed GM role on a player author", (card, f) => { card.author = { id: f.player.id, isGM: true }; }],
+  ["unknown author", (card) => { card.author = "missing-user"; }],
+  ["missing author", (card) => { delete card.author; }],
+  ["null author with a conflicting legacy GM", (card, f) => { card.author = null; card.user = f.gm.id; }],
+  ["public GM card", (card) => { card.whisper = []; }],
+  ["non-blind GM card", (card) => { card.blind = false; }],
+  ["malformed blind flag", (card) => { card.blind = "false"; }],
+  ["player recipient", (card, f) => { card.whisper.push(f.player.id); }],
+  ["unknown recipient", (card) => { card.whisper.push("missing-user"); }],
+  ["card inaccessible to the executing GM", (card) => { card.whisper = ["second-gm"]; }],
+  ["malformed whisper", (card) => { card.whisper = "gm"; }],
+  ["missing prompt", (card) => { delete card.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt; }],
+  ["blank prompt", (card) => { card.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt = " \n "; }],
+  ["missing fingerprint", (card) => { delete card.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].fingerprint; }],
+  ["missing message ID", (card) => { delete card.id; }],
+  ["forged conflicting fingerprint", (card, f) => {
+    card.author = f.player.id;
+    card.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].fingerprint = "different request";
+  }]
+]) {
+  test(`question completion ignores ${name} and still makes the secret check`, async () => {
+    const f = setup();
+    const payload = request(f);
+    const card = savedQuestion(f, payload);
+    change(card, f);
+    f.messages.push(card);
+    assert.deepEqual(await executeAskQuestion(payload), { action: "ask-question", messageId: "message-2" });
+    assert.equal(f.rolls.length, 1);
+    assert.equal(f.messages.length, 2);
+    assert.equal(f.messages[1].author, f.gm.id);
+    assert.equal(f.messages[1].blind, true);
+    assert.deepEqual(f.messages[1].whisper, ["gm", "second-gm"]);
+  });
+}
+
+for (const legacy of [false, true]) {
+  test(`question completion survives a worker refresh and GM handoff${legacy ? " using a legacy author" : ""}`, async () => {
+    const f = setup();
+    const payload = request(f);
+    const original = await executeAskQuestion(payload);
+    const card = f.messages[0];
+    if (legacy) { card.user = f.gm.id; delete card.author; }
+    else card.author = f.gm;
+    card.whisper = card.whisper.map((id) => f.users.get(id));
+    f.gm.active = false;
+    game.user = f.users.get("second-gm");
+    game.user.active = true;
+    game.users.activeGM = game.user;
+    const forged = savedQuestion(f, payload);
+    forged.author = f.player.id;
+    forged.flags[MODULE_ID][QUESTION_MESSAGE_FLAG].fingerprint = "forged conflict";
+    f.messages.unshift(forged);
+    const fresh = await import(`../scripts/recall-knowledge-worker.js?refresh=${payload.operationId}`);
+    assert.deepEqual(await fresh.executeAskQuestion(payload), original);
+    assert.equal(f.rolls.length, 1, "The new GM must reuse the original roll without an in-memory cache");
+    assert.equal(f.messages.length, 2, "No extra completion card is posted");
+    await assert.rejects(fresh.executeAskQuestion({ ...payload, question: "A changed question" }), /reused with different details/);
+    assert.equal(f.rolls.length, 1);
+  });
+}
+
 test("Lore list belongs to the source and preserves custom display names", () => {
   const f = setup();
   assert.deepEqual(actorLoreSkills(f.source).map(({ slug, label, modifier }) => ({ slug, label, modifier })), [

@@ -46,6 +46,7 @@ class TestDialog extends window.EventTarget {
 
 let nextId = 0;
 const notices = [];
+let builderSocketListener;
 const effectUuid = "Item.builder-smoke-effect";
 const effect = {
   documentName: "Item", type: "effect", uuid: effectUuid,
@@ -143,7 +144,7 @@ globalThis.fromUuid = async (uuid) => effectDocuments.get(uuid) ?? ({
   [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.20",
+  version: "0.5.21",
   installHooks() {},
   async activateRegion(region) { runtimeCalls.activated.push(region); },
   async endZone(region) {
@@ -182,7 +183,7 @@ test("overlapping Save actions leave edits made during the GM response intact", 
   game.users = users;
   game.socket = {
     connected: true,
-    on(_channel, listener) { socketListener = listener; },
+    on(_channel, listener) { socketListener = builderSocketListener = listener; },
     emit(_channel, message) { sent.push(message); }
   };
   const { registerZoneSocket } = await import("../scripts/transport.js");
@@ -234,6 +235,150 @@ test("overlapping Save actions leave edits made during the GM response intact", 
     game.socket = previous.socket;
   }
 });
+
+async function withSavingBuilder(run) {
+  const previous = { user: game.user, users: game.users, socket: game.socket, setTimeout, error: console.error };
+  const player = { id: "preset-player", name: "Player", active: true, isGM: false, color: "#336699" };
+  const users = new Map([[gm.id, gm], [player.id, player]]);
+  users.activeGM = gm;
+  const f = { sent: [], timeouts: [], player };
+  game.user = player;
+  game.users = users;
+  game.socket = {
+    connected: true,
+    on(_channel, listener) { builderSocketListener = listener; },
+    emit(_channel, message) {
+      f.sent.push(message);
+      if (f.failSend) { f.failSend = false; throw new Error("Connection lost after send"); }
+    }
+  };
+  globalThis.setTimeout = (callback, duration, ...args) => {
+    if (duration === 60000) { f.timeouts.push(callback); return {}; }
+    return previous.setTimeout(callback, duration, ...args);
+  };
+  console.error = () => {};
+  const { registerZoneSocket } = await import("../scripts/transport.js");
+  registerZoneSocket();
+  f.reply = async (message, response = null) => builderSocketListener({
+    kind: "response", id: message.id, gmId: gm.id, recipientUserId: player.id,
+    response: response ?? { ok: true, action: "library-save", record: {
+      id: message.request.recordId ?? `saved-${message.request.operationId}`,
+      revision: (message.request.expectedRevision ?? 0) + 1,
+      name: message.request.config.name, createdBy: { userId: player.id, name: player.name },
+      config: structuredClone(message.request.config)
+    }, warnings: [] }
+  }, gm.id);
+  let builderDialog;
+  try {
+    await openZoneBuilder();
+    builderDialog = dialogs.at(-1);
+    f.dialog = builderDialog;
+    f.root = () => builderDialog.window.content.querySelector(".pf2e-zone-builder");
+    const root = f.root();
+    change(root.querySelector('[data-zone="name"]'), "Original preset", "input");
+    change(root.querySelector('[data-zone="affects-enemies"]'), true);
+    change(root.querySelector('[data-trigger="activation"]'), true);
+    change(root.querySelector('[data-field="chat-alert-enabled"]'), true);
+    change(root.querySelector('[data-field="chat-alert-text"]'), "Original alert", "input");
+    await run(f);
+  } finally {
+    if (builderDialog?.element.isConnected) await builderDialog.close();
+    game.user = previous.user;
+    game.users = previous.users;
+    game.socket = previous.socket;
+    globalThis.setTimeout = previous.setTimeout;
+    console.error = previous.error;
+  }
+}
+
+test("Save As timeout retries the original request and keeps edits made before confirmation", async () => withSavingBuilder(async (f) => {
+  const root = f.root();
+  const saveAs = root.querySelector(".zb-save-as");
+  saveAs.click();
+  await until(() => f.sent.length === 1);
+  const first = f.sent[0];
+  assert.equal(typeof first.request.operationId, "string");
+  f.timeouts[0]();
+  await until(() => !saveAs.disabled);
+  assert.equal(root.querySelector(".zb-save").disabled, true, "Resolve the uncertain Save As before another save mode");
+  change(root.querySelector('[data-zone="name"]'), "Newer unsaved edit", "input");
+  root.querySelector(".zb-save").dispatchEvent(new window.Event("click", { bubbles: true }));
+  await until(() => !saveAs.disabled);
+  assert.equal(f.sent.length, 1);
+  saveAs.click();
+  await until(() => f.sent.length === 2);
+  const retry = f.sent[1];
+  assert.notEqual(retry.id, first.id, "The socket exchange is new while the logical save is the same");
+  assert.deepEqual(retry.request, first.request);
+  await f.reply(retry);
+  await until(() => !saveAs.disabled);
+  assert.equal(f.root(), root);
+  assert.equal(root.querySelector('[data-zone="name"]').value, "Newer unsaved edit");
+  assert.equal(root.querySelector(".zb-save").disabled, false);
+  await f.reply(first);
+  assert.equal(root.querySelector('[data-zone="name"]').value, "Newer unsaved edit", "A late reply cannot restore old editor state");
+}));
+
+test("overwrite retries preserve the operation and original expected revision after an unconfirmed worker write", async () => withSavingBuilder(async (f) => {
+  f.root().querySelector(".zb-save").click();
+  await until(() => f.sent.length === 1);
+  const first = f.sent[0];
+  const oldRoot = f.root();
+  await f.reply(first);
+  await until(() => f.root() !== oldRoot && !f.root().querySelector(".zb-save").disabled);
+  change(f.root().querySelector('[data-field="chat-alert-text"]'), "Overwrite alert", "input");
+  f.root().querySelector(".zb-save").click();
+  await until(() => f.sent.length === 2);
+  const overwrite = f.sent[1];
+  assert.equal(overwrite.request.recordId, `saved-${first.request.operationId}`);
+  assert.equal(overwrite.request.expectedRevision, 1);
+  await f.reply(overwrite, { ok: false, error: "Save could not be confirmed", errorCode: "PF2E_ZONE_PRESET_SAVE_UNCERTAIN", retryable: true });
+  await until(() => !f.root().querySelector(".zb-save").disabled);
+  assert.equal(f.root().querySelector(".zb-save-as").disabled, true);
+  f.root().querySelector(".zb-save").click();
+  await until(() => f.sent.length === 3);
+  assert.deepEqual(f.sent[2].request, overwrite.request);
+  const beforeConfirmation = f.root();
+  await f.reply(f.sent[2]);
+  await until(() => f.root() !== beforeConfirmation && !f.root().querySelector(".zb-save").disabled);
+  f.root().querySelector(".zb-save").click();
+  await until(() => f.sent.length === 4);
+  assert.equal(f.sent[3].request.expectedRevision, 2);
+  assert.notEqual(f.sent[3].request.operationId, overwrite.request.operationId);
+  await f.reply(f.sent[3]);
+  await until(() => !f.root().querySelector(".zb-save").disabled);
+}));
+
+test("a definite preset rejection releases its operation instead of treating it as an unknown acknowledgment", async () => withSavingBuilder(async (f) => {
+  f.root().querySelector(".zb-save-as").click();
+  await until(() => f.sent.length === 1);
+  const first = f.sent[0];
+  await f.reply(first, { ok: false, error: "Invalid preset configuration" });
+  await until(() => !f.root().querySelector(".zb-save-as").disabled);
+  assert.equal(f.root().querySelector(".zb-save").disabled, false);
+  f.root().querySelector(".zb-save-as").click();
+  await until(() => f.sent.length === 2);
+  assert.notEqual(f.sent[1].request.operationId, first.request.operationId);
+  await f.reply(f.sent[1]);
+  await until(() => !f.root().querySelector(".zb-save-as").disabled);
+}));
+
+test("send failures and a missing GM preserve an earlier uncertain save until it can be confirmed", async () => withSavingBuilder(async (f) => {
+  f.failSend = true;
+  f.root().querySelector(".zb-save-as").click();
+  await until(() => f.sent.length === 1 && !f.root().querySelector(".zb-save-as").disabled);
+  const first = f.sent[0];
+  game.users.activeGM = null;
+  f.root().querySelector(".zb-save-as").click();
+  await until(() => !f.root().querySelector(".zb-save-as").disabled);
+  assert.equal(f.sent.length, 1);
+  game.users.activeGM = gm;
+  f.root().querySelector(".zb-save-as").click();
+  await until(() => f.sent.length === 2);
+  assert.deepEqual(f.sent[1].request, first.request);
+  await f.reply(f.sent[1]);
+  await until(() => !f.root().querySelector(".zb-save-as").disabled);
+}));
 
 test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses a zone", async () => {
   try {

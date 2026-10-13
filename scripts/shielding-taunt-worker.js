@@ -1,4 +1,4 @@
-import { escapeHtml, readDocumentFlag } from "./utils.js";
+import { escapeHtml, isGMAuthoredMessage, readDocumentFlag } from "./utils.js";
 
 const TAUNT_ACTION_UUID = "Compendium.pf2e.actionspf2e.Item.4DYFJ4TUsNkgFBDb";
 const TAUNT_EFFECT_UUID = "Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW";
@@ -66,9 +66,22 @@ function tauntOperation(effect) {
   return readDocumentFlag(effect, FLAG_SCOPE, EFFECT_FLAG_KEY);
 }
 
-/** Reads operation metadata from a chat document without depending on Collection internals. */
+/** Accepts only GM-authored completion cards with the full request identity and a valid result. */
 function chatOperation(message) {
-  return readDocumentFlag(message, FLAG_SCOPE, CHAT_FLAG_KEY);
+  if (!isGMAuthoredMessage(message)) return null;
+  const operation = readDocumentFlag(message, FLAG_SCOPE, CHAT_FLAG_KEY);
+  if (!operation || Array.isArray(operation)) return null;
+  const fields = ["operationId", "sourceTokenUuid", "targetTokenUuid", "guardianActorUuid", "targetActorUuid"];
+  if (!fields.every((field) => typeof operation[field] === "string" && operation[field].trim())) return null;
+  if (operation.requesterUserId !== null
+    && (typeof operation.requesterUserId !== "string" || !operation.requesterUserId.trim())) return null;
+  const result = operation.result;
+  return result?.action === "shielding-taunt" && !Array.isArray(result)
+    && typeof result.guardian === "string" && result.guardian.trim()
+    && typeof result.target === "string" && result.target.trim()
+    && Number.isFinite(result.distance) && result.distance >= 0
+    && Number.isFinite(result.maximumRange) && result.maximumRange > 0 && result.distance <= result.maximumRange
+    ? operation : null;
 }
 
 /** Returns all messages regardless of whether Foundry exposes a Collection or a plain test array. */
@@ -460,6 +473,7 @@ export async function executeShieldingTaunt(request = {}) {
     if (!completedOperation(operationId)) {
       try {
         await ChatMessage.create({
+          author: game.user.id,
           speaker: ChatMessage.getSpeaker({ actor: guardian, scene: sourceToken.parent, token: sourceToken }),
           style: CONST.CHAT_MESSAGE_STYLES.OTHER,
           content: `<p><strong>Shielding Taunt</strong>: ${escapeHtml(result.guardian)} raises ${escapeHtml(shield?.name ?? "a shield")} and taunts <strong>${escapeHtml(result.target)}</strong>.</p><p><em>The Taunt has the auditory trait.</em></p>`,

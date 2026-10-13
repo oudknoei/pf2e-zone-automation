@@ -206,3 +206,304 @@ test("a malformed preset cannot bypass builder validation through the GM worker"
   assert.match(result.error, /select at least one trigger/);
   assert.equal(updateCalls, before);
 });
+
+let saveOperationCounter = 0;
+
+function saveFixture() {
+  const priorConsole = { error: console.error, warn: console.warn };
+  const prior = Object.fromEntries(["game", "fromUuid", "foundry", "_replace", "CONFIG", "CONST"].map((key) => [key, globalThis[key]]));
+  const user = { id: "save-player", name: "Player", active: true, isGM: false };
+  const gmUser = { id: "save-gm", name: "GM", active: true, isGM: true };
+  const source = { uuid: "Actor.save-source", name: "Source", testUserPermission: () => true };
+  const f = { user, gm: gmUser, source, writes: 0, indexWrites: 0 };
+  const index = { name: "Shared Zone Presets", getFlag: () => true, async update() {
+    f.indexWrites++;
+    if (f.failIndex) throw new Error("Index failed");
+  } };
+  const library = {
+    id: "save-library", folder: folder.id, pages: [index],
+    flags: { world: { pf2eZoneLibrary: { schemaVersion: 1, zones: {
+      existing: { ...record("existing", "Existing"), createdBy: { userId: user.id, name: user.name } }
+    } } } },
+    getFlag(scope, key) { return this.flags?.[scope]?.[key]; },
+    async update(changes) {
+      f.writes++;
+      const replacement = changes["flags.world.pf2eZoneLibrary"];
+      assert.equal(replacement.kind, "replacement");
+      await f.beforeWrite?.(replacement.value);
+      if (f.cancelWrite) return null;
+      this.flags.world.pf2eZoneLibrary = structuredClone(replacement.value);
+      await f.afterWrite?.();
+      return this;
+    }
+  };
+  f.library = library;
+  f.data = () => library.getFlag("world", "pf2eZoneLibrary");
+  f.request = {
+    protocol: 1, action: "library-save", requesterUserId: user.id,
+    operationId: `preset-retry-${++saveOperationCounter}`, sourceActorUuid: source.uuid,
+    recordId: null, expectedRevision: null, config: { ...structuredClone(baseConfig), name: "Saved once" }
+  };
+  globalThis.game = { system: { id: "pf2e" }, user: gmUser, users: new Map([[user.id, user], [gmUser.id, gmUser]]),
+    folders: [folder], journal: [library] };
+  game.users.activeGM = gmUser;
+  globalThis.fromUuid = async (uuid) => uuid === source.uuid ? source : null;
+  globalThis.foundry = { utils: {} };
+  globalThis._replace = (value) => ({ kind: "replacement", value });
+  globalThis.CONFIG = { PF2E: { conditionTypes: {}, damageTypes: {} } };
+  globalThis.CONST = { JOURNAL_ENTRY_PAGE_FORMATS: { HTML: 1 } };
+  f.run = async (request = f.request, worker = handleWorkerRequest) => {
+    const previousError = console.error;
+    const previousWarn = console.warn;
+    console.error = console.warn = () => {};
+    try { return await worker(request); }
+    finally { console.error = previousError; console.warn = previousWarn; }
+  };
+  f.fresh = async (suffix = "reload") => (await import(`../scripts/worker.js?${suffix}=${f.request.operationId}`)).handleWorkerRequest;
+  f.restore = () => {
+    console.error = priorConsole.error;
+    console.warn = priorConsole.warn;
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  };
+  return f;
+}
+
+for (const overwrite of [false, true]) {
+  test(`duplicate ${overwrite ? "overwrite" : "Save As"} operations join one atomic preset and receipt update`, async () => {
+    const f = saveFixture();
+    const gate = Promise.withResolvers();
+    const started = Promise.withResolvers();
+    if (overwrite) Object.assign(f.request, { recordId: "existing", expectedRevision: 1 });
+    f.beforeWrite = async (data) => {
+      const receipt = data.saveOperations[`${f.user.id}:${f.request.operationId}`];
+      assert.equal(data.zones[receipt.record.id].revision, overwrite ? 2 : 1);
+      assert.equal(receipt.record.config.name, "Saved once");
+      started.resolve();
+      await gate.promise;
+    };
+    try {
+      const first = f.run();
+      await started.promise;
+      const second = f.run(structuredClone(f.request));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(f.writes, 1);
+      gate.resolve();
+      const results = await Promise.all([first, second]);
+      assert.equal(results[0].ok, true, results[0].error);
+      assert.deepEqual(results[1], results[0]);
+      assert.equal(results[0].record.revision, overwrite ? 2 : 1);
+      assert.equal(f.writes, 1);
+      assert.equal(Object.keys(f.data().saveOperations).length, 1);
+    } finally { gate.resolve(); f.restore(); }
+  });
+
+  test(`a committed ${overwrite ? "overwrite" : "Save As"} with a lost acknowledgment recovers its original revision after refresh`, async () => {
+    const f = saveFixture();
+    if (overwrite) Object.assign(f.request, { recordId: "existing", expectedRevision: 1 });
+    f.afterWrite = () => { throw new Error("Lost acknowledgment after commit"); };
+    try {
+      const original = await f.run();
+      assert.equal(original.ok, true, original.error);
+      assert.equal(original.record.revision, overwrite ? 2 : 1);
+      const fresh = await f.fresh();
+      assert.deepEqual(await f.run(f.request, fresh), original);
+      assert.equal(f.writes, 1);
+      assert.equal(Object.keys(f.data().zones).length, overwrite ? 1 : 2);
+    } finally { f.restore(); }
+  });
+}
+
+for (const cancelled of [false, true]) {
+  test(`an ${cancelled ? "uncommitted cancellation" : "unconfirmed write failure"} preserves retry identity without claiming success`, async () => {
+    const f = saveFixture();
+    if (cancelled) f.cancelWrite = true;
+    else f.beforeWrite = () => { throw new Error("No confirmed commit"); };
+    try {
+      const failed = await f.run();
+      assert.equal(failed.ok, false);
+      assert.equal(failed.retryable, true);
+      assert.equal(failed.errorCode, "PF2E_ZONE_PRESET_SAVE_UNCERTAIN");
+      assert.equal(Object.keys(f.data().zones).length, 1);
+      f.cancelWrite = false;
+      f.beforeWrite = null;
+      const retry = await f.run();
+      assert.equal(retry.ok, true, retry.error);
+      assert.equal(retry.record.revision, 1);
+      assert.equal(f.writes, 2);
+      assert.equal(Object.keys(f.data().zones).length, 2);
+    } finally { f.restore(); }
+  });
+}
+
+for (const [name, change] of [
+  ["record identity", (request) => { request.recordId = "existing"; }],
+  ["expected revision", (request) => { request.expectedRevision = 2; }],
+  ["source Actor", (request) => { request.sourceActorUuid = "Actor.other"; }],
+  ["configuration", (request) => { request.config.name = "Changed replay"; }]
+]) {
+  test(`saved preset operations reject changed ${name} in cached and refreshed workers`, async () => {
+    const f = saveFixture();
+    try {
+      assert.equal((await f.run()).ok, true);
+      const changed = structuredClone(f.request);
+      change(changed);
+      for (const worker of [handleWorkerRequest, await f.fresh()]) {
+        const rejected = await f.run(changed, worker);
+        assert.equal(rejected.ok, false);
+        assert.match(rejected.error, /reused with different save details/);
+        assert.equal(rejected.retryable, undefined);
+      }
+      assert.equal(f.writes, 1);
+    } finally { f.restore(); }
+  });
+}
+
+test("late save retries return the historical result after a newer overwrite, deletion, and cache expiry", async () => {
+  const f = saveFixture();
+  const priorNow = Date.now;
+  try {
+    const original = await f.run();
+    assert.equal(original.ok, true, original.error);
+    const updated = await f.run({ ...f.request, operationId: `${f.request.operationId}-newer`,
+      recordId: original.record.id, expectedRevision: 1, config: { ...f.request.config, name: "Newer revision" } });
+    assert.equal(updated.ok, true, updated.error);
+    const fresh = await f.fresh();
+    assert.deepEqual(await f.run(f.request, fresh), original);
+    assert.equal(f.data().zones[original.record.id].revision, 2);
+    assert.equal(f.data().zones[original.record.id].name, "Newer revision");
+    const deleted = await f.run({ protocol: 1, action: "library-delete", requesterUserId: f.user.id,
+      recordId: updated.record.id, expectedRevision: 2 });
+    assert.equal(deleted.ok, true, deleted.error);
+    assert.equal(f.data().zones[original.record.id], undefined);
+    Date.now = () => priorNow() + 11 * 60 * 1000;
+    assert.deepEqual(await f.run(), original);
+    assert.deepEqual(await f.run(f.request, await f.fresh("deleted")), original);
+    assert.equal(f.data().zones[original.record.id], undefined);
+    assert.equal(f.writes, 3);
+    assert.equal(Object.keys(f.data().saveOperations).length, 2);
+  } finally { Date.now = priorNow; f.restore(); }
+});
+
+test("operation recovery does not revalidate changed Actor ownership or deleted effect references", async () => {
+  const f = saveFixture();
+  try {
+    const original = await f.run();
+    assert.equal(original.ok, true, original.error);
+    f.source.testUserPermission = () => false;
+    globalThis.fromUuid = () => assert.fail("A completed save needs no new Actor or Item validation");
+    assert.deepEqual(await f.run(f.request, await f.fresh()), original);
+    assert.equal(f.writes, 1);
+  } finally { f.restore(); }
+});
+
+test("ordinary rejected saves remain distinct from unconfirmed writes", async () => {
+  const f = saveFixture();
+  try {
+    f.source.testUserPermission = () => false;
+    const unauthorized = await f.run();
+    assert.equal(unauthorized.ok, false);
+    assert.equal(unauthorized.retryable, undefined);
+    assert.match(unauthorized.error, /does not own/);
+    f.source.testUserPermission = () => true;
+    const conflict = await f.run({ ...f.request, recordId: "existing", expectedRevision: 99 });
+    assert.equal(conflict.ok, false);
+    assert.equal(conflict.retryable, undefined);
+    assert.match(conflict.error, /changed since you opened/);
+    assert.equal(f.writes, 0);
+    assert.equal((await f.run()).ok, true, "Rejected reservations must be released");
+  } finally { f.restore(); }
+});
+
+for (const missing of [false, true]) {
+  test(`${missing ? "missing" : "incomplete"} preset receipts fail safely rather than creating another copy`, async () => {
+    const f = saveFixture();
+    try {
+      const original = await f.run();
+      assert.equal(original.ok, true, original.error);
+      const key = `${f.user.id}:${f.request.operationId}`;
+      if (missing) delete f.data().saveOperations[key];
+      else delete f.data().saveOperations[key].fingerprint;
+      const retry = await f.run(f.request, await f.fresh());
+      assert.equal(retry.ok, false);
+      assert.match(retry.error, /cannot be verified.*Review the saved zones/);
+      assert.equal(f.writes, 1);
+      assert.equal(Object.keys(f.data().zones).length, 2);
+    } finally { f.restore(); }
+  });
+}
+
+test("queued preset saves freeze their request before another save finishes", async () => {
+  const f = saveFixture();
+  const gate = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  f.beforeWrite = async () => { if (f.writes === 1) { started.resolve(); await gate.promise; } };
+  try {
+    const first = f.run();
+    await started.promise;
+    const request = { ...structuredClone(f.request), operationId: `${f.request.operationId}-second`, config: { ...f.request.config, name: "Queued original" } };
+    const frozen = structuredClone(request);
+    const second = f.run(request);
+    request.config.name = "Changed during queue";
+    gate.resolve();
+    assert.equal((await first).ok, true);
+    const result = await second;
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.record.name, "Queued original");
+    assert.deepEqual(await f.run(frozen, await f.fresh()), result);
+    assert.equal(f.writes, 2);
+  } finally { gate.resolve(); f.restore(); }
+});
+
+test("independent workers use the same Save As identity when an older write is still unconfirmed", async () => {
+  const f = saveFixture();
+  const gate = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  f.beforeWrite = async () => { if (f.writes === 1) { started.resolve(); await gate.promise; } };
+  try {
+    const first = f.run(f.request, await f.fresh("old-tab"));
+    await started.promise;
+    const second = await f.run(f.request, await f.fresh("new-tab"));
+    assert.equal(second.ok, true, second.error);
+    gate.resolve();
+    const original = await first;
+    assert.equal(original.ok, true, original.error);
+    assert.equal(original.record.id, second.record.id);
+    assert.equal(Object.keys(f.data().zones).length, 2);
+    assert.equal(Object.keys(f.data().saveOperations).length, 1);
+    assert.equal(f.data().zones[original.record.id].revision, 1);
+  } finally { gate.resolve(); f.restore(); }
+});
+
+test("an index failure reports a committed save and preserves its completion through the next library mutation", async () => {
+  const f = saveFixture();
+  f.failIndex = true;
+  try {
+    const original = await f.run();
+    assert.equal(original.ok, true, original.error);
+    assert.match(original.warnings[0], /was saved/);
+    f.failIndex = false;
+    assert.equal((await f.run({ ...f.request, operationId: `${f.request.operationId}-second` })).ok, true);
+    const retry = await f.run(f.request, await f.fresh());
+    assert.equal(retry.ok, true, retry.error);
+    assert.deepEqual(retry.record, original.record);
+    assert.equal(f.writes, 2);
+  } finally { f.restore(); }
+});
+
+test("preset operation identities are isolated by requester and survive a GM handoff", async () => {
+  const f = saveFixture();
+  try {
+    const original = await f.run();
+    const other = await f.run({ ...f.request, requesterUserId: f.gm.id });
+    assert.equal(original.ok, true, original.error);
+    assert.equal(other.ok, true, other.error);
+    assert.notEqual(original.record.id, other.record.id);
+    game.user = { ...f.gm, id: "new-gm" };
+    game.users.set(game.user.id, game.user);
+    game.users.activeGM = game.user;
+    assert.deepEqual(await f.run(f.request, await f.fresh()), original);
+    assert.equal(f.writes, 2);
+  } finally { f.restore(); }
+});

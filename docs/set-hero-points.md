@@ -1,6 +1,6 @@
 # Set Hero Points design
 
-Implementation reviewed: 2026-10-12, module 0.1.60; point serialization and stale-retry handling updated 2026-10-13. This document covers point changes and the associated award reminders. Open issues are tracked in [TODO.md](../TODO.md).
+Implementation reviewed: 2026-10-12, module 0.1.60; point serialization, stale-retry handling, and reminder creation updated 2026-10-13. This document covers point changes and the associated award reminders. Open issues are tracked in [TODO.md](../TODO.md).
 
 ## Purpose and access
 
@@ -48,7 +48,11 @@ Retry plans are held in the authoritative GM tab for ten minutes after the last 
 
 The reminder section defaults to approximately one hour ahead. A valid `HH:mm` value means the next occurrence in the creating GM browser's local timezone, today or tomorrow. Convert it to an absolute timestamp before saving so other GMs deliver the same instant in their own timezones.
 
-**Create reminder** saves a record, displays the chosen time, and keeps the dialog open. It does not use the selected character set or award any points. Sequential requests for the same user and timestamp reuse a saved reminder. Concurrent creation is a known gap in TODO.md.
+**Create reminder** saves a record, displays the chosen time, and keeps the dialog open. It does not use the selected character set or award any points. Send the absolute timestamp through authenticated transport to the active GM, retaining the requesting GM as the private recipient. Reject player/inactive-GM requests and recheck elected-GM authority before a queued save begins.
+
+Reserve matching recipient/time requests synchronously before any asynchronous work. Join concurrent submissions and serialize creation per recipient. Inside that queue, read the current saved flags; after deriving an ID, recheck permissions and saved flags before writing. Reuse existing records, including their legacy random IDs. New reminders use a stable sixteen-character ID derived from the module namespace, recipient, and absolute timestamp. Separate instances of the elected GM's browser and handoff retries therefore write the same flag key rather than adding distinct records. Reject a conflicting ID instead of overwriting its record.
+
+Confirm persistence before reporting success. If an acknowledgment fails, the exact stored ID/timestamp can confirm the save. Otherwise return the save error and release the reservation; a retry derives the same ID even if the earlier update arrives late. The fixed ChatMessage ID also prevents a late reminder-flag update from producing a second delivery. A User update already sent to Foundry may finish during handoff; queued updates recheck the elected GM before dispatch.
 
 Persist records under `User.flags["pf2e-zone-automation"].heroPointReminders`, keyed by a valid sixteen-character document ID. Each record contains `remindAt`. **Clear Reminders** appears when the current GM has pending records and removes only that GM's reminders with Foundry v14 deletion operators. Clearing does not delete already delivered chat messages or change Hero Points.
 
@@ -68,9 +72,10 @@ The message says it is time to award everyone one Hero Point. **Award Hero Point
 | `scripts/hero-points-worker.js` | Active-GM authorization, per-Actor queues, operation identity, receipts, and stale-plan checks |
 | `scripts/transport.js`, `scripts/worker.js` | Authenticated routing and worker dispatch |
 | `scripts/hero-point-reminders.js` | User flags, scheduler, delivery deduplication, and chat shortcut |
+| `scripts/hero-point-reminder-worker.js` | Reminder authorization, synchronous reservations, per-User queues, stable IDs, and save confirmation |
 | `scripts/main.js` | APIs and reminder hook registration |
 | `styles/pf2e-zone.css` | Dialog layout |
 
-`tests/hero-points.mjs`, `tests/transport.mjs`, and `tests/hero-point-reminders.mjs` cover GM restrictions, off-scene characters, zero and maximum totals, independent concurrent awards/spends, unrelated Actor queues, duplicate requests, partial failures, stale values/maxima/receipts, cancelled and uncertain writes, expired or lost plans, two-GM routing, queued authority checks, private summaries, local times, reminder persistence, missed reminders, handoff delivery, collision handling, and reminder clearing.
+`tests/hero-points.mjs`, `tests/transport.mjs`, and `tests/hero-point-reminders.mjs` cover GM restrictions, off-scene characters, zero and maximum totals, independent concurrent awards/spends, unrelated Actor queues, duplicate requests, partial failures, stale values/maxima/receipts, cancelled and uncertain writes, expired or lost plans, two-GM routing, queued authority checks, private summaries, local times, reminder persistence, simultaneous scheduling, independent worker instances, saved-state rechecks, lost acknowledgments and late writes, missed reminders, handoff delivery, collision handling, and reminder clearing.
 
-Simultaneous reminder scheduling remains a separate open item. Live Forge checks should verify actual PF2e resource and receipt updates, two GM tabs, stale partial-update retries, reminders after reconnect, and the recipient-only shortcut without revealing reminder content to players.
+Live Forge checks should verify actual PF2e resource and receipt updates, concurrent reminder creation from two tabs, two GM users, stale partial-update retries, reminders after reconnect, and the recipient-only shortcut without revealing reminder content to players.

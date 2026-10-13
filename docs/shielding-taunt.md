@@ -51,9 +51,11 @@ The worker joins identical requests in a ten-minute cache and rejects changed de
 
 A retry can recover an existing replacement after interrupted cleanup, or return a completed operation after a refresh. It must not restore an older target after a newer Taunt has completed. Recovery compares requester, source token, target token, and Actor identities.
 
+Trust a chat completion only when its actual author resolves to a GM in the world's User collection and its marker includes the full request identity and a valid Shielding Taunt result. Ignore player-authored, unknown-author, or incomplete markers before checking reused IDs. Announcements may be public. Inactive GM authors and legacy `user` fields remain valid when the canonical `author` field is absent; claiming a GM role inside flags or an author object does not grant trust. New announcements explicitly record the executing GM as author.
+
 If deleting previous Taunts fails, inspect live state because the deletion might already have committed. If old Taunts remain, try to remove the replacement. A failed compensation is explicitly retryable using the same request. Raising the shield is not rolled back. Failure to post the announcement does not undo a successful Taunt.
 
-These caches and queues are local to a GM tab; they are not a server transaction. Active-GM handoff and trust validation for persisted chat markers need the additional coverage recorded in TODO.md.
+These caches and queues are local to a GM tab; they are not a server transaction. Automated completion recovery covers refresh and handoff without restoring an older target. Handoff during effect replacement and the server's player-create/flag-update permission boundary still need live Foundry/Forge validation.
 
 ## Implementation map and validation
 
@@ -66,6 +68,6 @@ These caches and queues are local to a GM tab; they are not a server transaction
 | `scripts/transport.js` | Authenticated active-GM routing |
 | `scripts/main.js` | Public API registration |
 
-Automated coverage lives in `tests/shielding-taunt.mjs`, `tests/transport.mjs`, and `tests/macro-pack.mjs`. Preserve off-screen Scene measurement, range boundaries, replacement ordering, duplicate retries, cleanup compensation, ownership rejection, and chat-failure isolation.
+Automated coverage lives in `tests/shielding-taunt.mjs`, `tests/transport.mjs`, and `tests/macro-pack.mjs`. Preserve off-screen Scene measurement, range boundaries, replacement ordering, duplicate retries, cleanup compensation, ownership rejection, forged and incomplete completion rejection, genuine post-refresh/handoff recovery, and chat-failure isolation.
 
 Live Foundry/Forge checks should include a player-owned Guardian on a Scene the GM is not viewing, an already raised shield, a broken shield, two Guardians, and a GM handoff during replacement. Verify the official PF2e effect actually expires and modifies rolls as intended; local document mocks do not establish that behavior.

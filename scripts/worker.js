@@ -2,11 +2,13 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { executeAskQuestion } from "./recall-knowledge-worker.js";
 import { executeHeroPointChange } from "./hero-points-worker.js";
+import { executeCreateHeroPointReminder } from "./hero-point-reminder-worker.js";
 import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
-import { createZoneDocument, requireValidConfig } from "./zone-creation.js";
+import { createZoneDocument, creationRequestFingerprint, requireValidConfig } from "./zone-creation.js";
 import { validateEffectItems } from "./effect-items.js";
 import { cloneData as clone, escapeHtml as escHtml, randomId } from "./utils.js";
 import { oncePerOperation } from "./request-cache.js";
+import { presetSaveFingerprint } from "./preset-save.js";
 /* GM-only document operations and authorization for module socket requests. */
 
 let libraryOperationTail = Promise.resolve();
@@ -14,6 +16,8 @@ const creationRequests = new Map();
 const CREATION_REQUEST_TTL_MS = 10 * 60 * 1000;
 const shieldingTauntRequests = new Map();
 const SHIELDING_TAUNT_REQUEST_TTL_MS = 10 * 60 * 1000;
+const presetSaveRequests = new Map();
+const PRESET_SAVE_REQUEST_TTL_MS = 10 * 60 * 1000;
 
 /** Joins concurrent retries and remembers a completed result while a late socket reply is possible. */
 function oncePerCreationRequest(request, create) {
@@ -23,16 +27,11 @@ function oncePerCreationRequest(request, create) {
     throw new Error("Creation operation ID is invalid.");
   }
   const key = `${request.requesterUserId}:${operationId}`;
-  const fingerprint = JSON.stringify({
-    sceneId: request.sceneId, sourceTokenUuid: request.sourceTokenUuid,
-    config: request.config, savedPresetId: request.savedPresetId,
-    savedPresetRevision: request.savedPresetRevision, chosenDamageType: request.chosenDamageType,
-    color: request.color, areaCenter: request.areaCenter
-  });
+  const fingerprint = creationRequestFingerprint(request);
   return oncePerOperation(creationRequests, {
     key, fingerprint, ttlMs: CREATION_REQUEST_TTL_MS,
     reuseError: "Creation operation ID was reused with different zone details."
-  }, create);
+  }, () => create(fingerprint));
 }
 
 /** Joins duplicate Taunt requests and retains success while a socket response can arrive late. */
@@ -57,6 +56,23 @@ function serializeLibraryOperation(operation) {
   const result = libraryOperationTail.then(operation, operation);
   libraryOperationTail = result.then(() => undefined, () => undefined);
   return result;
+}
+
+/** Reserves an identified preset save before waiting and joins its identical retries. */
+function oncePerPresetSaveRequest(request, save) {
+  if (request.operationId == null) return serializeLibraryOperation(() => save());
+  if (typeof request.operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(request.operationId)) {
+    throw new Error("Preset save operation ID is invalid.");
+  }
+  const fingerprint = presetSaveFingerprint(request);
+  const operation = {
+    key: `${request.requesterUserId}:${request.operationId}`,
+    operationId: request.operationId, requesterUserId: request.requesterUserId, fingerprint
+  };
+  return oncePerOperation(presetSaveRequests, {
+    key: operation.key, fingerprint, ttlMs: PRESET_SAVE_REQUEST_TTL_MS,
+    reuseError: "Preset save operation ID was reused with different save details."
+  }, () => serializeLibraryOperation(() => save(operation)));
 }
 
 /** Keeps privileged world changes behind one GM-only entry point so player requests remain constrained. */
@@ -108,7 +124,9 @@ export async function handleWorkerRequest(request) {
       : {};
     return {
       schemaVersion: LIBRARY_SCHEMA_VERSION,
-      zones
+      zones,
+      saveOperations: data.saveOperations && typeof data.saveOperations === "object" && !Array.isArray(data.saveOperations)
+        ? data.saveOperations : {}
     };
   }
 
@@ -186,7 +204,7 @@ export async function handleWorkerRequest(request) {
           [FLAG_SCOPE]: {
             [LIBRARY_FLAG_KEY]: {
               schemaVersion: LIBRARY_SCHEMA_VERSION,
-              zones: {}
+              zones: {}, saveOperations: {}
             }
           }
         }
@@ -221,10 +239,27 @@ export async function handleWorkerRequest(request) {
   }
 
   /** Replaces the shared flag in one document update before refreshing its readable index. */
-  async function persistLibrary(journal, data, page = null) {
-    const clean = normalizeLibrary(data);
+  async function persistLibrary(journal, data, page = null, saveOperation = null) {
+    let clean = normalizeLibrary(data);
     if (typeof globalThis._replace !== "function") throw new Error("Foundry v14's flag replacement operator is unavailable.");
-    await journal.update({ [`flags.${FLAG_SCOPE}.${LIBRARY_FLAG_KEY}`]: globalThis._replace(clean) });
+    try {
+      await journal.update({ [`flags.${FLAG_SCOPE}.${LIBRARY_FLAG_KEY}`]: globalThis._replace(clean) });
+      if (saveOperation) {
+        const current = normalizeLibrary(journal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY));
+        if (!completedPresetSave(current, saveOperation)) throw new Error("Preset completion was not persisted.");
+        clean = current;
+      }
+    } catch (error) {
+      if (!saveOperation) throw error;
+      const current = normalizeLibrary(journal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY));
+      if (!completedPresetSave(current, saveOperation)) {
+        const uncertain = new Error("The preset save could not be confirmed. Retry the same save before starting another.", { cause: error });
+        uncertain.code = "PF2E_ZONE_PRESET_SAVE_UNCERTAIN";
+        uncertain.retryable = true;
+        throw uncertain;
+      }
+      clean = current;
+    }
 
     let indexWarning = null;
     try {
@@ -275,6 +310,23 @@ export async function handleWorkerRequest(request) {
     };
   }
 
+  /** Returns the original saved snapshot without resurrecting a deleted record or reverting a later revision. */
+  function completedPresetSave(data, operation) {
+    if (!operation || !Object.hasOwn(data.saveOperations, operation.key)) return null;
+    const receipt = data.saveOperations[operation.key];
+    if (!receipt || receipt.operationId !== operation.operationId || receipt.requesterUserId !== operation.requesterUserId
+      || typeof receipt.fingerprint !== "string" || !receipt.fingerprint
+      || typeof receipt.record?.id !== "string" || !receipt.record.id
+      || typeof receipt.record.name !== "string" || !Number.isSafeInteger(receipt.record.revision) || receipt.record.revision < 1
+      || !receipt.record.config || typeof receipt.record.config !== "object" || Array.isArray(receipt.record.config)) {
+      throw new Error("The earlier preset save cannot be verified. Review the saved zones before starting another save.");
+    }
+    if (receipt.fingerprint !== operation.fingerprint) {
+      throw new Error("Preset save operation ID was reused with different save details.");
+    }
+    return clone(receipt.record);
+  }
+
   /** Lets clients read presets through the GM without granting Journal write access. */
   async function listLibrary() {
     getRequester();
@@ -288,8 +340,13 @@ export async function handleWorkerRequest(request) {
   }
 
   /** Applies ownership and revision checks so one user cannot silently overwrite another user's work. */
-  async function saveLibraryPreset() {
+  async function saveLibraryPreset(operation = null) {
     const requester = getRequester();
+    const savedJournal = operation ? findLibraryJournal() : null;
+    if (savedJournal) {
+      const completed = completedPresetSave(normalizeLibrary(savedJournal.getFlag(FLAG_SCOPE, LIBRARY_FLAG_KEY)), operation);
+      if (completed) return succeed({ action: "library-save", journalId: savedJournal.id, record: completed, warnings: [] });
+    }
     const sourceActor = await fromUuid(request.sourceActorUuid ?? "");
     if (!sourceActor?.uuid) throw new Error("Source Actor was not found.");
     assertSourcePermission(sourceActor, requester);
@@ -297,6 +354,8 @@ export async function handleWorkerRequest(request) {
     const effectValidation = await validateEffectItems(cfg);
     if (effectValidation.errors.length) throw new Error(effectValidation.errors[0]);
     const { journal, data, page } = await ensureLibraryJournal();
+    const completed = completedPresetSave(data, operation);
+    if (completed) return succeed({ action: "library-save", journalId: journal.id, record: completed, warnings: [] });
     const requestedId = String(request.recordId ?? "").trim();
     const now = Date.now();
 
@@ -323,7 +382,10 @@ export async function handleWorkerRequest(request) {
         config: cfg
       };
     } else {
-      const id = randomId();
+      const id = operation ? `save-${requester.id}-${operation.operationId}` : randomId();
+      if (Object.hasOwn(data.zones, id)) {
+        throw new Error("The earlier preset save cannot be verified. Review the saved zones before starting another save.");
+      }
       record = {
         id,
         name: cfg.name,
@@ -337,7 +399,13 @@ export async function handleWorkerRequest(request) {
     }
 
     data.zones[record.id] = record;
-    const { warning } = await persistLibrary(journal, data, page);
+    if (operation) {
+      data.saveOperations[operation.key] = {
+        operationId: operation.operationId, requesterUserId: requester.id, fingerprint: operation.fingerprint,
+        completedAt: now, record: libraryRecordForClient(record)
+      };
+    }
+    const { warning } = await persistLibrary(journal, data, page, operation);
     return succeed({
       action: "library-save",
       journalId: journal.id,
@@ -365,7 +433,7 @@ export async function handleWorkerRequest(request) {
   }
 
   /** Enforces source ownership before the shared creation path changes the Scene. */
-  async function createZone() {
+  async function createZone(creationFingerprint = null) {
     const requester = getRequester();
     const scene = game.scenes.get(request.sceneId ?? "");
     if (!scene) throw new Error("Target Scene was not found.");
@@ -377,12 +445,23 @@ export async function handleWorkerRequest(request) {
     assertSourcePermission(sourceActor, requester);
     const operationId = request.operationId ?? null;
     if (operationId) {
-      const existing = [...(scene.regions?.values?.() ?? scene.regions ?? [])].find((candidate) => {
-        const state = candidate.getFlag?.(FLAG_SCOPE, FLAG_KEY)?.state;
-        return state?.creationOperationId === operationId && state.createdBy?.userId === requester.id;
-      });
+      let existing;
+      // Operation IDs belong to a creator across the world, including retries that change the Scene.
+      for (const candidateScene of game.scenes.values?.() ?? game.scenes.contents ?? [scene]) {
+        existing = [...(candidateScene.regions?.values?.() ?? candidateScene.regions ?? [])].find((candidate) => {
+          const state = candidate.getFlag?.(FLAG_SCOPE, FLAG_KEY)?.state;
+          return state?.creationOperationId === operationId && state.createdBy?.userId === requester.id;
+        });
+        if (existing) break;
+      }
       if (existing) {
         const state = existing.getFlag(FLAG_SCOPE, FLAG_KEY).state;
+        if (typeof state.creationFingerprint !== "string" || !state.creationFingerprint.trim()) {
+          throw new Error("This older zone cannot verify the retry details. Review Manage Existing Zones before creating another.");
+        }
+        if (state.creationFingerprint !== creationFingerprint || existing.parent?.id !== scene.id) {
+          throw new Error("Creation operation ID was reused with different zone details.");
+        }
         return succeed({
           action: "create", sceneId: scene.id, regionId: existing.id, regionUuid: existing.uuid,
           warnings: [],
@@ -400,7 +479,7 @@ export async function handleWorkerRequest(request) {
     const { region, durationResolution, warnings } = await createZoneDocument({
       rawConfig: request.config, scene, sourceActor, sourceToken, requester, savedPresetId,
       savedPresetRevision: request.savedPresetRevision ?? null,
-      chosenDamageType: request.chosenDamageType ?? null, color: request.color, operationId,
+      chosenDamageType: request.chosenDamageType ?? null, color: request.color, operationId, creationFingerprint,
       placeArea: async (regionData, config) => {
         const center = request.areaCenter;
         if (!center || !Number.isFinite(Number(center.x)) || !Number.isFinite(Number(center.y))) {
@@ -502,12 +581,16 @@ export async function handleWorkerRequest(request) {
 
   try {
     switch (request.action) {
-      case "create": return await oncePerCreationRequest(request, createZone);
+      case "create": {
+        request = clone(request);
+        return await oncePerCreationRequest(request, createZone);
+      }
       case "move": return await moveZone();
       case "end": return await endZone();
       case "cancel-pending-save": return await cancelPendingSave();
       case "ask-question": return succeed(await executeAskQuestion(request));
       case "set-hero-points": return succeed(await executeHeroPointChange(request));
+      case "create-hero-point-reminder": return succeed(await executeCreateHeroPointReminder(request));
       case "shielding-taunt": {
         const requester = getRequester();
         const sourceToken = await fromUuid(request.sourceTokenUuid ?? "");
@@ -521,7 +604,11 @@ export async function handleWorkerRequest(request) {
         );
       }
       case "library-list": return await serializeLibraryOperation(listLibrary);
-      case "library-save": return await serializeLibraryOperation(saveLibraryPreset);
+      case "library-save": {
+        request = clone(request);
+        getRequester();
+        return await oncePerPresetSaveRequest(request, saveLibraryPreset);
+      }
       case "library-delete": return await serializeLibraryOperation(deleteLibraryPreset);
       case "ping": return succeed({ action: "ping" });
       default: return fail(`Unsupported worker action '${request.action}'.`);

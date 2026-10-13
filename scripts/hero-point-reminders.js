@@ -1,4 +1,5 @@
-import { newDocumentId, readDocumentFlag } from "./utils.js";
+import { readDocumentFlag } from "./utils.js";
+import { requestGMWorker } from "./transport.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const REMINDERS_FLAG = "heroPointReminders";
@@ -118,12 +119,12 @@ export async function createHeroPointReminder(time) {
   if (!game.user?.isGM) throw new Error("Only a GM can create Hero Point reminders.");
   const user = game.user;
   const remindAt = reminderTimestamp(time);
-  const existing = savedReminders().find((entry) => entry.user.id === user.id && entry.remindAt === remindAt);
-  if (existing) return { id: existing.id, remindAt, recipientUserId: user.id };
-  const id = newDocumentId();
-  await user.update({ [`flags.${MODULE_ID}.${REMINDERS_FLAG}.${id}`]: { remindAt } });
+  const response = await requestGMWorker({
+    protocol: 1, action: "create-hero-point-reminder", requesterUserId: user.id, remindAt
+  });
+  if (!response?.ok) throw new Error(response?.error ?? "The Hero Point reminder could not be saved. Try again.");
   scheduleNextReminder();
-  return { id, remindAt, recipientUserId: user.id };
+  return response.reminder;
 }
 
 /** Identifies an already-delivered reminder before retrying a failed flag cleanup or concurrent GM delivery. */

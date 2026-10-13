@@ -10,7 +10,8 @@ import { cloneData as clone, escapeHtml as escHtml, randomId, titleCase as title
 /** Provides one module runtime that both Foundry hooks and existing Region behaviors can call after updates. */
 export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
-    const VERSION = "0.5.20";
+    const VERSION = "0.5.21";
+    const AUTHORITY_LEASE = Symbol("pf2eZoneAuthorityLease");
     const MODULE_ID = "pf2e-zone-automation";
     const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
     const FLAG_SCOPE = "world";
@@ -65,13 +66,58 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         sharedImmunityCancellationTimers: new Map(),
         sharedResolutionLocks: new Map(),
         saveDeliveryRecovery: null,
+        saveDeliveryRecoveryLease: null,
         authorityRecovery: null,
+        authorityRecoveryLease: null,
         authorityRecoveryTimer: null,
+        authorityGeneration: 0,
+        authorityIdentity: null,
+        retired: false,
+
+        /** Invalidates accepted work whenever the current user or authoritative GM changes. */
+        refreshAuthorityGeneration() {
+          const identity = `${game.user?.id}:${Boolean(game.user?.isGM)}:${game.users?.activeGM?.id ?? "no-active-gm"}`;
+          if (identity !== this.authorityIdentity) {
+            this.authorityIdentity = identity;
+            this.authorityGeneration++;
+            this.chatAlertBatches.clear();
+            this.effectiveOccupants.clear();
+            for (const timers of [this.regionReconcileTimers, this.activationFinalizeTimers, this.sharedImmunityCancellationTimers]) {
+              for (const timer of timers.values()) clearTimeout(timer);
+              timers.clear();
+            }
+          }
+          return this.authorityGeneration;
+        },
+
+        /** Captures the authority that accepted work, including work waiting on a lock or timer. */
+        captureAuthorityLease() {
+          return { generation: this.refreshAuthorityGeneration(), userId: game.user?.id };
+        },
+
+        /** Allows unscoped direct management while fencing work accepted by an earlier authority. */
+        authorityLeaseCurrent(lease) {
+          if (lease == null) return true;
+          return lease.generation === this.refreshAuthorityGeneration()
+            && lease.userId === game.user?.id && !this.retired && this.isAuthority();
+        },
+
+        /** Carries transaction authority with a payload without adding it to persisted Region flags. */
+        bindAuthorityLease(payload, lease) {
+          if (payload) Object.defineProperty(payload, AUTHORITY_LEASE, { value: lease, configurable: true });
+          return payload;
+        },
+
+        /** Checks the lease shared by state, effect, and deferred save operations. */
+        payloadAuthorityCurrent(payload) {
+          return this.authorityLeaseCurrent(payload?.[AUTHORITY_LEASE]);
+        },
 
         /** Ensures only one active GM applies effects when every client receives the same Foundry event. */
         isAuthority() {
+          this.refreshAuthorityGeneration();
           const activeGM = game.users?.activeGM ?? null;
-          return activeGM ? activeGM.id === game.user.id : Boolean(game.user?.isGM);
+          return !this.retired && Boolean(game.user?.isGM) && (!activeGM || activeGM.id === game.user.id);
         },
 
         /** Normalizes persisted state on read so older zones can participate in newer runtime behavior. */
@@ -137,7 +183,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Replaces runtime state atomically so removed saves, immunities, and effects do not reappear after a merge. */
         async writePayload(region, payload) {
-          if (!this.isLiveRegion(region)) return false;
+          if (!this.payloadAuthorityCurrent(payload) || !this.isLiveRegion(region)) return false;
 
           this.pruneRuntimeHistory(payload);
           const current = region.getFlag?.(FLAG_SCOPE, FLAG_KEY);
@@ -163,7 +209,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             // global operator is unavailable. Slower, but preserves replacement
             // semantics rather than silently merging stale runtime keys.
             await region.unsetFlag(FLAG_SCOPE, FLAG_KEY);
-            if (!this.isLiveRegion(region)) return false;
+            if (!this.payloadAuthorityCurrent(payload) || !this.isLiveRegion(region)) return false;
             await region.setFlag(FLAG_SCOPE, FLAG_KEY, payload);
             return true;
           } catch (error) {
@@ -227,8 +273,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Serializes updates to one Region so simultaneous hooks cannot overwrite each other. */
-        async withState(region, callback) {
-          if (!region?.uuid) return null;
+        async withState(region, callback, lease = this.captureAuthorityLease()) {
+          if (!region?.uuid || !this.authorityLeaseCurrent(lease)) return null;
           const key = region.uuid;
 
           // endZone waits for work that was already accepted, but must not start
@@ -238,8 +284,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const prior = this.locks.get(key) ?? Promise.resolve();
           /** Chains work after an earlier state update even if that earlier update failed. */
           const next = prior.catch(() => undefined).then(async () => {
-            if (!this.isLiveRegion(region)) return null;
-            const payload = this.readPayload(region);
+            if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region)) return null;
+            const payload = this.bindAuthorityLease(this.readPayload(region), lease);
             if (!payload) return null;
 
             const result = await callback(payload);
@@ -249,11 +295,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             // (notably a clickable save request) runs only after this completes,
             // so a fast click cannot be overwritten by the originating event's
             // stale payload snapshot.
+            if (!this.authorityLeaseCurrent(lease)) return null;
             if (!this.isLiveRegion(region)) return result;
             const persisted = await this.writePayload(region, payload);
+            if (!this.authorityLeaseCurrent(lease)) return null;
             if (!persisted || !this.isLiveRegion(region)) return result;
 
             for (const action of afterCommit) {
+              if (!this.authorityLeaseCurrent(lease)) return null;
               try {
                 await action();
               } catch (error) {
@@ -261,7 +310,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               }
             }
 
-            return result;
+            return this.authorityLeaseCurrent(lease) ? result : null;
           });
           this.locks.set(key, next);
           try {
@@ -324,13 +373,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Refreshes HP threshold baselines for every operational zone after authority changes. */
-        async reconcileAllHpBaselines() {
-          if (!this.isAuthority()) return;
+        async reconcileAllHpBaselines(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             if (!this.isOperational(region)) continue;
             await this.withState(region, (payload) =>
-              this.reconcileHpBaselinesUnlocked(region, payload, { replace: true })
-            );
+              this.reconcileHpBaselinesUnlocked(region, payload, { replace: true }), lease);
           }
         },
 
@@ -385,8 +433,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Prunes accumulated history and stale Item references after reloads or GM handoff. */
-        async reconcileRuntimeHistory() {
-          if (!this.isAuthority()) return;
+        async reconcileRuntimeHistory(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             const snapshot = this.readPayload(region);
             const state = snapshot?.state;
@@ -399,13 +447,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             await this.withState(region, async (payload) => {
               this.pruneRuntimeHistory(payload);
               await this.pruneStaleAppliedRecords(payload);
-            });
+            }, lease);
           }
         },
 
         /** Removes one deleted embedded Item from its owning Region's cleanup ledger. */
-        async forgetDeletedAppliedItem(item) {
-          if (!this.isAuthority() || !item?.id) return;
+        async forgetDeletedAppliedItem(item, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !item?.id) return;
           const flag = this.zoneItemFlag(item);
           if (!flag?.zoneUuid) return;
           const region = await fromUuid(flag.zoneUuid);
@@ -417,7 +465,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (actorUuid && record.actorUuid && record.actorUuid !== actorUuid) continue;
               delete payload.state.applied[recordId];
             }
-          });
+          }, lease);
         },
 
         /** Applies targeting and line-of-effect rules consistently for every zone trigger. */
@@ -470,6 +518,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const token of this.tokensInside(region)) {
             if (await this.eligible(payload, token, region)) occupants.add(token.uuid);
           }
+          if (!this.payloadAuthorityCurrent(payload)) return;
           this.effectiveOccupants.set(region.uuid, occupants);
         },
 
@@ -527,16 +576,19 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Serializes world-setting replacement so two Regions cannot overwrite each other's grants. */
-        async mutateSharedImmunities(mutator) {
+        async mutateSharedImmunities(mutator, lease = this.captureAuthorityLease()) {
           const prior = this.sharedImmunityWrite ?? Promise.resolve();
           const next = prior.catch(() => undefined).then(async () => {
+            if (!this.authorityLeaseCurrent(lease)) return null;
             const records = this.readSharedImmunities();
             const before = dataSignature(records);
             const result = await mutator(records);
+            if (!this.authorityLeaseCurrent(lease)) return null;
             const changed = before !== dataSignature(records);
             if (changed && game.settings?.set) {
               await game.settings.set(MODULE_ID, SHARED_IMMUNITIES_SETTING, records);
             }
+            if (!this.authorityLeaseCurrent(lease)) return null;
             this.sharedImmunityCache = clone(records);
             return result;
           });
@@ -816,8 +868,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               createdWorldTime: nowWorld()
             };
             this.queueAfterCommit(payload, async () => {
-              await this.persistSharedImmunity(sharedRecord);
-              this.scheduleSharedPendingCancellation(sharedRecord);
+              await this.persistSharedImmunity(sharedRecord, payload[AUTHORITY_LEASE]);
+              if (this.payloadAuthorityCurrent(payload)) this.scheduleSharedPendingCancellation(sharedRecord, payload[AUTHORITY_LEASE]);
             });
           }
           console.info("PF2e Zone temporary immunity started", {
@@ -836,7 +888,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Persists a grant independently of the aura Region that created it. */
-        async persistSharedImmunity(sharedRecord) {
+        async persistSharedImmunity(sharedRecord, lease = this.captureAuthorityLease()) {
           if (!sharedRecord?.targetUuid || !sharedRecord?.group) return false;
           await this.mutateSharedImmunities((records) => {
             for (const [key, record] of Object.entries(records)) {
@@ -849,13 +901,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               }
             }
             records[sharedRecord.storageId] = clone(sharedRecord);
-          });
-          return true;
+          }, lease);
+          return this.authorityLeaseCurrent(lease);
         },
 
         /** Removes expired shared grants and retires saves that survived an authority handoff. */
-        async reconcileSharedImmunities({ cancelPending = true } = {}) {
-          if (!this.isAuthority()) return;
+        async reconcileSharedImmunities({ cancelPending = true } = {}, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const active = [];
           await this.mutateSharedImmunities((records) => {
             for (const [key, record] of Object.entries(records)) {
@@ -865,31 +917,32 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               }
               active.push(clone(record));
             }
-          });
+          }, lease);
           if (cancelPending) {
-            for (const record of active) this.scheduleSharedPendingCancellation(record);
+            for (const record of active) this.scheduleSharedPendingCancellation(record, lease);
           }
         },
 
         /** Cleans hidden shared state when its affected Actor no longer exists. */
-        async removeSharedImmunitiesForActor(actorUuid) {
-          if (!actorUuid || !this.isAuthority()) return;
+        async removeSharedImmunitiesForActor(actorUuid, lease = this.captureAuthorityLease()) {
+          if (!actorUuid || !this.authorityLeaseCurrent(lease)) return;
           await this.mutateSharedImmunities((records) => {
             for (const [key, record] of Object.entries(records)) {
               if (record?.actorUuid === actorUuid || record?.targetUuid === actorUuid) delete records[key];
             }
-          });
+          }, lease);
         },
 
         /** Coalesces one deferred cross-Region cleanup after the granting Region releases its lock. */
-        scheduleSharedPendingCancellation(record) {
-          if (!record?.targetUuid || !record?.group) return;
+        scheduleSharedPendingCancellation(record, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !record?.targetUuid || !record?.group) return;
           const key = `${record.targetUuid}::${record.group}`;
           const prior = this.sharedImmunityCancellationTimers.get(key);
           if (prior) clearTimeout(prior);
           const timer = setTimeout(() => {
             this.sharedImmunityCancellationTimers.delete(key);
-            this.cancelSharedPendingSaves(record)
+            if (!this.authorityLeaseCurrent(lease)) return;
+            this.cancelSharedPendingSaves(record, lease)
               .catch((error) => console.error("PF2e Zone: shared-immunity save cleanup failed", error));
           }, 0);
           this.sharedImmunityCancellationTimers.set(key, timer);
@@ -1051,6 +1104,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const target = await fromUuid(pending.tokenUuid);
           const targetName = target?.name ?? "Target";
+          if (!this.payloadAuthorityCurrent(payload)) return null;
 
           return await ChatMessage.create({
             speaker: ChatMessage.getSpeaker({ actor: sourceActor, token: sourceToken }),
@@ -1071,6 +1125,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const flag = card.flags?.world?.pf2eZoneSaveRequest ?? {};
           if (flag.status === "completed") return false;
           const target = flag.targetName ?? (await fromUuid(pending.tokenUuid))?.name ?? "Target";
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           await card.update({
             content: this.saveRequestCardContent(region, payload, pending, target, true),
             "flags.world.pf2eZoneSaveRequest": {
@@ -1085,13 +1140,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Retires a request that became unnecessary after another matching aura granted immunity. */
-        async cancelSaveRequestCard(pending, zoneName, reason = "Temporarily immune.") {
+        async cancelSaveRequestCard(pending, zoneName, reason = "Temporarily immune.", lease = this.captureAuthorityLease()) {
           const card = this.saveRequestMessageForPending(pending);
           if (!card?.update) return false;
           const flag = card.flags?.world?.pf2eZoneSaveRequest ?? {};
           if (["completed", "cancelled"].includes(flag.status)) return false;
           const target = flag.targetName ?? (await fromUuid(pending.tokenUuid))?.name ?? "Target";
           const content = `<div class="pf2e-zone-save-request"><h4>${escHtml(zoneName)} — ${escHtml(pending.blockName)}</h4><p><b>${escHtml(target)}</b>: <strong>${escHtml(reason)}</strong></p><p style="opacity:.7;font-size:.9em">PF2e Zone Automation save request</p></div>`;
+          if (!this.authorityLeaseCurrent(lease)) return false;
           await card.update({
             content,
             "flags.world.pf2eZoneSaveRequest": {
@@ -1107,8 +1163,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Removes unanswered saves from every zone that uses the newly granted Actor/group immunity. */
-        async cancelSharedPendingSaves(sharedRecord) {
-          if (!this.isAuthority() || !this.sharedImmunityActive(sharedRecord)) return 0;
+        async cancelSharedPendingSaves(sharedRecord, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !this.sharedImmunityActive(sharedRecord)) return 0;
           let cancelled = 0;
           for (const region of this.allZones()) {
             await this.withState(region, async (payload) => {
@@ -1127,11 +1183,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               if (retired.length) {
                 this.queueAfterCommit(payload, async () => {
                   for (const pending of retired) {
-                    await this.cancelSaveRequestCard(pending, payload.config.name);
+                    await this.cancelSaveRequestCard(pending, payload.config.name, "Temporarily immune.", payload[AUTHORITY_LEASE]);
                   }
                 });
               }
-            });
+            }, lease);
           }
           return cancelled;
         },
@@ -1161,6 +1217,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Posts or rediscovers one pending request while its Region state lock is held. */
         async deliverPendingSaveUnlocked(region, payload, pendingId, identifier) {
+          if (!this.payloadAuthorityCurrent(payload)) return { status: "not-authority", changed: false, pending: null };
           const pending = payload.state.pendingSaves?.[pendingId];
           if (!pending || pending.identifier !== identifier || !this.isOperational(region, payload)) {
             return { status: "missing", changed: false, pending: null };
@@ -1193,6 +1250,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           try {
             const message = await this.postSaveRequest(region, payload, pending);
+            if (!this.payloadAuthorityCurrent(payload)) return { status: "not-authority", changed: false, pending: null };
             pending.delivery.status = "delivered";
             pending.delivery.messageId = message?.id ?? message?._id ?? null;
             return { status: "delivered", changed: true, pending, message };
@@ -1220,25 +1278,26 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Retries one persisted request through the normal serialized Region state path. */
-        async deliverPendingSave(region, pendingId, identifier) {
-          if (!this.isAuthority()) return { status: "not-authority", changed: false, pending: null };
+        async deliverPendingSave(region, pendingId, identifier, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return { status: "not-authority", changed: false, pending: null };
           let result = { status: "missing", changed: false, pending: null };
           try {
             await this.withState(region, async (payload) => {
               result = await this.deliverPendingSaveUnlocked(region, payload, pendingId, identifier);
-            });
+            }, lease);
           } catch (error) {
             this.reportSaveDeliveryFailure(region, result);
             throw error;
           }
+          if (!this.authorityLeaseCurrent(lease)) return { status: "not-authority", changed: false, pending: null };
           this.reportSaveDeliveryFailure(region, result);
           return result;
         },
 
         /** Recovers every request whose card is absent, coalescing duplicate startup and handoff hooks. */
-        async reconcileUndeliveredSaveRequests() {
-          if (!this.isAuthority()) return;
-          if (this.saveDeliveryRecovery) return await this.saveDeliveryRecovery;
+        async reconcileUndeliveredSaveRequests(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
+          if (this.saveDeliveryRecovery && this.authorityLeaseCurrent(this.saveDeliveryRecoveryLease)) return await this.saveDeliveryRecovery;
 
           const recovery = (async () => {
             for (const region of this.allZones()) {
@@ -1248,7 +1307,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 if (payload.state.resolvedSaves?.[pendingId]?.identifier === pending.identifier) continue;
                 if (pending.delivery?.status === "delivered" && this.saveRequestMessageForPending(pending)) continue;
                 try {
-                  await this.deliverPendingSave(region, pendingId, pending.identifier);
+                  await this.deliverPendingSave(region, pendingId, pending.identifier, lease);
                 } catch (error) {
                   console.error("PF2e Zone: save request delivery recovery failed", region, pendingId, error);
                 }
@@ -1256,6 +1315,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           })();
           this.saveDeliveryRecovery = recovery;
+          this.saveDeliveryRecoveryLease = lease;
           try {
             return await recovery;
           } finally {
@@ -1278,6 +1338,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           }
           if (this.isImmuneFor(payload, token, block)) return false;
           const { actor: sourceActor } = await this.resolveSource(payload);
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           const dc = this.resolveDC(payload, block, sourceActor);
           if (!(dc > 0)) {
             ui.notifications.error(`PF2e Zone: could not resolve the DC for ${block.name}.`);
@@ -1321,7 +1382,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             const liveRegion = region.parent?.regions?.get?.(region.id);
             if (!liveRegion) return;
 
-            const committed = this.readPayload(liveRegion);
+            const committed = this.bindAuthorityLease(this.readPayload(liveRegion), payload[AUTHORITY_LEASE]);
             if (!this.isOperational(liveRegion, committed)) return;
             if (this.isImmuneFor(committed, token, block)) {
               delete committed.state.pendingSaves[id];
@@ -1363,7 +1424,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Shares an in-flight delete and reports failures so cleanup records remain retryable. */
-        async deleteOwnedItem(item, context = "zone cleanup") {
+        async deleteOwnedItem(item, context = "zone cleanup", lease = null) {
+          if (!this.authorityLeaseCurrent(lease)) return false;
           if (!item?.parent) return true;
           const key = this.itemDeleteKey(item);
           const pending = this.itemDeletePromises.get(key);
@@ -1408,6 +1470,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Gives each zone result its own Condition Item so cleanup cannot affect another source. */
         async addOwnedCondition(region, payload, block, token, condition) {
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           const actor = token.actor;
           if (!actor) return false;
 
@@ -1480,6 +1543,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Gives pre-outcome Effect Items a durable identity without duplicating an active legacy application. */
         async adoptLegacyEffectOutcome(item, payload, outcomeKey) {
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           const flag = this.zoneItemFlag(item);
           if (!flag || flag.outcomeKey) return true;
           try {
@@ -1501,6 +1565,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Copies Effect Items with outcome and cleanup metadata so distinct result lifecycles cannot collide. */
         async addEffectItem(region, payload, block, token, effect, outcomeKey = "noSave") {
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           const actor = token.actor;
           if (!actor) return false;
 
@@ -1529,6 +1594,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             return false;
           }
           const originActorUuid = payload.state?.sourceActorUuid ?? (await this.resolveSource(payload)).actor?.uuid;
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           if (!originActorUuid) {
             ui.notifications.error(`PF2e Zone: source Actor for '${payload.config.name}' is unavailable.`);
             return false;
@@ -1581,7 +1647,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           for (const expired of expiredMatches) {
             try {
-              await this.deleteOwnedItem(expired, "expired zone Effect replacement");
+              if (!this.payloadAuthorityCurrent(payload)) return false;
+              await this.deleteOwnedItem(expired, "expired zone Effect replacement", payload[AUTHORITY_LEASE]);
             } catch (error) {
               console.error("PF2e Zone: expired Effect Item replacement failed", expired, error);
               ui.notifications.error(`PF2e Zone: failed to replace an expired Effect Item on ${actor.name}. See console.`);
@@ -1597,6 +1664,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           let created = null;
           try {
+            if (!this.payloadAuthorityCurrent(payload)) return false;
             [created] = await actor.createEmbeddedDocuments("Item", [source]);
           } catch (error) {
             console.error("PF2e Zone: Effect Item creation failed", {
@@ -1641,6 +1709,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Caches each source roll per event so multiple targets receive one consistent damage result. */
         async baseDamageRoll(payload, block, batchId) {
+          if (!this.payloadAuthorityCurrent(payload)) return null;
           const DamageRoll = this.damageRollClass();
           if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
           const type = this.damageType(payload, block);
@@ -1655,11 +1724,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Posts system damage cards only after a degree of success establishes the correct multiplier. */
         async postDamage(region, payload, block, token, outcomeKey, multiplier, batchId) {
-          if (!block.damage.enabled || !(Number(multiplier) > 0)) return false;
+          if (!this.payloadAuthorityCurrent(payload) || !block.damage.enabled || !(Number(multiplier) > 0)) return false;
           try {
             const { roll: baseRoll } = await this.baseDamageRoll(payload, block, batchId);
             const adjusted = Number(multiplier) === 1 ? baseRoll : baseRoll.alter(Number(multiplier), 0);
             const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            if (!this.payloadAuthorityCurrent(payload)) return false;
             const outcomeLabel = titleCaseLocal(outcomeKey);
             const adjustment = Number(multiplier) === 1 ? "" : ` — ×${Number(multiplier)}`;
             await ChatMessage.create({
@@ -1687,6 +1757,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Caches each source healing roll per event so multiple targets share a consistent result. */
         async baseHealingRoll(payload, block, batchId) {
+          if (!this.payloadAuthorityCurrent(payload)) return null;
           const DamageRoll = this.damageRollClass();
           if (!DamageRoll) throw new Error("PF2e DamageRoll class is unavailable.");
           const cacheKey = stateKey("healing", block.id, batchId);
@@ -1700,11 +1771,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Posts system healing cards only after a degree of success establishes the correct multiplier. */
         async postHealing(region, payload, block, token, outcomeKey, multiplier, batchId) {
-          if (!block.healing?.enabled || !(Number(multiplier) > 0)) return false;
+          if (!this.payloadAuthorityCurrent(payload) || !block.healing?.enabled || !(Number(multiplier) > 0)) return false;
           try {
             const { roll: baseRoll } = await this.baseHealingRoll(payload, block, batchId);
             const adjusted = Number(multiplier) === 1 ? baseRoll : baseRoll.alter(Number(multiplier), 0);
             const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
+            if (!this.payloadAuthorityCurrent(payload)) return false;
             const outcomeLabel = titleCaseLocal(outcomeKey);
             const adjustment = Number(multiplier) === 1 ? "" : ` — ×${Number(multiplier)}`;
             await ChatMessage.create({
@@ -1732,6 +1804,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Applies results while letting continuous refreshes restore items without replaying limited rolls. */
         async applyOutcome(region, payload, block, token, outcomeKey, batchId, eventContext = {}, { maintainedOnly = false, application = null } = {}) {
+          if (!this.payloadAuthorityCurrent(payload)) return false;
           const outcome = block.outcomes?.[outcomeKey];
           if (!outcome) return false;
           let affected = false;
@@ -1813,6 +1886,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Coordinates eligibility, frequency, saves, and results so every trigger follows the same safeguards. */
         async processBlock(region, payload, block, token, trigger, batchId, { continuous = false, eventContext = {}, skipEligibility = false } = {}) {
+          if (!this.payloadAuthorityCurrent(payload)) return;
           const resolvedEventContext = { trigger, ...(eventContext ?? {}) };
           // Older saved zones may contain a combination now rejected by the builder.
           // Never apply its No Save result or spend its repeat limit before a save trigger runs.
@@ -1976,8 +2050,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Handles the current combatant once even if Foundry announces the turn through multiple hooks. */
-        async processActiveTurnStart(region, changedCombat = null) {
-          if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+        async processActiveTurnStart(region, changedCombat = null, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region)) return;
           const payload = this.readPayload(region);
           const combat = this.combatForPayload(payload)?.combat;
           if (changedCombat && combat?.id !== changedCombat.id) return;
@@ -2002,13 +2076,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             for (const turnToken of turnTokens) {
               await this.processTurnStartUnlocked(region, payload, turnToken, "combatTurnStart");
             }
-          });
+          }, lease);
         },
 
         /** Catches up active zones after combat state changes that skip an individual turn hook. */
-        async processAllActiveTurnStarts(changedCombat = null) {
-          if (!this.isAuthority()) return;
-          for (const region of this.allZones()) await this.processActiveTurnStart(region, changedCombat);
+        async processAllActiveTurnStarts(changedCombat = null, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
+          for (const region of this.allZones()) await this.processActiveTurnStart(region, changedCombat, lease);
         },
 
         /** Keeps source-controlled effects tied to the source combatant rather than Region occupancy. */
@@ -2045,9 +2119,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Retains the cleanup record for real Item failures but completes when the target no longer exists. */
         async deleteAppliedRecord(payload, recordId) {
+          if (!this.payloadAuthorityCurrent(payload)) return;
           const record = payload.state.applied[recordId];
           if (!record) return;
           const { actor } = await this.resolveTarget(record);
+          if (!this.payloadAuthorityCurrent(payload)) return;
           if (!actor) {
             delete payload.state.applied[recordId];
             return;
@@ -2056,13 +2132,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             throw new Error(`PF2e Zone: target Actor for Item '${record.itemId}' is unavailable; cleanup can be retried.`);
           }
           const item = actor.items.get(record.itemId);
-          if (item) await this.deleteOwnedItem(item, "zone-owned Item cleanup");
+          if (item) await this.deleteOwnedItem(item, "zone-owned Item cleanup", payload[AUTHORITY_LEASE]);
           delete payload.state.applied[recordId];
         },
 
         /** Reconciles effects after a Token deletion, including all records owned by an unlinked synthetic Actor. */
-        async reconcileDeletedToken(token) {
-          if (!this.isAuthority() || !token?.uuid) return;
+        async reconcileDeletedToken(token, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !token?.uuid) return;
           const actorIsLinked = token.actorLink === true;
           const actorUuid = token.actor?.uuid ?? null;
           const failures = [];
@@ -2070,7 +2146,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             try {
               const snapshot = this.readPayload(region);
               if (snapshot?.config?.mode === "emanation" && snapshot.state.sourceTokenUuid === token.uuid) {
-                await this.endZone(region, "source token deleted");
+                await this.endZone(region, "source token deleted", lease);
                 continue;
               }
 
@@ -2094,7 +2170,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                   // and every embedded Item, so only the stale record remains.
                   delete payload.state.applied[recordId];
                 }
-              });
+              }, lease);
             } catch (error) { failures.push(error); }
           }
           if (failures.length) {
@@ -2103,16 +2179,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Reconciles records after Actor deletion because its embedded Items have already been removed by Foundry. */
-        async reconcileDeletedActor(actor) {
-          if (!this.isAuthority() || !actor?.uuid) return;
+        async reconcileDeletedActor(actor, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !actor?.uuid) return;
           const failures = [];
-          try { await this.removeSharedImmunitiesForActor(actor.uuid); }
+          try { await this.removeSharedImmunitiesForActor(actor.uuid, lease); }
           catch (error) { failures.push(error); }
           for (const region of this.allZones()) {
             try {
               const snapshot = this.readPayload(region);
               if (snapshot?.state?.sourceActorUuid === actor.uuid) {
-                await this.endZone(region, "source actor deleted");
+                await this.endZone(region, "source actor deleted", lease);
                 continue;
               }
               if (!Object.values(snapshot?.state?.applied ?? {}).some((record) => record.actorUuid === actor.uuid)) {
@@ -2122,7 +2198,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 for (const [recordId, record] of Object.entries(payload.state.applied)) {
                   if (record.actorUuid === actor.uuid) delete payload.state.applied[recordId];
                 }
-              });
+              }, lease);
             } catch (error) { failures.push(error); }
           }
           if (failures.length) {
@@ -2161,7 +2237,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Saves deactivation before deleting owned effects so later events see an inactive zone. */
-        async deactivateRegion(region) {
+        async deactivateRegion(region, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const timer = this.activationFinalizeTimers.get(region.uuid);
           if (timer) clearTimeout(timer);
           this.activationFinalizeTimers.delete(region.uuid);
@@ -2169,28 +2246,28 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             payload.state.deactivated = true;
             payload.state.pendingSaves = {};
             payload.state.recoveryWatchers = {};
-          });
+          }, lease);
           await this.withState(region, async (payload) => {
             // A rapid reactivation may have queued between these writes.
             if (payload.state.deactivated) await this.cleanupZoneUnlocked(payload);
-          });
+          }, lease);
         },
 
         /** Repairs disabled zones created before deactivation was persisted. */
-        async reconcileDisabledZones() {
-          if (!this.isAuthority()) return;
+        async reconcileDisabledZones(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
-            if (!this.isRuntimeBehaviorActive(region)) await this.deactivateRegion(region);
+            if (!this.isRuntimeBehaviorActive(region)) await this.deactivateRegion(region, lease);
           }
         },
 
         /** Retries dismissals whose Region and cleanup records survived an earlier failure. */
-        async reconcileUnfinishedZoneEnds() {
-          if (!this.isAuthority()) return;
+        async reconcileUnfinishedZoneEnds(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             if (!this.readPayload(region)?.state?.endRequested) continue;
             try {
-              await this.endZone(region, "retry unfinished cleanup");
+              await this.endZone(region, "retry unfinished cleanup", lease);
             } catch (_error) {
               // endZone retains the Region and reports the failure; another GM
               // startup or a manual dismissal can try again later.
@@ -2199,8 +2276,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Retries exit-bound Item removal after a missed or failed movement cleanup. */
-        async reconcileUnfinishedExitCleanup() {
-          if (!this.isAuthority()) return;
+        async reconcileUnfinishedExitCleanup(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             const snapshot = this.readPayload(region);
             if (!this.isOperational(region, snapshot)) continue;
@@ -2208,7 +2285,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             try {
               await this.withState(region, async (payload) => {
                 if (this.isOperational(region, payload)) await this.cleanupExitedItemsUnlocked(region, payload);
-              });
+              }, lease);
             } catch (error) {
               console.error("PF2e Zone: exit cleanup retry failed", region, error);
               ui.notifications.error(`PF2e Zone: failed to remove an exited effect from '${region.name}'. See console.`);
@@ -2217,7 +2294,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Finishes cleanup when Foundry deletes a Region outside the normal end-zone path. */
-        async cleanupDeletedRegion(region, payload) {
+        async cleanupDeletedRegion(region, payload, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const records = Object.entries(payload?.state?.applied ?? {})
             .filter(([, record]) => record.removal === "on-exit" || record.removal === "zone-end");
           const failures = [];
@@ -2225,7 +2303,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             try {
               const { actor } = await this.resolveTarget(record);
               const item = actor?.items?.get(record.itemId);
-              if (item) await this.deleteOwnedItem(item, "cleanup after Region deletion");
+              if (item) await this.deleteOwnedItem(item, "cleanup after Region deletion", lease);
             } catch (error) { failures.push(error); }
           }
           if (failures.length) {
@@ -2267,6 +2345,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           for (const token of insideTokens) {
             if (await this.eligible(payload, token, region)) eligibleTokens.push(token);
           }
+          if (!this.payloadAuthorityCurrent(payload)) return;
           const previousOccupants = this.effectiveOccupants.get(region.uuid);
           const currentOccupants = new Set(eligibleTokens.map((token) => token.uuid));
           this.effectiveOccupants.set(region.uuid, currentOccupants);
@@ -2348,7 +2427,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Applies Entry to creatures reached anywhere along a fixed area drag. */
-        async processAreaBoundaryChange(region, before) {
+        async processAreaBoundaryChange(region, before, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           if (!before || !this.isAuthority()) return;
           const afterShapes = this.areaBoundaryShapes(region);
           const translation = translatedAreaShapes(before.shapes, afterShapes);
@@ -2363,14 +2443,16 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             for (const token of affected) {
               if (this.isTokenInside(region, token.uuid)) this.seedHpBaseline(payload, token, { replace: true });
               if (!(await this.eligible(payload, token, region))) continue;
+              if (!this.payloadAuthorityCurrent(payload)) return;
               if (this.isTokenInside(region, token.uuid)) this.noteEffectiveOccupant(region, token, true);
               await this.processTriggerUnlocked(region, payload, token, "enter", batch + ":" + token.uuid);
             }
-          });
+          }, lease);
         },
 
         /** Coalesces rapid Foundry updates so occupancy reconciliation does not run repeatedly for one change. */
         scheduleRegionReconcile(region, delay = 100) {
+          const lease = this.captureAuthorityLease();
           if (!region?.parent?.id || !region?.id) return;
           const key = region.uuid;
           const prior = this.regionReconcileTimers.get(key);
@@ -2380,14 +2462,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           const regionId = region.id;
           const timer = setTimeout(async () => {
             this.regionReconcileTimers.delete(key);
-            if (!this.isAuthority()) return;
+            if (!this.authorityLeaseCurrent(lease)) return;
             const liveRegion = game.scenes.get(sceneId)?.regions.get(regionId);
             if (!liveRegion) return;
             try {
               await this.withState(liveRegion, async (payload) => {
                 if (!this.isOperational(liveRegion, payload)) return;
                 await this.reconcileContinuousUnlocked(liveRegion, payload);
-              });
+              }, lease);
             } catch (error) {
               console.error("PF2e Zone: Region movement reconcile failed", error);
             }
@@ -2430,12 +2512,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Lets a new authoritative GM finish an activation at its original wall-clock deadline. */
-        scheduleActivationFinalization(region, deadline) {
-          if (!this.isAuthority() || !this.isLiveRegion(region) || this.activationFinalizeTimers.has(region.uuid)) return;
+        scheduleActivationFinalization(region, deadline, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region) || this.activationFinalizeTimers.has(region.uuid)) return;
           const delay = Math.max(0, Number(deadline) - Date.now());
           const timer = setTimeout(async () => {
             this.activationFinalizeTimers.delete(region.uuid);
-            if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+            if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region)) return;
             try {
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload) || payload.state.activationProcessed) return;
@@ -2450,7 +2532,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 payload.state.activationPending = false;
                 delete payload.state.activationFinalizeAt;
                 payload.state.initialOccupants = {};
-              });
+              }, lease);
             } catch (error) {
               console.error("PF2e Zone: activation finalization failed", error);
             }
@@ -2459,25 +2541,25 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Rebuilds lost activation timers after startup or a change of authoritative GM. */
-        async reconcileUnfinishedActivations() {
-          if (!this.isAuthority()) return;
+        async reconcileUnfinishedActivations(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             const payload = this.readPayload(region);
             if (!this.isOperational(region, payload) || payload.state.activationProcessed) continue;
-            await this.activateRegion(region);
+            await this.activateRegion(region, lease);
           }
         },
 
         /** Initializes a newly created Region before delayed hooks can process its occupants. */
-        async activateRegion(region) {
-          if (!this.isAuthority() || !this.isRuntimeBehaviorActive(region)) return;
+        async activateRegion(region, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !this.isRuntimeBehaviorActive(region)) return;
           if (!this.areaBoundarySnapshots.has(region.uuid)) this.rememberAreaBoundary(region);
 
           // A behavior may be re-enabled after its old deadline passed. Check
           // expiration before maintained effects are applied again.
           if (this.readPayload(region)?.state?.deactivated) {
-            await this.withState(region, (payload) => { payload.state.deactivated = false; });
-            await this.checkSourceAndDuration(region);
+            await this.withState(region, (payload) => { payload.state.deactivated = false; }, lease);
+            await this.checkSourceAndDuration(region, lease);
             if (!this.isLiveRegion(region)) return;
           }
 
@@ -2519,14 +2601,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             payload.state.deactivated = false;
             await this.reconcileContinuousUnlocked(region, payload);
             return payload.state.activationProcessed ? null : payload.state.activationFinalizeAt;
-          });
+          }, lease);
 
-          if (finalizationAt != null) this.scheduleActivationFinalization(region, finalizationAt);
+          if (finalizationAt != null) this.scheduleActivationFinalization(region, finalizationAt, lease);
         },
 
         /** Ends a finite zone at its stored combat deadline even when intermediate turn hooks were missed. */
-        async checkSourceAndDuration(region) {
-          if (!this.isAuthority()) return;
+        async checkSourceAndDuration(region, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           let shouldEnd = false;
           await this.withState(region, async (payload) => {
             if (!this.isOperational(region, payload)) return;
@@ -2610,20 +2692,20 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               // Without a source turn, either elapsed clock may end the zone.
               shouldEnd = true;
             }
-          });
-          if (shouldEnd && this.isOperational(region)) await this.endZone(region, "duration/source");
+          }, lease);
+          if (shouldEnd && this.authorityLeaseCurrent(lease) && this.isOperational(region)) await this.endZone(region, "duration/source", lease);
         },
 
         /** Lets world-time and combat changes reevaluate every active finite zone. */
-        async checkAllDurations() {
-          if (!this.isAuthority()) return;
-          for (const region of this.allZones()) await this.checkSourceAndDuration(region);
-          await this.reconcileSharedImmunities({ cancelPending: false });
+        async checkAllDurations(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
+          for (const region of this.allZones()) await this.checkSourceAndDuration(region, lease);
+          await this.reconcileSharedImmunities({ cancelPending: false }, lease);
         },
 
         /** Provides a locked entry point for source-turn hooks that may arrive concurrently. */
-        async processSourceTurnStart(region, changedCombat = null) {
-          if (!this.isAuthority() || !this.isLiveRegion(region)) return;
+        async processSourceTurnStart(region, changedCombat = null, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region)) return;
           if (changedCombat && this.combatForPayload(this.readPayload(region))?.combat?.id !== changedCombat.id) return;
 
           await this.withState(region, async (payload) => {
@@ -2647,17 +2729,18 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               sourceToken,
               `sourceTurnStart:${sourceToken.uuid}:${turnKey}`
             );
-          });
+          }, lease);
         },
 
         /** Catches up source-turn effects after combat updates that do not name one Region. */
-        async processAllSourceTurnStarts(changedCombat = null) {
-          if (!this.isAuthority()) return;
-          for (const region of this.allZones()) await this.processSourceTurnStart(region, changedCombat);
+        async processAllSourceTurnStarts(changedCombat = null, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
+          for (const region of this.allZones()) await this.processSourceTurnStart(region, changedCombat, lease);
         },
 
         /** Leaves a retryable Region when owned Items or Region deletion fails. */
-        async endZone(region, reason = "ended") {
+        async endZone(region, reason = "ended", lease = null) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const scene = region?.parent;
           const regionId = region?.id;
           if (!scene || !regionId) return;
@@ -2685,10 +2768,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               // endingZones holds the key, no new state work can start.
               const pendingState = this.locks.get(key);
               if (pendingState) await pendingState.catch(() => undefined);
+              if (!this.authorityLeaseCurrent(lease)) return;
 
               const current = scene.regions?.get?.(regionId);
               if (!current) return;
-              cleanupPayload = this.readPayload(current);
+              cleanupPayload = this.bindAuthorityLease(this.readPayload(current), lease);
               if (cleanupPayload) {
                 cleanupPayload.state.deactivated = true;
                 cleanupPayload.state.endRequested = true;
@@ -2697,11 +2781,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 // Persist the retry marker before any Item deletion. If cleanup
                 // stops halfway, the Region stays quiet and startup can retry.
                 await this.writePayload(current, cleanupPayload);
+                if (!this.authorityLeaseCurrent(lease)) return;
                 await this.cleanupZoneUnlocked(cleanupPayload);
               }
               cleanupComplete = true;
 
               const stillLive = scene.regions?.get?.(regionId);
+              if (!this.authorityLeaseCurrent(lease)) return;
               if (stillLive) await stillLive.delete();
               if (scene.regions?.get?.(regionId)) {
                 throw new Error(`PF2e Zone: Region '${liveRegion.name}' was not deleted.`);
@@ -2734,7 +2820,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Applies an authorized save while the Region state lock is already held. */
         async resolvePendingSaveUnlocked(region, payload, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
-          if (!this.isAuthority()) return false;
+          if (!this.isAuthority() || !this.payloadAuthorityCurrent(payload)) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
           if (payload.state.resolvedSaves?.[pendingId]?.identifier === identifier) {
             delete payload.state.pendingSaves[pendingId];
@@ -2762,7 +2848,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             delete payload.state.pendingSaves[pendingId];
             delete payload.state.repeat[this.repeatKey(pending.tokenUuid, pending.blockId)];
             this.queueAfterCommit(payload, () =>
-              this.cancelSaveRequestCard(pending, payload.config.name)
+              this.cancelSaveRequestCard(pending, payload.config.name, "Temporarily immune.", payload[AUTHORITY_LEASE])
             );
             return false;
           }
@@ -2803,8 +2889,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Lets the authoritative GM discard an unanswered request without consuming its repeat allowance. */
-        async cancelPendingSave(region, pendingId, identifier) {
-          if (!this.isAuthority()) throw new Error("Only the active GM can cancel a PF2e Zone save request.");
+        async cancelPendingSave(region, pendingId, identifier, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) throw new Error("Only the active GM can cancel a PF2e Zone save request.");
           if (!this.readPayload(region)) throw new Error("The PF2e Zone no longer exists.");
 
           return await this.withState(region, async (payload) => {
@@ -2833,12 +2919,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             delete payload.state.pendingSaves[pendingId];
             delete payload.state.repeat[this.repeatKey(pending.tokenUuid, pending.blockId)];
             return { status: "cancelled" };
-          });
+          }, lease);
         },
 
         /** Serializes live chat and recovery through the same save resolution path. */
-        async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null, message = null) {
-          if (!this.isAuthority()) return false;
+        async resolvePendingSave(region, pendingId, identifier, outcome, rollerActorUuid = null, message = null, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return false;
           if (!["criticalSuccess", "success", "failure", "criticalFailure"].includes(outcome)) return false;
           let resolved = false;
           const snapshot = this.readPayload(region);
@@ -2852,7 +2938,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               resolved = await this.resolvePendingSaveUnlocked(
                 region, payload, pendingId, identifier, outcome, rollerActorUuid, message
               );
-            });
+            }, lease);
           });
 
           if (resolved && this.isLiveRegion(region)) {
@@ -2879,12 +2965,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             });
           }
 
-          return resolved;
+          return this.authorityLeaseCurrent(lease) && resolved;
         },
 
         /** Recognizes this module's chat result messages without interfering with ordinary PF2e rolls. */
-        async handleSaveResult(message) {
-          if (!this.isAuthority()) return;
+        async handleSaveResult(message, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const context = message.flags?.pf2e?.context;
           const identifier = context?.identifier;
           if (typeof identifier !== "string" || !identifier.startsWith(`${SAVE_PREFIX}:`)) return;
@@ -2908,12 +2994,12 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             outcome,
             token.actor.uuid,
             message
-          );
+          , lease);
         },
 
         /** Replays authorized saves whose chat messages arrived while the GM hook was unavailable. */
-        async reconcileCompletedSaves() {
-          if (!this.isAuthority()) return;
+        async reconcileCompletedSaves(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           for (const region of this.allZones()) {
             const payload = this.readPayload(region);
             if (!this.isOperational(region, payload)) continue;
@@ -2925,7 +3011,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 await this.resolvePendingSave(
                   region, pendingId, pending.identifier, completed.outcome,
                   completed.token.actor.uuid, completed.message
-                );
+                , lease);
               } catch (error) {
                 console.error("PF2e Zone: completed save recovery failed", region, pendingId, error);
               }
@@ -2934,8 +3020,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Ends condition-linked cleanup watches when actors change outside a zone event. */
-        async reconcileActorDependencies(actor) {
-          if (!this.isAuthority() || !actor) return;
+        async reconcileActorDependencies(actor, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !actor) return;
 
           // Linked-condition cleanup is stored on the owned condition itself so
           // it still works if the originating Region has already ended, as long
@@ -2947,7 +3033,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             return linked.length === 0;
           });
           for (const item of toDelete) {
-            await this.deleteOwnedItem(item, "linked-condition cleanup");
+            await this.deleteOwnedItem(item, "linked-condition cleanup", lease);
           }
 
           for (const region of this.allZones()) {
@@ -2979,7 +3065,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 );
                 delete payload.state.recoveryWatchers[key];
               }
-            });
+            }, lease);
           }
         },
 
@@ -3141,7 +3227,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Suppresses duplicate alerts while Foundry finishes reporting a single trigger event. */
         async postChatAlertOnce(region, payload, block, token, batchId, eventContext = {}) {
-          if (!block.chatAlert?.enabled) return;
+          if (!this.payloadAuthorityCurrent(payload) || !block.chatAlert?.enabled) return;
           const key = this.chatAlertBatchKey(region, block, batchId, eventContext);
           if (this.chatAlertBatches.has(key)) return;
 
@@ -3156,7 +3242,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Posts an auditable explanation of a configured effect without revealing unescaped world data. */
         async postChatAlert(region, payload, block, token, eventContext = {}) {
-          if (!block.chatAlert?.enabled) return;
+          if (!this.payloadAuthorityCurrent(payload) || !block.chatAlert?.enabled) return;
           const { token: sourceToken, actor: sourceActor } = await this.resolveSource(payload);
           const sourceName = sourceToken?.name ?? sourceActor?.name ?? region.name ?? "Zone source";
           const trait = String(eventContext?.trait ?? "").trim();
@@ -3206,12 +3292,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               .filter(Boolean);
           }
 
+          if (!this.payloadAuthorityCurrent(payload)) return;
           await ChatMessage.create(messageData);
         },
 
         /** Watches authoritative actor HP changes and applies each crossed threshold to occupants. */
-        async handleActorHitPointUpdate(actor) {
-          if (!this.isAuthority() || !actor?.uuid) return;
+        async handleActorHitPointUpdate(actor, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease) || !actor?.uuid) return;
           const currentHp = actorHitPoints(actor);
           if (currentHp === null) return;
 
@@ -3260,13 +3347,13 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                   );
                 }
               }
-            });
+            }, lease);
           }
         },
 
         /** Dispatches chat-card actions only to zones that observe the caster's location and the action that was actually used. */
-        async handleTraitUseMessage(message) {
-          if (!this.isAuthority()) return;
+        async handleTraitUseMessage(message, lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
 
           const candidateZones = this.allZones().filter((region) => {
             const payload = this.readPayload(region);
@@ -3317,27 +3404,27 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                   }
                 );
               }
-            });
+            }, lease);
           }
         },
 
         /** Repairs condition-based cleanup after reloads or broad actor updates. */
-        async reconcileAllLinkedConditions() {
-          if (!this.isAuthority()) return;
+        async reconcileAllLinkedConditions(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const actors = new Set(game.actors.contents);
           for (const scene of game.scenes?.contents ?? game.scenes ?? []) {
             for (const token of scene.tokens ?? []) if (token.actor) actors.add(token.actor);
           }
           for (const actor of actors) {
             if (actor.items.some((i) => this.zoneItemFlag(i)?.removal === "condition-end")) {
-              await this.reconcileActorDependencies(actor);
+              await this.reconcileActorDependencies(actor, lease);
             }
           }
         },
 
         /** Repairs temporary owned Items after an externally deleted Region lost its cleanup record. */
-        async reconcileOrphanedZoneItems() {
-          if (!this.isAuthority()) return;
+        async reconcileOrphanedZoneItems(lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
           const actors = new Set(game.actors?.contents ?? []);
           for (const scene of game.scenes?.contents ?? game.scenes ?? []) {
             for (const token of scene.tokens?.values?.() ?? scene.tokens ?? []) {
@@ -3351,7 +3438,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               try {
                 const region = await fromUuid(flag.zoneUuid);
                 if (region?.parent?.regions?.get?.(region.id)) continue;
-                await this.deleteOwnedItem(item, "orphaned zone Item cleanup");
+                await this.deleteOwnedItem(item, "orphaned zone Item cleanup", lease);
               } catch (error) {
                 console.error("PF2e Zone: orphaned Item cleanup failed", item, error);
                 ui.notifications.error(`PF2e Zone: failed to remove an orphaned effect from ${actor.name}. See console.`);
@@ -3361,28 +3448,28 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Runs the complete startup repair set once for concurrent active-GM handoff signals. */
-        async reconcileAuthorityState(reason = "authority recovery") {
-          if (!this.isAuthority()) return;
-          if (this.authorityRecovery) return await this.authorityRecovery;
+        async reconcileAuthorityState(reason = "authority recovery", lease = this.captureAuthorityLease()) {
+          if (!this.authorityLeaseCurrent(lease)) return;
+          if (this.authorityRecovery && this.authorityLeaseCurrent(this.authorityRecoveryLease)) return await this.authorityRecovery;
 
           const recovery = Promise.resolve().then(async () => {
             const steps = [
-              ["linked conditions", () => this.reconcileAllLinkedConditions()],
-              ["orphaned Items", () => this.reconcileOrphanedZoneItems()],
-              ["shared immunities", () => this.reconcileSharedImmunities()],
-              ["runtime history", () => this.reconcileRuntimeHistory()],
-              ["unfinished zone ends", () => this.reconcileUnfinishedZoneEnds()],
-              ["disabled zones", () => this.reconcileDisabledZones()],
-              ["unfinished exit cleanup", () => this.reconcileUnfinishedExitCleanup()],
-              ["completed saves", () => this.reconcileCompletedSaves()],
-              ["save delivery", () => this.reconcileUndeliveredSaveRequests()],
-              ["durations", () => this.checkAllDurations()],
-              ["unfinished activations", () => this.reconcileUnfinishedActivations()],
-              ["HP baselines", () => this.reconcileAllHpBaselines()]
+              ["linked conditions", () => this.reconcileAllLinkedConditions(lease)],
+              ["orphaned Items", () => this.reconcileOrphanedZoneItems(lease)],
+              ["shared immunities", () => this.reconcileSharedImmunities(undefined, lease)],
+              ["runtime history", () => this.reconcileRuntimeHistory(lease)],
+              ["unfinished zone ends", () => this.reconcileUnfinishedZoneEnds(lease)],
+              ["disabled zones", () => this.reconcileDisabledZones(lease)],
+              ["unfinished exit cleanup", () => this.reconcileUnfinishedExitCleanup(lease)],
+              ["completed saves", () => this.reconcileCompletedSaves(lease)],
+              ["save delivery", () => this.reconcileUndeliveredSaveRequests(lease)],
+              ["durations", () => this.checkAllDurations(lease)],
+              ["unfinished activations", () => this.reconcileUnfinishedActivations(lease)],
+              ["HP baselines", () => this.reconcileAllHpBaselines(lease)]
             ];
 
             for (const [label, run] of steps) {
-              if (!this.isAuthority()) return;
+              if (!this.authorityLeaseCurrent(lease)) return;
               try {
                 await run();
               } catch (error) {
@@ -3391,6 +3478,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
             }
           });
           this.authorityRecovery = recovery;
+          this.authorityRecoveryLease = lease;
           try {
             return await recovery;
           } finally {
@@ -3410,6 +3498,8 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
         /** Releases hooks and timers so a replaced runtime cannot process events twice. */
         teardownHooks() {
+          this.retired = true;
+          this.authorityGeneration++;
           const registry = globalThis.PF2EZoneRuntimeHookRegistry;
           if (registry?.runtime !== this) {
             this.hooksInstalled = false;
@@ -3447,6 +3537,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         /** Subscribes to the narrow set of Foundry events needed to keep zones current. */
         installHooks() {
           if (this.hooksInstalled) return;
+          this.retired = false;
 
           // v0.3.4+ owns a single global hook registry. Future runtime upgrades
           // can therefore replace hooks cleanly instead of accumulating one
@@ -3517,10 +3608,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           });
 
           on("updateCombat", async (combat) => {
+            const lease = runtime.captureAuthorityLease();
             try {
-              await runtime.checkAllDurations();
-              await runtime.processAllSourceTurnStarts(combat);
-              await runtime.processAllActiveTurnStarts(combat);
+              await runtime.checkAllDurations(lease);
+              await runtime.processAllSourceTurnStarts(combat, lease);
+              await runtime.processAllActiveTurnStarts(combat, lease);
             } catch (e) {
               console.error("PF2e Zone combat hook", e);
             }
@@ -3538,7 +3630,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
           // A different connected GM can become authoritative without loading a
           // new module instance. Both signals share one debounced full recovery pass.
           /** Defers authority inspection until Foundry has updated its active-GM selection. */
-          const resumeAuthorityWork = () => runtime.scheduleAuthorityRecovery("active-GM handoff");
+          const resumeAuthorityWork = () => {
+            runtime.refreshAuthorityGeneration();
+            runtime.scheduleAuthorityRecovery("active-GM handoff");
+          };
           on("userConnected", resumeAuthorityWork);
           on("updateUser", resumeAuthorityWork);
 
@@ -3698,8 +3793,10 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 && roll.options.rollerId === game.user.id;
               const outcome = rollIsTargetSave ? runtime.outcomeFromDegree(roll.degreeOfSuccess) : null;
               if (outcome && runtime.isAuthority()) {
+                const lease = runtime.captureAuthorityLease();
                 setTimeout(async () => {
                   try {
+                    if (!runtime.authorityLeaseCurrent(lease)) return;
                     const liveRegion = region.parent?.regions?.get?.(region.id);
                     const fresh = liveRegion ? runtime.readPayload(liveRegion) : null;
                     const stillPending = fresh?.state?.pendingSaves?.[pending.id];
@@ -3710,7 +3807,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                       pending.id,
                       pending.identifier,
                       outcome,
-                      actor.uuid
+                      actor.uuid,
+                      null,
+                      lease
                     );
                   } catch (error) {
                     console.error("PF2e Zone: direct save-resolution fallback failed", error);
@@ -3745,9 +3844,9 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
         },
 
         /** Receives Region behavior events through the module API so existing zones use updated runtime code. */
-        async handleRegionEvent({ event, region }) {
+        async handleRegionEvent({ event, region }, lease = this.captureAuthorityLease()) {
           this.installHooks();
-          if (!this.isAuthority() || !region) return;
+          if (!this.authorityLeaseCurrent(lease) || !region) return;
           const name = event?.name;
           if (!["behaviorActivated", "behaviorViewed", "behaviorDeactivated"].includes(name)
             && !this.isOperational(region)) return;
@@ -3768,18 +3867,18 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
 
           switch (name) {
             case "behaviorActivated":
-              await this.activateRegion(region);
+              await this.activateRegion(region, lease);
               break;
             case "behaviorViewed":
-              await this.activateRegion(region);
-              await this.checkSourceAndDuration(region);
+              await this.activateRegion(region, lease);
+              await this.checkSourceAndDuration(region, lease);
               break;
             case "behaviorDeactivated":
               // Region deletion deactivates the embedded behavior as part of
               // removing it. Do not write flags back into a Region whose
               // embedded behavior collection is already being torn down.
               if (this.endingZones.has(region.uuid)) break;
-              await this.deactivateRegion(region);
+              await this.deactivateRegion(region, lease);
               break;
             case "tokenEnter":
               if (!token) break;
@@ -3794,8 +3893,11 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload)) return;
                 if (!this.effectiveOccupants.has(region.uuid)) await this.rememberEffectiveOccupants(region, payload);
+                if (!this.payloadAuthorityCurrent(payload)) return;
                 this.seedHpBaseline(payload, token, { replace: true });
-                if (!(await this.eligible(payload, token, region))) {
+                const eligible = await this.eligible(payload, token, region);
+                if (!this.payloadAuthorityCurrent(payload)) return;
+                if (!eligible) {
                   this.noteEffectiveOccupant(region, token, false);
                   return;
                 }
@@ -3825,7 +3927,7 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
                 // This is a genuine outside -> inside transition after creation.
                 await this.processContinuousUnlocked(region, payload, token, batch);
                 await this.processTriggerUnlocked(region, payload, token, "enter", batch);
-              });
+              }, lease);
               break;
             case "tokenExit":
               if (!token) break;
@@ -3842,14 +3944,14 @@ export async function zoneRuntimeEntrypoint(explicitContext = null) {
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload)) return;
                 await this.processTurnStartUnlocked(region, payload, token, "regionTurnStart");
-              });
+              }, lease);
               break;
             case "tokenTurnEnd":
               if (!token) break;
               await this.withState(region, async (payload) => {
                 if (!this.isOperational(region, payload) || !(await this.eligible(payload, token, region))) return;
                 await this.processTriggerUnlocked(region, payload, token, "turnEnd", `turnEnd:${token.uuid}:${this.roundStamp(payload)}:${randomId()}`);
-              });
+              }, lease);
               break;
           }
         }
