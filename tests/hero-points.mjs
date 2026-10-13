@@ -79,6 +79,7 @@ globalThis.ui = { notifications: {
 globalThis.ChatMessage = { create: async (data) => { messages.push(data); } };
 globalThis.canvas = { tokens: { controlled: [], placeables: [] } };
 globalThis.game = {
+  system: { id: "pf2e" },
   actors: [],
   users: [{ id: "gm", isGM: true }, { id: "player", isGM: false }],
   user: { id: "gm", isGM: true, targets: new Set() }
@@ -89,10 +90,15 @@ const { promptSetHeroPoints, setHeroPoints } = await import("../scripts/hero-poi
 function actor(id, name, value, extra = {}) {
   return {
     id, name, type: "character", hasPlayerOwner: true,
+    flags: {},
     system: { resources: { heroPoints: { value, max: 3 } } },
     async update(data) {
       writes.push({ id, data });
       this.system.resources.heroPoints.value = data["system.resources.heroPoints.value"];
+      if (data["flags.pf2e-zone-automation.heroPointOperation"]) {
+        this.flags["pf2e-zone-automation"] ??= {};
+        this.flags["pf2e-zone-automation"].heroPointOperation = data["flags.pf2e-zone-automation.heroPointOperation"];
+      }
     },
     ...extra
   };
@@ -103,8 +109,9 @@ async function reset(actors = []) {
   assert.equal(userHooks.size, 0, "Closed dialogs release their reminder hooks");
   dialogs.length = notices.length = messages.length = writes.length = reminderWrites.length = 0;
   game.actors = actors;
+  game.actors.get = (id) => game.actors.find((entry) => entry.id === id);
   game.user = {
-    id: "gm", isGM: true, targets: new Set(), flags: { "pf2e-zone-automation": { heroPointReminders: {} } },
+    id: "gm", isGM: true, active: true, targets: new Set(), flags: { "pf2e-zone-automation": { heroPointReminders: {} } },
     async update(data) {
       reminderWrites.push(data);
       for (const [path, record] of Object.entries(data)) {
@@ -116,7 +123,9 @@ async function reset(actors = []) {
       return this;
     }
   };
-  game.users = [game.user, { id: "player", isGM: false }];
+  game.users = [game.user, { id: "player", isGM: false, active: true }];
+  game.users.get = (id) => game.users.find((entry) => entry.id === id);
+  game.users.activeGM = game.user;
   canvas.tokens.controlled = [];
 }
 
@@ -142,7 +151,7 @@ test("GM changes update PF2e resources for off-scene characters with bounded tot
   const second = actor("two", "<Two>", 0);
   await reset([first, second]);
   await setHeroPoints(2, [first, first, second]);
-  assert.deepEqual(writes, [
+  assert.deepEqual(writes.map(({ id, data }) => ({ id, data: { "system.resources.heroPoints.value": data["system.resources.heroPoints.value"] } })), [
     { id: "one", data: { "system.resources.heroPoints.value": 3 } },
     { id: "two", data: { "system.resources.heroPoints.value": 2 } }
   ]);
@@ -170,6 +179,153 @@ test("players, invalid amounts, and ambiguous or missing recipients cannot chang
   assert.equal(dialogs.length, 0);
   await assert.rejects(setHeroPoints(1, first), /Only a GM/);
   assert.equal(writes.length, 0);
+});
+
+test("independent concurrent awards read the latest total inside the Actor queue", async () => {
+  const first = actor("parallel-awards", "One", 0);
+  await reset([first]);
+  const save = first.update;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let active = 0;
+  let maximumActive = 0;
+  first.update = async function(data) {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await gate;
+    await save.call(this, data);
+    active -= 1;
+  };
+  const firstAward = setHeroPoints(1, first);
+  const secondAward = setHeroPoints(1, first);
+  await new Promise(setImmediate);
+  assert.equal(active, 1);
+  release();
+  const [firstResult, secondResult] = await Promise.all([firstAward, secondAward]);
+  assert.equal(first.system.resources.heroPoints.value, 2);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual([firstResult[0], secondResult[0]].map(({ before, after }) => [before, after]), [[0, 1], [1, 2]]);
+});
+
+test("parallel spends and mixed awards preserve both changes and resource bounds", async () => {
+  const first = actor("parallel-spends", "One", 2);
+  await reset([first]);
+  await Promise.all([setHeroPoints(1, first, { mode: "remove" }), setHeroPoints(1, first, { mode: "remove" })]);
+  assert.equal(first.system.resources.heroPoints.value, 0);
+  await Promise.all([setHeroPoints(1, first), setHeroPoints(1, first, { mode: "remove" })]);
+  assert.equal(first.system.resources.heroPoints.value, 0);
+  await Promise.all([setHeroPoints(3, first), setHeroPoints(1, first)]);
+  assert.equal(first.system.resources.heroPoints.value, 3);
+});
+
+test("a blocked Actor does not block an unrelated Hero Point change", async () => {
+  const first = actor("blocked", "One", 0);
+  const second = actor("unblocked", "Two", 0);
+  await reset([first, second]);
+  const save = first.update;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  first.update = async function(data) { await gate; return save.call(this, data); };
+  const blocked = setHeroPoints(1, first);
+  try {
+    await setHeroPoints(1, second);
+    assert.equal(first.system.resources.heroPoints.value, 0);
+    assert.equal(second.system.resources.heroPoints.value, 1);
+  } finally { release(); await blocked; }
+});
+
+test("duplicate operation IDs join once, preserve completed edits, and reject changed request details", async () => {
+  const first = actor("duplicate-operation", "One", 0);
+  await reset([first]);
+  const operationId = "HeroDuplicateOp00001";
+  const [one, two] = await Promise.all([
+    setHeroPoints(1, first, { operationId }), setHeroPoints(1, first, { operationId })
+  ]);
+  assert.deepEqual(one, two);
+  assert.equal(writes.length, 1);
+  assert.equal(messages.length, 1);
+  await setHeroPoints(1, first);
+  await setHeroPoints(1, first, { operationId, retry: true });
+  assert.equal(first.system.resources.heroPoints.value, 2);
+  assert.equal(writes.length, 2);
+  assert.equal(messages.length, 2);
+  await assert.rejects(setHeroPoints(2, first, { operationId }), /reused with different details/);
+});
+
+test("a committed Actor update with a lost acknowledgment is not awarded twice", async () => {
+  const first = actor("lost-actor-reply", "One", 0);
+  await reset([first]);
+  const save = first.update;
+  first.update = async function(data) { await save.call(this, data); throw new Error("Reply lost after save."); };
+  const operationId = "HeroLostReplyOp00001";
+  await setHeroPoints(1, first, { operationId });
+  await setHeroPoints(1, first, { operationId, retry: true });
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
+  assert.equal(messages.length, 1);
+});
+
+test("an unavailable or expired retry plan fails closed without applying a fresh award", async () => {
+  const first = actor("expired-retry", "One", 0);
+  await reset([first]);
+  await assert.rejects(setHeroPoints(1, first, { operationId: "UnknownHeroOp00001", retry: true }), /no longer available/);
+  const operationId = "ExpiringHeroOp00001";
+  await setHeroPoints(1, first, { operationId });
+  const originalNow = Date.now;
+  const later = Date.now() + 600_001;
+  Date.now = () => later;
+  try { await assert.rejects(setHeroPoints(1, first, { operationId, retry: true }), /no longer available/); }
+  finally { Date.now = originalNow; }
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
+});
+
+test("a fresh GM worker refuses retries and late initial submissions whose committed receipt outlives its plan", async () => {
+  const first = actor("fresh-worker-retry", "One", 0);
+  await reset([first]);
+  const operationId = "FreshWorkerHero00001";
+  await setHeroPoints(1, first, { operationId });
+  const { executeHeroPointChange } = await import("../scripts/hero-points-worker.js?fresh-worker-retry");
+  const request = { requesterUserId: game.user.id, actorIds: [first.id], amount: 1, mode: "add", operationId };
+  await assert.rejects(executeHeroPointChange({ ...request, retry: true }), /no longer available/);
+  await assert.rejects(executeHeroPointChange(request), /no longer available/);
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
+});
+
+test("a cancelled Actor update stays pending and a later retry applies the award once", async () => {
+  const first = actor("cancelled-update", "One", 0);
+  await reset([first]);
+  const save = first.update;
+  first.update = async () => undefined;
+  let failure;
+  try { await setHeroPoints(1, first); } catch (error) { failure = error; }
+  assert.match(failure.message, /not confirmed/);
+  assert.equal(failure.retryable, true);
+  assert.equal(messages.length, 0);
+  first.update = save;
+  await setHeroPoints(1, first, { operationId: failure.operationId, retry: true });
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
+});
+
+test("a queued change rechecks GM authority after an earlier Actor write finishes", async () => {
+  const first = actor("handoff-queued", "One", 0);
+  await reset([first]);
+  const save = first.update;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  first.update = async function(data) { await gate; return save.call(this, data); };
+  const firstAward = setHeroPoints(1, first);
+  const queuedAward = setHeroPoints(1, first);
+  const rejected = assert.rejects(queuedAward, /active GM/);
+  await new Promise(setImmediate);
+  const originalGM = game.users.activeGM;
+  game.users.activeGM = { id: "replacement-gm", isGM: true, active: true };
+  try { release(); await Promise.all([firstAward, rejected]); }
+  finally { game.users.activeGM = originalGM; }
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
 });
 
 test("one dropdown guides selection, previews Give/Spend/Set, validates the choice, and applies exact zero totals", async () => {
@@ -291,6 +447,71 @@ test("retrying a partial Add operation preserves the planned totals and does not
   assert.equal(writes.filter(({ id }) => id === "one").length, 1);
   assert.equal(dialog.rendered, false);
   assert.deepEqual(messages.at(-1).whisper, ["gm"]);
+});
+
+test("a retry never restores an old total on a character already updated before partial failure", async () => {
+  const first = actor("completed-before-retry", "One", 1);
+  const second = actor("failed-before-retry", "Two", 1);
+  const saveSecond = second.update;
+  second.update = async () => { throw new Error("Save failed."); };
+  await reset([first, second]);
+  const dialog = await promptSetHeroPoints();
+  dialog.element.querySelector('[data-hp-select="all"]').click();
+  await dialog.submit();
+  await setHeroPoints(1, first, { mode: "remove" });
+  second.update = saveSecond;
+  await dialog.submit();
+  assert.equal(first.system.resources.heroPoints.value, 1);
+  assert.equal(second.system.resources.heroPoints.value, 2);
+  assert.equal(writes.filter(({ id }) => id === first.id).length, 2);
+  assert.equal(dialog.rendered, false);
+});
+
+test("an external resource edit after partial failure rejects the frozen retry and restores a fresh preview", async () => {
+  const first = actor("stale-completed", "One", 1);
+  const second = actor("stale-pending", "Two", 1);
+  const saveSecond = second.update;
+  second.update = async () => { throw new Error("Save failed."); };
+  await reset([first, second]);
+  const dialog = await promptSetHeroPoints();
+  dialog.element.querySelector('[data-hp-select="all"]').click();
+  await dialog.submit();
+  second.system.resources.heroPoints.value = 0;
+  second.update = saveSecond;
+  await dialog.submit();
+  assert.equal(second.system.resources.heroPoints.value, 0);
+  assert.equal(writes.filter(({ id }) => id === second.id).length, 0);
+  assert.equal(dialog.rendered, true);
+  assert.match(notices.at(-1).message, /changed.*Review the totals/);
+  assert.equal(dialog.element.querySelector('[data-action="apply"]').textContent, "Give 1 hero point");
+  assert.equal(dialog.element.querySelector('[data-hp-actor="stale-pending"] [data-hp-after]').textContent, "1");
+  await dialog.close();
+});
+
+test("retry conflicts include changed maxima and intervening module operations even when the total returns to its original value", async () => {
+  for (const cause of ["maximum", "operation"]) {
+    const first = actor(`retry-${cause}`, "One", 1);
+    await reset([first]);
+    const save = first.update;
+    first.update = async () => { throw new Error("Save failed."); };
+    let failure;
+    try { await setHeroPoints(1, first); } catch (error) { failure = error; }
+    assert.equal(failure.retryable, true);
+    first.update = save;
+    if (cause === "maximum") first.system.resources.heroPoints.max = 1;
+    else {
+      await setHeroPoints(1, first);
+      await setHeroPoints(1, first, { mode: "remove" });
+    }
+    const count = writes.length;
+    await assert.rejects(setHeroPoints(1, first, { operationId: failure.operationId, retry: true }), (error) => {
+      assert.equal(error.code, "PF2E_ZONE_HERO_POINTS_CONFLICT");
+      assert.equal(error.retryable, false);
+      return true;
+    });
+    assert.equal(first.system.resources.heroPoints.value, 1);
+    assert.equal(writes.length, count);
+  }
 });
 
 test("choosing a different dropdown action after a partial failure starts a new operation", async () => {

@@ -1,5 +1,8 @@
 import { escapeHtml as escapeHTML } from "./utils.js";
 import { clearHeroPointReminders, createHeroPointReminder, hasHeroPointReminders, reminderTimestamp } from "./hero-point-reminders.js";
+import { heroPointState, nextHeroPointTotal as nextTotal, validateHeroPointChange } from "./hero-points-rules.js";
+import { requestGMWorker } from "./transport.js";
+import { newOperationId } from "./utils.js";
 
 let heroPointsDialog = null;
 const HERO_POINT_CHOICES = [
@@ -16,22 +19,6 @@ function playerCharacters() {
   return [...(game.actors ?? [])]
     .filter((actor) => actor.type === "character" && actor.hasPlayerOwner)
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** Reads PF2e's Hero Point resource and respects characters whose maximum differs from three. */
-function heroPointState(actor) {
-  const resource = actor.system?.resources?.heroPoints;
-  return {
-    value: Number(resource?.value ?? 0),
-    max: Math.min(3, Math.max(0, Number(resource?.max ?? 3)))
-  };
-}
-
-/** Computes the same bounded total for previews and saved changes. */
-function nextTotal(actor, amount, mode) {
-  const { value, max } = heroPointState(actor);
-  const total = mode === "set" ? amount : value + (mode === "remove" ? -amount : amount);
-  return Math.min(max, Math.max(0, total));
 }
 
 /** Resolves legacy token selections or names without falling back to an unrelated character. */
@@ -55,49 +42,32 @@ function resolveCharacters(character) {
   return actors;
 }
 
-/** Applies exact planned totals so retrying a partially failed operation never adds points twice. */
-async function applyHeroPointChanges(plan) {
-  if (!game.user.isGM) throw new Error("Only a GM can change Hero Points.");
-  const changes = [];
-  const failures = [];
-  for (const { actor, total } of plan) {
-    const before = heroPointState(actor).value;
-    const after = nextTotal(actor, total, "set");
-    if (before === after) continue;
-    try {
-      resolveCharacters(actor);
-      await actor.update({ "system.resources.heroPoints.value": after });
-      changes.push({ actorId: actor.id, name: actor.name, before, after });
-    } catch (error) {
-      failures.push(`${actor.name}: ${error?.message ?? error}`);
+/** Sends immutable operation details to the active GM and preserves identity and plan information on failure. */
+async function requestHeroPointChanges(request) {
+  try {
+    const response = await requestGMWorker({ protocol: 1, action: "set-hero-points", requesterUserId: game.user.id, ...request });
+    for (const warning of response?.warnings ?? []) ui.notifications.warn(warning);
+    if (!response?.ok) {
+      const error = new Error(response?.error ?? "Hero Points could not be updated.");
+      error.code = response?.errorCode;
+      error.retryable = Boolean(response?.retryable);
+      error.plan = response?.plan;
+      throw error;
     }
+    return response.changes;
+  } catch (error) {
+    error.operationId = request.operationId;
+    if (error.code === "PF2E_ZONE_REQUEST_TIMEOUT") error.retryable = true;
+    throw error;
   }
-  if (changes.length) {
-    try {
-      await ChatMessage.create({
-        content: `<p><strong>Hero Points updated</strong></p><ul>${changes.map(({ name, before, after }) =>
-          `<li>${escapeHTML(name)}: ${before} → ${after}</li>`).join("")}</ul>`,
-        user: game.user.id,
-        whisper: [...game.users].filter((user) => user.isGM).map((user) => user.id)
-      });
-    } catch (error) {
-      console.error("PF2e Zone Hero Point announcement failed", error);
-      ui.notifications.warn("Hero Points were updated, but the chat summary could not be posted.");
-    }
-  }
-  if (failures.length) throw new Error(`Some Hero Points could not be updated. Retry to finish the same change. ${failures.join("; ")}`);
-  return changes;
 }
 
 /** Updates PF2e's actual Hero Point totals, keeping the existing API's additive default. */
-export async function setHeroPoints(amount, character, { mode = "add" } = {}) {
+export async function setHeroPoints(amount, character, { mode = "add", operationId = newOperationId(), retry = false } = {}) {
   if (!game.user.isGM) throw new Error("Only a GM can change Hero Points.");
-  if (!Number.isInteger(amount) || !["add", "remove", "set"].includes(mode)
-      || (mode !== "add" && amount < 0)) {
-    throw new Error("Enter a whole number of Hero Points and choose Add, Remove, or Set total.");
-  }
+  validateHeroPointChange(amount, mode);
   const actors = resolveCharacters(character);
-  return applyHeroPointChanges(actors.map((actor) => ({ actor, total: nextTotal(actor, amount, mode) })));
+  return requestHeroPointChanges({ actorIds: actors.map((actor) => actor.id), amount, mode, operationId, retry });
 }
 
 /** Presents one guided screen with explicit recipients and a preview of their resulting totals. */
@@ -172,6 +142,7 @@ export async function promptSetHeroPoints() {
   let reminderClearing = false;
   let reminderHook = null;
   let pendingPlan = null;
+  let pendingRequest = null;
   const dialog = new foundry.applications.api.DialogV2({
     window: { title: "Set Hero Points" },
     position: { width: 520 },
@@ -192,12 +163,21 @@ export async function promptSetHeroPoints() {
           }
           applying = true;
           pendingPlan ??= selected.map((actor) => ({ actor, total: nextTotal(actor, choice.amount, choice.mode) }));
+          pendingRequest ??= { actorIds: selected.map((actor) => actor.id), amount: choice.amount,
+            mode: choice.mode, operationId: newOperationId(), retry: false };
+          const request = { ...pendingRequest };
+          pendingRequest.retry = true;
           refreshPreview();
           try {
-            const changes = await applyHeroPointChanges(pendingPlan);
+            const changes = await requestHeroPointChanges(request);
             await dialog.close();
             return changes;
           } catch (error) {
+            if (error.plan) pendingPlan = error.plan.map(({ actorId, total }) => {
+              const actor = actors.find((entry) => entry.id === actorId);
+              return { actor, total: total ?? heroPointState(actor).value };
+            });
+            if (!error.retryable) pendingPlan = pendingRequest = null;
             console.error("PF2e Zone Hero Point update failed", error);
             ui.notifications.error(error?.message ?? "Hero Points could not be updated. Try again.");
           } finally {
@@ -312,7 +292,7 @@ export async function promptSetHeroPoints() {
     root.querySelector(".pza-hp-actions").append(...(footer ? [footer] : buttons));
     /** Starts a new operation when the GM deliberately changes the choice or recipients. */
     const editSelection = (event) => {
-      if (!event || ["hero-change", "hero-character"].includes(event.target.name)) pendingPlan = null;
+      if (!event || ["hero-change", "hero-character"].includes(event.target.name)) pendingPlan = pendingRequest = null;
       refreshPreview();
     };
     root.addEventListener("input", editSelection);

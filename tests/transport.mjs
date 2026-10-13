@@ -28,6 +28,7 @@ globalThis.game = {
 
 const { registerZoneSocket, requestGMWorker } = await import("../scripts/transport.js");
 const { requestShieldingTaunt } = await import("../scripts/shielding-taunt.js");
+const { setHeroPoints } = await import("../scripts/hero-points.js");
 registerZoneSocket();
 
 test("player request reaches the module GM Worker without a world macro", async () => {
@@ -95,6 +96,84 @@ test("a secondary GM routes Recall Knowledge questions to the authoritative GM",
     users.delete(otherGM.id);
     game.user = player;
   }
+});
+
+test("two GM clients award through one authoritative Actor queue with authenticated request identities", async () => {
+  const otherGM = { id: "hero-other-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  const originalActors = game.actors;
+  const originalChatMessage = globalThis.ChatMessage;
+  const originalIterator = users[Symbol.iterator];
+  const announcements = [];
+  const writes = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const actor = {
+    id: "two-gm-hero", name: "Hero", type: "character", hasPlayerOwner: true, flags: {},
+    system: { resources: { heroPoints: { value: 0, max: 3 } } },
+    async update(data) {
+      await gate;
+      writes.push(data);
+      this.system.resources.heroPoints.value = data["system.resources.heroPoints.value"];
+      this.flags["pf2e-zone-automation"] = { heroPointOperation: data["flags.pf2e-zone-automation.heroPointOperation"] };
+    }
+  };
+  game.actors = [actor];
+  game.actors.get = (id) => id === actor.id ? actor : null;
+  // Foundry Collections iterate their document values, unlike a plain Map.
+  users[Symbol.iterator] = users.values;
+  globalThis.ChatMessage = { create: async (data) => { announcements.push(data); } };
+  try {
+    game.user = otherGM;
+    const secondaryAward = setHeroPoints(1, actor);
+    const request = sent.shift();
+    assert.equal(request.gmId, gm.id);
+    assert.equal(request.request.action, "set-hero-points");
+    assert.equal(request.request.requesterUserId, otherGM.id);
+    game.user = gm;
+    const secondaryProcessing = listener(request, otherGM.id);
+    const primaryAward = setHeroPoints(1, actor);
+    await new Promise(setImmediate);
+    assert.equal(writes.length, 0);
+    release();
+    await Promise.all([secondaryProcessing, primaryAward]);
+    const reply = sent.shift();
+    assert.equal(reply.response.ok, true);
+    game.user = otherGM;
+    await listener(reply, gm.id);
+    const secondaryResult = await secondaryAward;
+    assert.equal(actor.system.resources.heroPoints.value, 2);
+    assert.deepEqual(writes.map((data) => data["system.resources.heroPoints.value"]), [1, 2]);
+    assert.equal(secondaryResult[0].before, 0);
+    assert.deepEqual(announcements.map((data) => data.user), [otherGM.id, gm.id]);
+    assert.ok(announcements.every((data) => data.whisper.includes(gm.id) && data.whisper.includes(otherGM.id)));
+  } finally {
+    release();
+    users[Symbol.iterator] = originalIterator;
+    users.delete(otherGM.id);
+    game.actors = originalActors;
+    globalThis.ChatMessage = originalChatMessage;
+    game.user = player;
+  }
+});
+
+test("the authenticated worker rejects a player's direct Hero Point mutation", async () => {
+  game.user = player;
+  const pendingChange = requestGMWorker({
+    protocol: 1, action: "set-hero-points", requesterUserId: player.id,
+    actorIds: ["any-actor"], amount: 1, mode: "add", operationId: "PlayerHeroOp00001"
+  });
+  const request = sent.shift();
+  game.user = gm;
+  const originalError = console.error;
+  console.error = () => {};
+  try { await listener(request, player.id); } finally { console.error = originalError; }
+  const reply = sent.shift();
+  game.user = player;
+  await listener(reply, gm.id);
+  const result = await pendingChange;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Only an active GM/);
 });
 
 test("a secondary GM routes save cancellation to the authoritative GM", async () => {

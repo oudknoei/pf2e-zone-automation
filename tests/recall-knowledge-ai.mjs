@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { clearKnowledgeApiKey, hasKnowledgeApiKey, KNOWLEDGE_AI_TIMEOUT_MS, knowledgeLocalAIStatus,
-  parseKnowledgeAIResponse, queueKnowledgeAnswer, reconcileKnowledgeAI, setKnowledgeApiKey } from "../scripts/recall-knowledge-ai.js";
+  parseKnowledgeAIResponse, queueKnowledgeAnswer, reconcileKnowledgeAI, registerKnowledgeAI, setKnowledgeApiKey } from "../scripts/recall-knowledge-ai.js";
 import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
   KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
   KNOWLEDGE_REASONING_CHOICES, knowledgeAIProfile, normalizeKnowledgeEndpoint } from "../scripts/recall-knowledge-ai-config.js";
@@ -16,6 +16,7 @@ import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG, ANSWER_
 
 const KEY = "fake-session-secret-do-not-persist";
 let counter = 0;
+let unregisterAI = null;
 const diagnostics = [];
 const costWarnings = [];
 function marker(message) { return message.flags[MODULE_ID][FLAG]; }
@@ -31,7 +32,9 @@ async function until(predicate) {
   }
   assert.fail("The expected async state did not arrive");
 }
-function setup() {
+function setup({ startAI = true } = {}) {
+  unregisterAI?.();
+  unregisterAI = null;
   clearKnowledgeApiKey();
   const gm = { id: "gm", isGM: true, active: true, name: "GM" };
   const secondGM = { id: "other-gm", isGM: true, active: true };
@@ -43,9 +46,35 @@ function setup() {
     [KNOWLEDGE_MODEL_SETTING, DEFAULT_KNOWLEDGE_MODEL], [KNOWLEDGE_REASONING_SETTING, DEFAULT_KNOWLEDGE_REASONING],
     [KNOWLEDGE_OUTPUT_SETTING, DEFAULT_KNOWLEDGE_OUTPUT]]);
   const f = { gm, secondGM, player, users, values, messages: [], requests: [], writes: [], notifications: [], rolls: 0, fetch: null };
+  const documents = new Map();
+  const hooks = new Map();
+  globalThis.Hooks = {
+    on(name, handler) {
+      if (!hooks.has(name)) hooks.set(name, new Map());
+      const id = Symbol(name);
+      hooks.get(name).set(id, handler);
+      return id;
+    },
+    off(name, id) { hooks.get(name)?.delete(id); }
+  };
+  f.hooks = hooks;
+  f.fire = (name, ...args) => { for (const handler of hooks.get(name)?.values() ?? []) handler(...args); };
+  f.addMessage = (message) => {
+    f.messages.push(message);
+    documents.set(message.id, message);
+    f.fire("createChatMessage", message);
+    return message;
+  };
+  f.deleteMessage = (message) => {
+    f.messages.splice(f.messages.indexOf(message), 1);
+    documents.delete(message.id);
+    f.fire("deleteChatMessage", message);
+  };
+  f.startAI = () => { unregisterAI ??= registerKnowledgeAI(); };
+  f.stopAI = () => { unregisterAI?.(); unregisterAI = null; };
   globalThis.game = { world: { id: `world-${++counter}` }, user: gm, users, system: { id: "pf2e" }, i18n: { localize: (key) => key },
     settings: { get: (_namespace, key) => values.get(key) },
-    messages: { contents: f.messages, get: (id) => f.messages.find((message) => message.id === id) } };
+    messages: { contents: f.messages, get: (id) => documents.get(id) } };
   globalThis.ui = { notifications: Object.fromEntries(["warn", "error", "info"].map((level) => [level, (text) => f.notifications.push({ level, text })])) };
   globalThis.CONFIG = { PF2E: { creatureTraits: {} } };
   const source = { name: "Scholar", type: "character", skills: { arcana: { label: "Arcana", check: { mod: 10 } } },
@@ -69,8 +98,9 @@ function setup() {
         await f.beforeUpdate?.(message, changes);
         f.writes.push(structuredClone(changes));
         marker(message).ai = { ...marker(message).ai, ...structuredClone(changes[`flags.${MODULE_ID}.${FLAG}.ai`]) };
+        f.fire("updateChatMessage", message, changes);
       } };
-      f.messages.push(message);
+      f.addMessage(message);
       await f.afterCreate?.(message);
       return message;
     }
@@ -83,6 +113,7 @@ function setup() {
     requesterUserId: player.id, sourceTokenUuid: sourceToken.uuid, targetTokenUuid: targetToken.uuid,
     question: "How do I survive its flame?" });
   f.card = async () => { const result = await f.ask(); return game.messages.get(result.messageId); };
+  if (startAI) f.startAI();
   return f;
 }
 test.beforeEach((t) => {
@@ -91,7 +122,7 @@ test.beforeEach((t) => {
   t.mock.method(console, "error", (...args) => diagnostics.push(structuredClone(args)));
   t.mock.method(console, "warn", (...args) => costWarnings.push(structuredClone(args)));
 });
-test.afterEach(() => clearKnowledgeApiKey());
+test.afterEach(() => { unregisterAI?.(); unregisterAI = null; clearKnowledgeApiKey(); });
 
 test("cost estimates use actual cache and output counts without charging reasoning twice", () => {
   const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
@@ -608,6 +639,206 @@ test("reload recovery recognizes an answer already posted and keeps a public ans
   assert.equal(f.rolls, 1);
 });
 
+test("startup indexes saved questions and public answers without an API call or reroll", async () => {
+  const f = setup({ startAI: false });
+  const card = await f.card();
+  marker(card).ai = { status: "thinking", attemptId: "restored-attempt" };
+  const answer = await ChatMessage.create({ author: f.gm.id, whisper: [], content: "A public recollection.",
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "restored-attempt", text: "A public recollection." } } } });
+  f.startAI();
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  assert.deepEqual(answer.whisper, []);
+  assert.equal(f.messages.length, 2);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.rolls, 1);
+});
+
+test("chat hooks index new answers, rekey changed attempts, preserve public answers, and remove deleted answers", async () => {
+  const f = setup();
+  const card = await f.card();
+  marker(card).ai = { status: "interrupted", attemptId: "first-attempt" };
+  f.fire("updateChatMessage", card);
+  const answer = await ChatMessage.create({ author: f.gm.id, whisper: [f.gm.id], content: "A recollection.",
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "first-attempt", text: "A recollection." } } } });
+  knowledgeAnswerMarker(answer).attemptId = "second-attempt";
+  f.fire("updateChatMessage", answer);
+  assert.throws(() => queueKnowledgeAnswer(card.id), /Enter an API key/);
+  marker(card).ai.attemptId = "second-attempt";
+  f.fire("updateChatMessage", card);
+  await queueKnowledgeAnswer(card.id);
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  answer.whisper = [];
+  f.fire("updateChatMessage", answer);
+  marker(card).ai.status = "interrupted";
+  f.fire("updateChatMessage", card);
+  await queueKnowledgeAnswer(card.id);
+  assert.deepEqual(answer.whisper, []);
+  const savedMarker = knowledgeAnswerMarker(answer);
+  delete answer.flags[MODULE_ID][ANSWER_MESSAGE_FLAG];
+  f.fire("updateChatMessage", answer);
+  marker(card).ai.status = "interrupted";
+  f.fire("updateChatMessage", card);
+  assert.throws(() => queueKnowledgeAnswer(card.id), /Enter an API key/);
+  answer.flags[MODULE_ID][ANSWER_MESSAGE_FLAG] = savedMarker;
+  f.fire("updateChatMessage", answer);
+  await queueKnowledgeAnswer(card.id);
+  f.deleteMessage(answer);
+  marker(card).ai.status = "interrupted";
+  f.fire("updateChatMessage", card);
+  assert.throws(() => queueKnowledgeAnswer(card.id), /Enter an API key/);
+  assert.equal(f.messages.length, 1);
+  assert.equal(f.requests.length, 0);
+});
+
+test("updating a duplicate matching answer preserves recovery order and deleting it exposes the remaining answer", async () => {
+  const f = setup();
+  const card = await f.card();
+  marker(card).ai = { status: "interrupted", attemptId: "duplicate-answer-attempt" };
+  f.fire("updateChatMessage", card);
+  const data = { author: f.gm.id, whisper: [f.gm.id], content: "Saved answer.",
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "duplicate-answer-attempt", text: "Saved answer." } } } };
+  const first = await ChatMessage.create(structuredClone(data));
+  const second = await ChatMessage.create(structuredClone(data));
+  first.whisper = [];
+  f.fire("updateChatMessage", first);
+  await queueKnowledgeAnswer(card.id);
+  assert.equal(marker(card).ai.answerMessageId, first.id);
+  f.deleteMessage(first);
+  marker(card).ai.status = "interrupted";
+  f.fire("updateChatMessage", card);
+  await queueKnowledgeAnswer(card.id);
+  assert.equal(marker(card).ai.answerMessageId, second.id);
+  assert.equal(f.requests.length, 0);
+});
+
+test("question visibility hooks cancel work immediately and restoring privacy recovers without a paid retry", async () => {
+  const f = setup();
+  const card = await f.card();
+  let finish;
+  f.fetch = () => new Promise((resolve) => { finish = resolve; });
+  setKnowledgeApiKey(KEY);
+  await queueKnowledgeAnswer(card.id);
+  await until(() => finish);
+  card.blind = false;
+  f.fire("updateChatMessage", card);
+  assert.equal(f.requests[0].options.signal.aborted, true);
+  finish({ ok: true, json: async () => response("A discarded answer") });
+  await new Promise(setImmediate);
+  assert.equal(f.messages.length, 1);
+  card.blind = true;
+  f.fire("updateChatMessage", card);
+  await until(() => marker(card).ai.status === "interrupted");
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.rolls, 1);
+});
+
+test("the recovery index excludes forged markers and revalidates marked candidates after a user role change", async () => {
+  const f = setup({ startAI: false });
+  const card = await f.card();
+  marker(card).ai = { status: "queued", attemptId: "trusted-attempt" };
+  const answer = f.addMessage({ id: "untrusted-answer", author: f.player, whisper: [],
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "trusted-attempt", text: "An untrusted answer." } } } });
+  const forged = f.addMessage({ ...card, id: "forged-question", author: f.player,
+    flags: structuredClone(card.flags) });
+  const publicQuestion = f.addMessage({ ...card, id: "public-question", blind: false,
+    flags: structuredClone(card.flags) });
+  f.startAI();
+  await until(() => marker(card).ai.status === "interrupted");
+  assert.equal(marker(forged).ai.status, "queued");
+  assert.equal(marker(publicQuestion).ai.status, "queued");
+  assert.equal(marker(card).ai.answerMessageId, undefined);
+  f.player.isGM = true;
+  f.fire("updateUser", f.player, { role: 4 });
+  marker(card).ai.status = "queued";
+  f.fire("updateChatMessage", card);
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  assert.equal(f.requests.length, 0);
+});
+
+test("failed recovery writes remain indexed for a later lifecycle check without submitting to the API", async () => {
+  const f = setup({ startAI: false });
+  const card = await f.card();
+  marker(card).ai = { status: "thinking", attemptId: "abandoned-attempt" };
+  f.beforeUpdate = () => { throw new Error("Chat temporarily unavailable"); };
+  f.startAI();
+  await new Promise(setImmediate);
+  assert.equal(marker(card).ai.status, "thinking");
+  f.beforeUpdate = null;
+  await reconcileKnowledgeAI();
+  assert.equal(marker(card).ai.status, "interrupted");
+  assert.equal(f.requests.length, 0);
+});
+
+test("index teardown removes all lifecycle hooks and startup rebuild recovers saved answers", async () => {
+  const f = setup();
+  const card = await f.card();
+  f.stopAI();
+  for (const name of ["createChatMessage", "updateChatMessage", "deleteChatMessage", "updateUser"]) {
+    assert.equal(f.hooks.get(name).size, 0, name);
+  }
+  marker(card).ai = { status: "queued", attemptId: "after-teardown-attempt" };
+  const answer = await ChatMessage.create({ author: f.gm.id, whisper: [], content: "Saved answer.",
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "after-teardown-attempt", text: "Saved answer." } } } });
+  f.startAI();
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  assert.equal(f.requests.length, 0);
+});
+
+test("large chat history is traversed once at startup and never by repeated timer recovery or answer lookup", async (t) => {
+  const f = setup({ startAI: false });
+  const card = await f.card();
+  marker(card).ai = { status: "queued", attemptId: "large-history-attempt" };
+  for (let index = 0; index < 30_000; index++) f.addMessage({ id: `ordinary-${index}`, author: f.player, flags: {} });
+  for (let index = 0; index < 250; index++) f.addMessage({ ...card, id: `completed-${index}`,
+    flags: { [MODULE_ID]: { [FLAG]: { ...marker(card), ai: { status: "complete" } } } } });
+  const answer = await ChatMessage.create({ author: f.gm.id, whisper: [], content: "Saved answer.",
+    flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: { questionMessageId: card.id,
+      operationId: marker(card).operationId, attemptId: "large-history-attempt", text: "Saved answer." } } } });
+  let traversals = 0;
+  let visits = 0;
+  const history = new Proxy(f.messages, { get(target, property, receiver) {
+    if (property === Symbol.iterator) return function* () {
+      traversals++;
+      for (const message of target) { visits++; yield message; }
+    };
+    if (property === "find") return () => assert.fail("Recovery must not search the full chat array");
+    return Reflect.get(target, property, receiver);
+  } });
+  let reads = 0;
+  Object.defineProperty(game.messages, "contents", { get: () => { reads++; return history; } });
+  let authorityChecks = 0;
+  Object.defineProperty(f.users, "activeGM", { get: () => { authorityChecks++; return f.gm; } });
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  f.startAI();
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(traversals, 1);
+  assert.equal(visits, 30_252);
+  const checksBeforePolling = authorityChecks;
+  for (let tick = 0; tick < 100; tick++) { t.mock.timers.tick(1000); await new Promise(setImmediate); }
+  assert.ok(authorityChecks >= checksBeforePolling + 100, "Each timer tick still checks active-GM authority");
+  // A role event must revisit only marked candidates, never ordinary messages.
+  f.fire("updateUser", f.secondGM, { active: true });
+  marker(card).ai.status = "interrupted";
+  f.fire("updateChatMessage", card);
+  await queueKnowledgeAnswer(card.id);
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  assert.equal(reads, 1);
+  assert.equal(traversals, 1);
+  assert.equal(visits, 30_252);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.rolls, 1);
+  f.stopAI();
+  t.mock.timers.reset();
+});
+
 test("clearing the key cancels queued work and discards a late network completion", async () => {
   const f = setup();
   const card = await f.card();
@@ -643,6 +874,7 @@ test("GM handoff and reload recovery interrupt old attempts without resending or
   assert.equal(hasKnowledgeApiKey(), false);
   assert.equal(marker(card).ai.status, "interrupted");
   marker(card).ai = { ...marker(card).ai, attemptId: "new-gm-attempt", status: "queued", gmId: f.secondGM.id };
+  f.fire("updateChatMessage", card);
   finish({ ok: true, json: async () => response("Old GM's late answer") });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(marker(card).ai.attemptId, "new-gm-attempt");
@@ -666,7 +898,7 @@ test("deleted cards, changed worlds and lost GM roles invalidate sessions and pr
   const f = setup();
   const card = await f.card();
   setKnowledgeApiKey(KEY);
-  f.messages.length = 0;
+  f.deleteMessage(card);
   assert.throws(() => queueKnowledgeAnswer(card.id), /private GM/);
   assert.equal(f.requests.length, 0);
 });
@@ -740,7 +972,7 @@ test("a newer attempt or deleted card prevents an old request from delivering or
     setKnowledgeApiKey(KEY);
     await queueKnowledgeAnswer(card.id);
     await until(() => finish);
-    if (deleted) f.messages.length = 0;
+    if (deleted) f.deleteMessage(card);
     else marker(card).ai = { ...marker(card).ai, attemptId: "newer-attempt", status: "complete", answer: "Newer answer" };
     await reconcileKnowledgeAI();
     assert.equal(f.requests[0].options.signal.aborted, true);

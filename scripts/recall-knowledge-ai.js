@@ -1,7 +1,8 @@
 import { knowledgeAIProfile } from "./recall-knowledge-ai-config.js";
 import { logKnowledgeAICost } from "./recall-knowledge-ai-cost.js";
-import { ANSWER_MESSAGE_FLAG, isKnowledgeActiveGM, knowledgeAnswerMarker, knowledgeAnswerText, plainKnowledgeAnswer,
+import { ANSWER_MESSAGE_FLAG, isKnowledgeActiveGM, knowledgeAnswerText, plainKnowledgeAnswer,
   privateKnowledgeQuestion, QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
+import { KnowledgeChatIndex } from "./recall-knowledge-index.js";
 import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
 
 export const KNOWLEDGE_AI_TIMEOUT_MS = 90000;
@@ -11,6 +12,8 @@ let session = null;
 let draining = false;
 let installed = false;
 const interruptedWrites = new Set();
+let messageIndex = null;
+let indexIdentity = null;
 
 /** Represents safe, locally authored API error text rather than provider messages containing secrets. */
 class KnowledgeAIError extends Error {}
@@ -20,17 +23,24 @@ function sessionIdentity() {
   return `${game.world?.id ?? ""}:${game.user?.id ?? ""}`;
 }
 
+/** Recovers the index once per loaded world, collection, and viewing identity rather than once per timer tick. */
+function knowledgeChatIndex() {
+  const identity = `${sessionIdentity()}:${Boolean(game.user?.isGM)}`;
+  if (!messageIndex || messageIndex.messages !== game.messages || indexIdentity !== identity) {
+    messageIndex = new KnowledgeChatIndex(game.messages);
+    indexIdentity = identity;
+  }
+  return messageIndex;
+}
+
 /** Resolves a still-present private chat document by ID. */
 function questionMessage(id) {
-  return game.messages?.get?.(id) ?? game.messages?.contents?.find((message) => message.id === id);
+  return typeof game.messages?.get === "function" ? game.messages.get(id) : knowledgeChatIndex().message(id);
 }
 
 /** Finds a durable answer by attempt so a lost chat acknowledgment cannot duplicate it on retry. */
 function postedAnswer(messageId, operationId, attemptId) {
-  return (game.messages?.contents ?? []).find((message) => {
-    const marker = knowledgeAnswerMarker(message);
-    return marker?.questionMessageId === messageId && marker.operationId === operationId && marker.attemptId === attemptId;
-  });
+  return knowledgeChatIndex().answer(messageId, operationId, attemptId);
 }
 
 /** Refreshes chat controls after changing browser-only connection state. */
@@ -42,6 +52,7 @@ function refreshKnowledgeChat() {
 async function writeAIState(message, state) {
   if (!isKnowledgeActiveGM() || !privateKnowledgeQuestion(message)) throw new Error("Only the active GM can update this private question.");
   await message.update({ [`flags.${QUESTION_MODULE_ID}.${QUESTION_MESSAGE_FLAG}.ai`]: state });
+  if (messageIndex) knowledgeChatIndex().update(message);
 }
 
 /** Marks a canceled attempt only while that attempt still owns its private card. */
@@ -255,6 +266,7 @@ async function deliverAnswer(job) {
         } } }
       });
       if (!answer) throw new Error("The private answer could not be posted.");
+      knowledgeChatIndex().update(answer);
     }
     if (!ownsJob(job)) return;
     await writeAIState(message, { ...marker.ai, ...job.result, answerMessageId: answer.id,
@@ -379,6 +391,7 @@ function reserveKnowledgeAnswer(messageId) {
 
 /** Starts automatic generation on a later turn of the event loop, after the player acknowledgment. */
 export function scheduleKnowledgeAnswer(message) {
+  if (game.user?.isGM) knowledgeChatIndex().update(message);
   if (!isKnowledgeActiveGM() || !hasKnowledgeApiKey()) return;
   const scheduledSession = session;
   setTimeout(() => {
@@ -398,9 +411,16 @@ export async function reconcileKnowledgeAI() {
     jobs.delete(job.messageId);
   }
   if (!isKnowledgeActiveGM()) return;
-  for (const message of game.messages?.contents ?? []) {
+  const index = knowledgeChatIndex();
+  for (const indexed of [...index.pendingQuestions()]) {
+    const message = questionMessage(indexed.id);
     const marker = privateKnowledgeQuestion(message);
-    if (!marker || !["queued", "thinking"].includes(marker.ai?.status) || jobs.has(message.id) || interruptedWrites.has(message.id)) continue;
+    if (!marker || !["queued", "thinking"].includes(marker.ai?.status)) {
+      if (message) index.update(message);
+      else index.remove(indexed.id);
+      continue;
+    }
+    if (jobs.has(message.id) || interruptedWrites.has(message.id)) continue;
     interruptedWrites.add(message.id);
     try {
       const delivered = postedAnswer(message.id, marker.operationId, marker.ai.attemptId);
@@ -416,21 +436,46 @@ export async function reconcileKnowledgeAI() {
 export function registerKnowledgeAI() {
   if (installed) return;
   installed = true;
+  const hooks = Hooks;
+  // Startup must also recover documents created before these lifecycle hooks were installed.
+  messageIndex = null;
+  indexIdentity = null;
+  if (game.user?.isGM) knowledgeChatIndex();
   /** Rechecks authority without sending another API request. */
   const reconcile = () => { void reconcileKnowledgeAI(); };
-  const userHook = Hooks.on("updateUser", reconcile);
-  const deleteHook = Hooks.on("deleteChatMessage", reconcile);
+  /** Maintains only the changed chat document and wakes recovery for relevant cards or jobs. */
+  const updateMessage = (message) => {
+    if (game.user?.isGM && (knowledgeChatIndex().update(message) || jobs.has(message.id))) reconcile();
+  };
+  /** Removes deleted answers and cards immediately, aborting any associated local job. */
+  const deleteMessage = (message) => {
+    const indexed = messageIndex?.messages === game.messages && messageIndex.remove(message.id);
+    if (indexed || jobs.has(message.id)) reconcile();
+  };
+  /** Revalidates marked candidates after role changes without traversing ordinary messages. */
+  const updateUser = () => {
+    if (game.user?.isGM) knowledgeChatIndex().refreshTrust();
+    reconcile();
+  };
+  const userHook = hooks.on("updateUser", updateUser);
+  const createHook = hooks.on("createChatMessage", updateMessage);
+  const updateHook = hooks.on("updateChatMessage", updateMessage);
+  const deleteHook = hooks.on("deleteChatMessage", deleteMessage);
   const timer = setInterval(reconcile, 1000);
   globalThis.addEventListener?.("pagehide", clearKnowledgeApiKey);
   globalThis.addEventListener?.("beforeunload", clearKnowledgeApiKey);
   reconcile();
   return () => {
     clearInterval(timer);
-    Hooks.off("updateUser", userHook);
-    Hooks.off("deleteChatMessage", deleteHook);
+    hooks.off("updateUser", userHook);
+    hooks.off("createChatMessage", createHook);
+    hooks.off("updateChatMessage", updateHook);
+    hooks.off("deleteChatMessage", deleteHook);
     globalThis.removeEventListener?.("pagehide", clearKnowledgeApiKey);
     globalThis.removeEventListener?.("beforeunload", clearKnowledgeApiKey);
     clearKnowledgeApiKey();
+    messageIndex = null;
+    indexIdentity = null;
     installed = false;
   };
 }
