@@ -1,7 +1,8 @@
 import { actorLoreSkills } from "./recall-knowledge-rules.js";
 import { requestGMWorker } from "./transport.js";
 import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
-import { QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID, isKnowledgeActiveGM, knowledgeAnswerText, privateKnowledgeQuestion } from "./recall-knowledge-message.js";
+import { QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID, isKnowledgeActiveGM, knowledgeAnswerMarker,
+  knowledgeAnswerText, plainKnowledgeAnswer, privateKnowledgeQuestion } from "./recall-knowledge-message.js";
 import { hasKnowledgeApiKey, knowledgeLocalAIStatus, queueKnowledgeAnswer } from "./recall-knowledge-ai.js";
 import { openKnowledgeAIConnection } from "./recall-knowledge-settings.js";
 
@@ -146,6 +147,10 @@ async function copyKnowledgeText(text, element, label) {
 function renderKnowledgeAI(message, html) {
   const marker = privateKnowledgeQuestion(message);
   let section = html.querySelector("[data-pza-knowledge-ai]");
+  if (!marker || !hasKnowledgeApiKey()) {
+    section?.remove();
+    return;
+  }
   if (!section) {
     const card = html.querySelector(".pza-knowledge-card");
     if (!card) return;
@@ -154,19 +159,20 @@ function renderKnowledgeAI(message, html) {
     card.append(section);
   }
   section.replaceChildren();
-  if (!marker) return;
   const doc = section.ownerDocument;
   const ai = knowledgeLocalAIStatus(message.id) ?? marker.ai ?? { status: "needs-key" };
   const status = doc.createElement("p");
   status.setAttribute("aria-live", "polite");
   const pending = ["queued", "thinking"].includes(ai.status);
-  status.textContent = ai.status === "complete" ? "Answer" : ai.status === "queued" ? "Queued…" : ai.status === "thinking" ? "Thinking…"
-    : ai.error || (isKnowledgeActiveGM() && hasKnowledgeApiKey() ? "Ready to get an answer." : "Enter an API key to get an answer.");
+  status.textContent = ai.status === "complete" ? ai.answerMessageId ? "Answer posted separately." : "Answer"
+    : ai.status === "queued" ? "Queued…" : ai.status === "thinking" ? "Thinking…"
+      : ai.error || "Ready to get an answer.";
   section.append(status);
+  if (ai.status === "complete" && ai.answerMessageId) return;
   if (ai.status === "complete" && typeof ai.answer === "string") {
     const answer = doc.createElement("pre");
     answer.dataset.pzaKnowledgeAnswer = "";
-    answer.textContent = ai.answer;
+    answer.textContent = plainKnowledgeAnswer(ai.answer);
     section.append(answer);
     const copy = doc.createElement("button");
     copy.type = "button";
@@ -210,12 +216,40 @@ function renderKnowledgeAI(message, html) {
   }
 }
 
+/** Restores literal answer text for private and public messages, with copying offered only to GMs. */
+function renderKnowledgeAnswer(message, html) {
+  const marker = knowledgeAnswerMarker(message);
+  if (!marker) return false;
+  const answer = html.querySelector("[data-pza-knowledge-answer]");
+  if (!answer) return true;
+  answer.textContent = marker.text;
+  html.querySelectorAll("[data-pza-copy-answer]").forEach((button) => button.remove());
+  if (!game.user?.isGM) return true;
+  const copy = answer.ownerDocument.createElement("button");
+  copy.type = "button";
+  copy.dataset.pzaCopyAnswer = "";
+  copy.textContent = "Copy answer";
+  copy.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (copy.disabled || !game.user?.isGM) return;
+    const current = knowledgeAnswerMarker(message);
+    if (!current) return;
+    copy.disabled = true;
+    try { await copyKnowledgeText(current.text, answer, "Answer"); }
+    finally { copy.disabled = false; }
+  });
+  answer.after(copy);
+  return true;
+}
+
 /** Wires saved chat cards on every render and leaves the complete prompt selectable if copying fails. */
 function renderQuestionChat(message, html) {
+  if (renderKnowledgeAnswer(message, html)) return;
   const buttons = [...html.querySelectorAll("button[data-pza-copy-knowledge]")];
   if (!canCopyQuestion(message)) {
     for (const button of buttons) button.remove();
-    html.querySelector("[data-pza-knowledge-ai]")?.replaceChildren();
+    html.querySelector("[data-pza-knowledge-ai]")?.remove();
     return;
   }
   // Restore literal text after Foundry enrichment so @UUID links and inline rolls remain intact in the copied data.

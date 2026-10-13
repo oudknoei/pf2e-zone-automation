@@ -10,7 +10,8 @@ import { DEFAULT_KNOWLEDGE_PROMPT } from "../scripts/recall-knowledge-prompt.js"
 import { executeAskQuestion } from "../scripts/recall-knowledge-worker.js";
 import { registerQuestionChat } from "../scripts/recall-knowledge.js";
 import { openKnowledgeAIConnection, registerKnowledgeAISettings } from "../scripts/recall-knowledge-settings.js";
-import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG, privateKnowledgeQuestion } from "../scripts/recall-knowledge-message.js";
+import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG, ANSWER_MESSAGE_FLAG,
+  knowledgeAnswerMarker, plainKnowledgeAnswer, privateKnowledgeQuestion } from "../scripts/recall-knowledge-message.js";
 
 const KEY = "fake-session-secret-do-not-persist";
 let counter = 0;
@@ -59,14 +60,16 @@ function setup() {
   globalThis.ChatMessage = {
     getSpeaker: () => ({ alias: "Scholar" }),
     async create(data) {
-      assert.equal(data.author, gm.id, "Chat creation must use Foundry's canonical author field");
+      assert.equal(data.author, game.user.id, "Chat creation must use Foundry's canonical author field");
       assert.equal(data.user, undefined);
+      await f.beforeCreate?.(data);
       const message = { ...data, author: users.get(data.author), id: `message-${f.messages.length + 1}`, async update(changes) {
         await f.beforeUpdate?.(message, changes);
         f.writes.push(structuredClone(changes));
         marker(message).ai = { ...marker(message).ai, ...structuredClone(changes[`flags.${MODULE_ID}.${FLAG}.ai`]) };
       } };
       f.messages.push(message);
+      await f.afterCreate?.(message);
       return message;
     }
   };
@@ -77,7 +80,7 @@ function setup() {
   f.ask = async () => executeAskQuestion({ operationId: `ai-question-${String(++counter).padStart(12, "0")}`,
     requesterUserId: player.id, sourceTokenUuid: sourceToken.uuid, targetTokenUuid: targetToken.uuid,
     question: "How do I survive its flame?" });
-  f.card = async () => { await f.ask(); return f.messages.at(-1); };
+  f.card = async () => { const result = await f.ask(); return game.messages.get(result.messageId); };
   return f;
 }
 test.beforeEach((t) => {
@@ -120,7 +123,15 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   finish({ ok: true, json: async () => response() });
   await until(() => marker(f.messages[0]).ai.status === "complete");
   assert.match(marker(f.messages[0]).ai.answer, /drake's flame/);
-  assert.equal(f.messages.length, 1);
+  assert.equal(f.messages.length, 2);
+  const answer = f.messages[1];
+  assert.deepEqual(answer.whisper, ["gm", "other-gm"]);
+  assert.equal(answer.blind, false);
+  assert.equal(answer.rolls, undefined);
+  assert.equal(marker(f.messages[0]).ai.answerMessageId, answer.id);
+  assert.match(knowledgeAnswerMarker(answer).text, /^Type: Dragon\nTraits: Dragon, Fire\n\n/);
+  assert.doesNotMatch(JSON.stringify(answer), /Flame Breath|SKILL USED|ROLL:|RESULT:|CREATURE DATA|fingerprint|"prompt"|"instructions"|"input"|"responseId"|"model"/);
+  assert.equal(answer.flags[MODULE_ID][FLAG], undefined);
   assert.equal(f.rolls, 1);
   assert.doesNotMatch(JSON.stringify([result, f.writes, f.messages, f.notifications]), new RegExp(KEY));
 });
@@ -326,19 +337,100 @@ test("HTTP, network and invalid answer errors are sanitized; manual retries reta
   }
 });
 
-test("the separate API timeout stops a request and requires explicit retry", async (t) => {
-  const f = setup();
-  const card = await f.card();
-  f.fetch = (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
-  setKnowledgeApiKey(KEY);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  await queueKnowledgeAnswer(card.id);
-  await until(() => f.requests.length === 1);
-  t.mock.timers.tick(KNOWLEDGE_AI_TIMEOUT_MS);
-  await until(() => marker(card).ai.status === "error");
-  assert.match(marker(card).ai.error, /timed out.*another charge/);
-  assert.equal(f.requests.length, 1);
-  t.mock.timers.reset();
+test("quota and rate-limit codes identify the remedy without exposing provider diagnostics or retrying automatically", async () => {
+  const cases = [
+    ["credit_balance_exhausted", "insufficient_quota", /no prepaid credits.*Add credits/],
+    ["organization_spend_limit_exceeded", "insufficient_quota", /organization's spending limit/],
+    ["project_spend_limit_exceeded", "rate_limit_error", /project's spending limit/],
+    ["organization_usage_limit_exceeded", "insufficient_quota", /organization's usage limit.*higher limit/],
+    ["insufficient_quota", null, /quota is exhausted.*billing/],
+    ["unknown-quota-code", "insufficient_quota", /quota is exhausted.*billing/],
+    ["rate_limit_exceeded", "tokens", /temporary rate limit.*56 seconds/],
+    ["slow_down", "rate_limit_error", /asked for fewer requests.*56 seconds/],
+    [null, "rate_limit_error", /temporary rate limit.*56 seconds/]
+  ];
+  for (const [code, type, expected] of cases) {
+    const f = setup();
+    const card = await f.card();
+    const originalPrompt = marker(card).prompt;
+    let reads = 0;
+    f.fetch = async () => ({ ok: false, status: 429, headers: new Headers({ "Retry-After": "56" }), json: async () => {
+      reads++;
+      return { error: { code, type, message: `Untrusted provider diagnostic: ${KEY} ${originalPrompt}` } };
+    } });
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "error");
+    assert.match(marker(card).ai.error, expected);
+    if (type === "insufficient_quota" || code === "project_spend_limit_exceeded") assert.doesNotMatch(marker(card).ai.error, /56 seconds/);
+    assert.equal(reads, 1);
+    assert.equal(marker(card).prompt, originalPrompt);
+    assert.equal(marker(card).ai.answer, null);
+    const persisted = JSON.stringify([f.writes, f.notifications, diagnostics]);
+    assert.doesNotMatch(persisted, new RegExp(KEY));
+    assert.doesNotMatch(persisted, /Untrusted provider diagnostic/);
+    assert.doesNotMatch(JSON.stringify(marker(card).ai), /How do I survive/);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.requests.length, 1);
+    f.fetch = null;
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "complete");
+    assert.equal(f.requests.length, 2);
+    assert.equal(f.rolls, 1);
+  }
+});
+
+test("unrecognized and malformed HTTP 429 bodies retain a safe fallback", async () => {
+  for (const data of [null, "invalid error", { error: null }, { error: { code: "toString" } },
+    { error: { code: KEY, type: KEY, message: KEY } }, "bad-json"]) {
+    const f = setup();
+    const card = await f.card();
+    f.fetch = async () => ({ ok: false, status: 429, json: async () => {
+      if (data === "bad-json") throw new Error(KEY);
+      return data;
+    } });
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "error");
+    assert.match(marker(card).ai.error, /without a recognized cause/);
+    assert.doesNotMatch(JSON.stringify([f.writes, f.notifications, diagnostics]), new RegExp(KEY));
+    assert.equal(f.requests.length, 1);
+  }
+});
+
+test("rate-limit delay advice accepts only positive numeric values and never copies header text", async () => {
+  for (const delay of ["56.2", " 56 ", "0", "-1", "1e3", "Infinity", KEY]) {
+    const f = setup();
+    const card = await f.card();
+    f.fetch = async () => ({ ok: false, status: 429, headers: new Headers({ "Retry-After": delay }),
+      json: async () => ({ error: { code: "rate_limit_exceeded" } }) });
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "error");
+    assert.match(marker(card).ai.error, delay === "56.2" ? /57 seconds/ : delay === " 56 " ? /56 seconds/ : /Wait before retrying;/);
+    assert.doesNotMatch(JSON.stringify([f.writes, f.notifications, diagnostics]), new RegExp(KEY));
+    assert.equal(f.requests.length, 1);
+  }
+});
+
+test("the separate API timeout covers the request and error body, and requires explicit retry", async (t) => {
+  for (const stage of ["request", "error-body"]) {
+    const f = setup();
+    const card = await f.card();
+    f.fetch = (_url, options) => {
+      const stalled = () => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      return stage === "request" ? stalled() : { ok: false, status: 429, json: stalled };
+    };
+    setKnowledgeApiKey(KEY);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await queueKnowledgeAnswer(card.id);
+    await until(() => f.requests.length === 1);
+    t.mock.timers.tick(KNOWLEDGE_AI_TIMEOUT_MS);
+    await until(() => marker(card).ai.status === "error");
+    assert.match(marker(card).ai.error, /timed out.*another charge/);
+    assert.equal(f.requests.length, 1);
+    t.mock.timers.reset();
+  }
 });
 
 test("chat delivery retry saves a received answer without making another API request", async () => {
@@ -351,11 +443,61 @@ test("chat delivery retry saves a received answer without making another API req
   setKnowledgeApiKey(KEY);
   await queueKnowledgeAnswer(card.id);
   await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+  assert.equal(f.messages.length, 2, "The answer already posted even though updating the original card failed");
   failDelivery = false;
   const retry = queueKnowledgeAnswer(card.id);
   assert.equal(queueKnowledgeAnswer(card.id), retry);
   await retry;
   assert.equal(marker(card).ai.status, "complete");
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.rolls, 1);
+  assert.equal(f.messages.length, 2, "Retry must reuse the separately posted answer");
+});
+
+test("answer creation failures and lost acknowledgments retry delivery without another API call or duplicate message", async () => {
+  for (const lostAcknowledgment of [false, true]) {
+    const f = setup();
+    const card = await f.card();
+    let failDelivery = true;
+    f.beforeCreate = (data) => {
+      if (failDelivery && !lostAcknowledgment && data.flags?.[MODULE_ID]?.[ANSWER_MESSAGE_FLAG]) throw new Error("Chat offline");
+    };
+    f.afterCreate = (message) => {
+      if (failDelivery && lostAcknowledgment && knowledgeAnswerMarker(message)) throw new Error("Acknowledgment lost");
+    };
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+    assert.equal(f.messages.length, lostAcknowledgment ? 2 : 1);
+    failDelivery = false;
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "complete");
+    assert.equal(f.messages.length, 2);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.rolls, 1);
+  }
+});
+
+test("reload recovery recognizes an answer already posted and keeps a public answer public", async () => {
+  const f = setup();
+  const card = await f.card();
+  let failStatus = true;
+  f.beforeUpdate = (_message, changes) => {
+    if (failStatus && changes[`flags.${MODULE_ID}.${FLAG}.ai`].status === "complete") throw new Error("Chat offline");
+  };
+  setKnowledgeApiKey(KEY);
+  await queueKnowledgeAnswer(card.id);
+  await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+  const answer = f.messages[1];
+  answer.whisper = [];
+  clearKnowledgeApiKey();
+  await until(() => marker(card).ai.status === "interrupted");
+  failStatus = false;
+  await queueKnowledgeAnswer(card.id);
+  assert.equal(marker(card).ai.status, "complete");
+  assert.equal(marker(card).ai.answerMessageId, answer.id);
+  assert.deepEqual(answer.whisper, []);
+  assert.equal(f.messages.length, 2);
   assert.equal(f.requests.length, 1);
   assert.equal(f.rolls, 1);
 });
@@ -464,7 +606,11 @@ test("replayed player submissions and server-confirmed chat creation failures ea
     const f = setup();
     if (lateCreateError) {
       const create = ChatMessage.create;
-      ChatMessage.create = async (data) => { await create(data); throw new Error("Lost acknowledgment"); };
+      ChatMessage.create = async (data) => {
+        const message = await create(data);
+        if (data.flags?.[MODULE_ID]?.[FLAG]) throw new Error("Lost question acknowledgment");
+        return message;
+      };
     }
     setKnowledgeApiKey(KEY);
     const request = { operationId: `duplicate-ai-${String(++counter).padStart(12, "0")}`, requesterUserId: f.player.id,
@@ -475,7 +621,7 @@ test("replayed player submissions and server-confirmed chat creation failures ea
     await executeAskQuestion(request);
     assert.equal(f.requests.length, 1);
     assert.equal(f.rolls, 1);
-    assert.equal(f.messages.length, 1);
+    assert.equal(f.messages.length, 2);
   }
 });
 
@@ -526,7 +672,70 @@ test("raw parsing collects assistant text and rejects empty or incomplete respon
   for (const invalid of [null, {}, { status: "completed", output: [] }, { status: "incomplete", output: [] }]) assert.throws(() => parseKnowledgeAIResponse(invalid));
 });
 
-test("answer rendering is literal; copying includes truthful type/traits and players get no controls", async () => {
+test("plain answers remove Markdown and HTML presentation while preserving prose and game notation", () => {
+  const formatted = "### A remembered lesson\n\n**Fire** is *dangerous*; __cold__ brings _relief_.\n\n"
+    + "- Use `cold iron`.\n1. Avoid ~~flame~~ smoke.\n> A [scholar](https://example.invalid) warned you.\n\n"
+    + "```text\nA +5 bonus, a -3 DC, 2d6 damage, and cold_iron remain unchanged.\n```\n\n"
+    + "<b>Beware.</b>\n\n| Defense | Clue |\n| --- | --- |\n| Reflex | Slow |";
+  const plain = plainKnowledgeAnswer(formatted);
+  assert.match(plain, /^A remembered lesson/);
+  assert.match(plain, /Fire is dangerous; cold brings relief\./);
+  assert.match(plain, /Use cold iron\./);
+  assert.match(plain, /Avoid flame smoke\./);
+  assert.match(plain, /A scholar warned you\./);
+  assert.match(plain, /A \+5 bonus, a -3 DC, 2d6 damage, and cold_iron remain unchanged\./);
+  assert.match(plain, /Beware\./);
+  assert.match(plain, /Defense; Clue/);
+  assert.match(plain, /Reflex; Slow/);
+  assert.doesNotMatch(plain, /[*`#|<>]|https:|---/);
+});
+
+test("the model receives plain-text instructions and leftover Markdown is removed before posting", async () => {
+  const f = setup();
+  const card = await f.card();
+  f.fetch = async () => ({ ok: true, json: async () => response("**Keep your distance.** Its `flame` is *deadly*.") });
+  setKnowledgeApiKey(KEY);
+  await queueKnowledgeAnswer(card.id);
+  await until(() => marker(card).ai.status === "complete");
+  assert.match(JSON.parse(f.requests[0].options.body).instructions, /plain text prose.*Do not use Markdown or HTML/);
+  assert.equal(marker(card).ai.answer, "Keep your distance. Its flame is deadly.");
+  assert.equal(knowledgeAnswerMarker(f.messages[1]).text, "Type: Dragon\nTraits: Dragon, Fire\n\nKeep your distance. Its flame is deadly.");
+});
+
+test("without a session key the question displays only its non-API content, and completed answers stay separate", async () => {
+  const f = setup();
+  const card = await f.card();
+  let render;
+  globalThis.Hooks = { on: (_name, callback) => { render = callback; return 1; }, off: () => {} };
+  const unregister = registerQuestionChat();
+  const dom = new JSDOM(card.content);
+  const html = dom.window.document;
+  try {
+    render(card, html);
+    assert.equal(html.querySelector("[data-pza-knowledge-ai]"), null);
+    assert.ok(html.querySelector("[data-pza-copy-knowledge]"));
+    assert.ok(html.querySelector("[data-pza-knowledge-prompt]"));
+    assert.match(html.body.textContent, /Success.*vs\. DC/);
+    assert.doesNotMatch(html.body.textContent, /AI Connection|Get answer|Enter an API key|Ready to get an answer/);
+    setKnowledgeApiKey(KEY);
+    render(card, html);
+    assert.match(html.querySelector("[data-pza-knowledge-ai]").textContent, /Ready to get an answer.*AI Connection.*Get answer/);
+    marker(card).ai = { status: "complete", answerMessageId: "separate-answer", answer: "A separately posted recollection." };
+    render(card, html);
+    assert.equal(html.querySelector("[data-pza-knowledge-ai]").textContent, "Answer posted separately.");
+    assert.doesNotMatch(html.body.textContent, /A separately posted recollection|Copy answer/);
+    clearKnowledgeApiKey();
+    render(card, html);
+    assert.equal(html.querySelector("[data-pza-knowledge-ai]"), null);
+    assert.ok(html.querySelector("[data-pza-copy-knowledge]"));
+    assert.equal(f.requests.length, 0);
+    game.user = f.player;
+    render(card, html);
+    assert.equal(html.querySelector("button"), null);
+  } finally { unregister(); dom.window.close(); }
+});
+
+test("separate answer rendering stays literal when made public; copying includes truthful type/traits without GM mechanics", async () => {
   const f = setup();
   const card = await f.card();
   f.fetch = async () => ({ ok: true, json: async () => response(`<script>alert(1)</script> [[1d20]] @UUID[Actor.secret] ${KEY}`) });
@@ -537,27 +746,32 @@ test("answer rendering is literal; copying includes truthful type/traits and pla
   let render;
   globalThis.Hooks = { on: (_name, callback) => { render = callback; return 1; }, off: () => {} };
   const unregister = registerQuestionChat();
-  const dom = new JSDOM(card.content);
+  const answerMessage = f.messages[1];
+  const dom = new JSDOM(answerMessage.content);
   const html = dom.window.document;
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   let copied;
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async (text) => { copied = text; } } } });
   try {
     assert.doesNotMatch(card.content, /alert\(1\)|\[\[1d20\]\]/);
-    render(card, html);
-    const section = html.querySelector("[data-pza-knowledge-ai]");
-    assert.equal(section.querySelectorAll("script,a,.inline-roll").length, 0);
-    assert.match(section.querySelector("pre").textContent, /<script>.*\[\[1d20\]\].*@UUID/);
-    section.querySelector("button").click();
-    await until(() => copied && !section.querySelector("button").disabled);
+    render(answerMessage, html);
+    const answer = html.querySelector("[data-pza-knowledge-answer]");
+    assert.equal(html.querySelectorAll("script,a,.inline-roll").length, 0);
+    assert.match(answer.textContent, /alert\(1\).*\[\[1d20\]\].*@UUID/);
+    html.querySelector("button").click();
+    await until(() => copied && !html.querySelector("button").disabled);
     assert.match(copied, /^Type: Dragon\nTraits: Dragon, Fire\n\n/);
     navigator.clipboard.writeText = async () => { throw new Error("Denied"); };
-    section.querySelector("button").click();
+    html.querySelector("button").click();
     await until(() => dom.window.getSelection().toString() === copied);
     game.user = f.player;
-    render(card, html);
-    assert.equal(section.textContent, "");
+    answerMessage.whisper = [];
+    html.querySelector("[data-pza-knowledge-answer]").innerHTML = '<a class="inline-roll">Enriched roll</a>';
+    render(answerMessage, html);
+    assert.equal(answer.textContent, copied);
+    assert.equal(html.querySelectorAll("a,.inline-roll").length, 0);
     assert.equal(html.querySelector("button"), null);
+    assert.doesNotMatch(html.body.textContent, /vs\. DC|Success|Flame Breath|How do I survive|LLM prompt/);
   } finally {
     Object.defineProperty(globalThis, "navigator", originalNavigator);
     unregister();

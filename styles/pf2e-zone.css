@@ -229,3 +229,8 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
   overflow-wrap: anywhere;
   font: inherit;
 }
+
+.pza-knowledge-answer {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

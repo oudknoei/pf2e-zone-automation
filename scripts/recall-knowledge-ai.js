@@ -1,6 +1,7 @@
 import { knowledgeAIProfile } from "./recall-knowledge-ai-config.js";
-import { isKnowledgeActiveGM, privateKnowledgeQuestion, QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
-import { newOperationId, readDocumentFlag } from "./utils.js";
+import { ANSWER_MESSAGE_FLAG, isKnowledgeActiveGM, knowledgeAnswerMarker, knowledgeAnswerText, plainKnowledgeAnswer,
+  privateKnowledgeQuestion, QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
+import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
 
 export const KNOWLEDGE_AI_TIMEOUT_MS = 90000;
 const jobs = new Map();
@@ -21,6 +22,14 @@ function sessionIdentity() {
 /** Resolves a still-present private chat document by ID. */
 function questionMessage(id) {
   return game.messages?.get?.(id) ?? game.messages?.contents?.find((message) => message.id === id);
+}
+
+/** Finds a durable answer by attempt so a lost chat acknowledgment cannot duplicate it on retry. */
+function postedAnswer(messageId, operationId, attemptId) {
+  return (game.messages?.contents ?? []).find((message) => {
+    const marker = knowledgeAnswerMarker(message);
+    return marker?.questionMessageId === messageId && marker.operationId === operationId && marker.attemptId === attemptId;
+  });
 }
 
 /** Refreshes chat controls after changing browser-only connection state. */
@@ -98,10 +107,44 @@ function ownsJob(job, { reserved = true } = {}) {
     && marker.fingerprint === job.fingerprint && (!reserved || marker.ai?.attemptId === job.attemptId));
 }
 
+/** Uses a numeric Retry-After delay as advice without automatically resubmitting a paid request. */
+function retryAdvice(response) {
+  const value = response.headers?.get?.("Retry-After");
+  const seconds = typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim()) ? Math.ceil(Number(value)) : NaN;
+  return Number.isSafeInteger(seconds) && seconds > 0
+    ? `Wait at least ${seconds} seconds before retrying.` : "Wait before retrying; check API rate limits if this continues.";
+}
+
+/** Maps recognized quota codes to local text; provider messages and unknown values never leave this function. */
+async function quotaError(response) {
+  let error;
+  try { error = (await response.json())?.error; } catch (_error) { /* Non-JSON providers retain the safe HTTP fallback. */ }
+  switch (error?.code) {
+    case "credit_balance_exhausted":
+      return "The API has no prepaid credits remaining. Add credits in API billing before retrying.";
+    case "organization_spend_limit_exceeded":
+      return "The API organization's spending limit was reached. Check organization limits before retrying.";
+    case "project_spend_limit_exceeded":
+      return "The API project's spending limit was reached. Check project limits before retrying.";
+    case "organization_usage_limit_exceeded":
+      return "The API organization's usage limit was reached. Request a higher limit or wait for its reset before retrying.";
+    case "insufficient_quota":
+      return "The API quota is exhausted. Check API billing, credits, and usage limits before retrying.";
+    case "rate_limit_exceeded":
+      return `The API's temporary rate limit was reached. ${retryAdvice(response)}`;
+    case "slow_down":
+      return `The API asked for fewer requests. ${retryAdvice(response)}`;
+  }
+  if (error?.type === "insufficient_quota") return "The API quota is exhausted. Check API billing, credits, and usage limits before retrying.";
+  if (error?.type === "rate_limit_error") return `The API's temporary rate limit was reached. ${retryAdvice(response)}`;
+  return "The API returned a quota or rate-limit error without a recognized cause. Check API billing and limits, or retry later.";
+}
+
 /** Maps HTTP failures to actionable text without logging or copying provider error bodies. */
-function httpError(status) {
+async function httpError(response) {
+  const { status } = response;
   if (status === 401 || status === 403) return "The API rejected the key or access. Check AI Connection and the model.";
-  if (status === 429) return "The API quota or rate limit was reached. Check billing or retry later.";
+  if (status === 429) return quotaError(response);
   if (status === 404) return "The endpoint or model was not found. Check the game settings.";
   if (status === 400 || status === 422) return "The API rejected the request. Check the model, reasoning effort, output allowance, and Responses API compatibility.";
   if (status === 413) return "The creature reference is too large for this endpoint.";
@@ -161,7 +204,7 @@ async function fetchAnswer(job) {
         max_output_tokens: job.profile.maxOutputTokens, store: false,
         tools: [], stream: false, background: false })
     });
-    if (!response.ok) throw new KnowledgeAIError(httpError(response.status));
+    if (!response.ok) throw new KnowledgeAIError(await httpError(response));
     let data;
     try { data = await response.json(); } catch (_error) { throw new KnowledgeAIError("The endpoint did not return valid Responses API JSON."); }
     const result = parseKnowledgeAIResponse(data);
@@ -170,6 +213,8 @@ async function fetchAnswer(job) {
       result.answer = result.answer.split(job.session.key).join("[redacted]");
       if (result.responseId?.includes(job.session.key)) result.responseId = null;
     }
+    result.answer = plainKnowledgeAnswer(result.answer);
+    if (!result.answer) throw new KnowledgeAIError("The API returned no usable answer.");
     return result;
   } catch (error) {
     if (timedOut) throw new KnowledgeAIError("The API request timed out. A manual retry may incur another charge.");
@@ -181,14 +226,30 @@ async function fetchAnswer(job) {
   }
 }
 
-/** Saves a received answer without submitting another paid request when chat delivery needs retrying. */
+/** Posts an answer-only private message and reuses it if chat acknowledgment or status delivery needs retrying. */
 async function deliverAnswer(job) {
   if (!ownsJob(job)) return;
   job.state = "delivering";
   const message = questionMessage(job.messageId);
   const marker = privateKnowledgeQuestion(message);
   try {
-    await writeAIState(message, { ...marker.ai, ...job.result, status: "complete", error: null, finishedAt: Date.now() });
+    let answer = postedAnswer(job.messageId, job.operationId, job.attemptId);
+    if (!answer) {
+      const text = knowledgeAnswerText({ ...marker, ai: { ...marker.ai, ...job.result } });
+      const whisper = [...game.users].filter((user) => user.isGM).map((user) => user.id);
+      answer = await ChatMessage.create({
+        author: game.user.id, speaker: { alias: message.speaker?.alias ?? "Recall Knowledge" },
+        whisper, blind: false,
+        content: `<div class="pza-knowledge-answer" data-pza-knowledge-answer>${escapeHtml(text)}</div>`,
+        flags: { [QUESTION_MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: {
+          questionMessageId: job.messageId, operationId: job.operationId, attemptId: job.attemptId, text
+        } } }
+      });
+      if (!answer) throw new Error("The private answer could not be posted.");
+    }
+    if (!ownsJob(job)) return;
+    await writeAIState(message, { ...marker.ai, ...job.result, answerMessageId: answer.id,
+      status: "complete", error: null, finishedAt: Date.now() });
     if (jobs.get(job.messageId) === job) jobs.delete(job.messageId);
   } catch (_error) {
     const saved = privateKnowledgeQuestion(questionMessage(job.messageId))?.ai;
@@ -283,6 +344,8 @@ function reserveKnowledgeAnswer(messageId) {
     return existing.reservation;
   }
   if (marker.ai?.status === "complete") return Promise.resolve();
+  const delivered = postedAnswer(messageId, marker.operationId, marker.ai?.attemptId);
+  if (delivered) return writeAIState(message, { ...marker.ai, status: "complete", answerMessageId: delivered.id, error: null, finishedAt: Date.now() });
   if (!hasKnowledgeApiKey()) throw new Error("Enter an API key in AI Connection first.");
   const job = { messageId, operationId: marker.operationId, fingerprint: marker.fingerprint, attemptId: newOperationId(),
     session, profile: knowledgeAIProfile(), state: "queued", cancelled: false };
@@ -292,7 +355,7 @@ function reserveKnowledgeAnswer(messageId) {
     await writeAIState(message, { status: "queued", attemptId: job.attemptId, gmId: game.user.id,
       model: job.profile.model, endpoint: job.profile.endpoint, reasoningEffort: job.profile.reasoningEffort,
       maxOutputTokens: job.profile.maxOutputTokens, queuedAt: Date.now(), startedAt: null, finishedAt: null,
-      answer: null, error: null, responseId: null });
+      answer: null, answerMessageId: null, error: null, responseId: null });
     job.reserved = true;
     if (!ownsJob(job)) return;
     queue.push(job);
@@ -331,7 +394,10 @@ export async function reconcileKnowledgeAI() {
     if (!marker || !["queued", "thinking"].includes(marker.ai?.status) || jobs.has(message.id) || interruptedWrites.has(message.id)) continue;
     interruptedWrites.add(message.id);
     try {
-      await writeAIState(message, { ...marker.ai, status: "interrupted", error: "Interrupted. Re-enter the key and retry the saved question.", finishedAt: Date.now() });
+      const delivered = postedAnswer(message.id, marker.operationId, marker.ai.attemptId);
+      await writeAIState(message, { ...marker.ai, status: delivered ? "complete" : "interrupted",
+        ...(delivered ? { answerMessageId: delivered.id } : {}),
+        error: delivered ? null : "Interrupted. Re-enter the key and retry the saved question.", finishedAt: Date.now() });
     } catch (_error) { /* Retry recovery on the next lifecycle check. */ }
     finally { interruptedWrites.delete(message.id); }
   }
