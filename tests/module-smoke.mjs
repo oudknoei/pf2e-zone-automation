@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { JSDOM } from "jsdom";
-import { DEFAULT_KNOWLEDGE_PROMPT, KNOWLEDGE_PROMPT_SETTING } from "../scripts/recall-knowledge-prompt.js";
-import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING } from "../scripts/recall-knowledge-ai-config.js";
+import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
+  KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
+  KNOWLEDGE_REASONING_CHOICES } from "../scripts/recall-knowledge-ai-config.js";
 
 const root = resolve(import.meta.dirname, "..");
 const hooks = new Map();
@@ -12,10 +12,11 @@ globalThis.Hooks = {
   once(name, handler) { hooks.set(name, handler); },
   on(name, handler) { hooks.set(name, handler); }
 };
-globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } }, data: { fields: { StringField: class {
+class TestField {
   constructor(options) { this.options = options; }
   getInitialValue() { return this.options.initial ?? ""; }
-} } } };
+}
+globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } }, data: { fields: { StringField: TestField, NumberField: TestField } } };
 const module = {};
 const settings = new Map();
 const menus = new Map();
@@ -80,53 +81,34 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
 });
 
-test("Recall Knowledge instructions are editable as literal multiline text in world settings", () => {
-  const setting = settings.get(`pf2e-zone-automation.${KNOWLEDGE_PROMPT_SETTING}`);
-  assert.equal(setting.scope, "world");
-  assert.equal(setting.config, true);
-  assert.equal(setting.default, DEFAULT_KNOWLEDGE_PROMPT);
-  assert.equal(setting.type.options.blank, false);
-  const dom = new JSDOM("<form></form>");
-  const previousDocument = globalThis.document;
-  const previousSettingsGet = game.settings.get;
-  globalThis.document = dom.window.document;
-  try {
-    const name = `pf2e-zone-automation.${KNOWLEDGE_PROMPT_SETTING}`;
-    assert.equal(game.settings.get("pf2e-zone-automation", KNOWLEDGE_PROMPT_SETTING), DEFAULT_KNOWLEDGE_PROMPT);
-    for (const value of [undefined, null, "", " \n "]) {
-      const initial = setting.input(setting.type, { name, value });
-      assert.equal(initial.value, DEFAULT_KNOWLEDGE_PROMPT, "Show active default instructions when no saved value is supplied");
-    }
-    const value = 'Speak as a scholar.\n<script>literal reference</script>\nKeep it short.';
-    game.settings.get = () => value;
-    assert.equal(setting.input(setting.type, { name }).value, value, "An omitted form value must show the current saved instructions");
-    assert.equal(setting.input(setting.type, { name, value: DEFAULT_KNOWLEDGE_PROMPT }).value, DEFAULT_KNOWLEDGE_PROMPT,
-      "An explicit form value must take precedence over saved instructions, including when resetting defaults");
-    const input = setting.input(setting.type, { name, value, rootId: "settings-config" });
-    dom.window.document.querySelector("form").append(input);
-    assert.equal(input.tagName, "TEXTAREA");
-    assert.equal(input.value, value);
-    assert.equal(dom.window.document.querySelector("script"), null);
-    assert.equal(new dom.window.FormData(input.form).get(name), value);
-    const disabled = setting.input(setting.type, { name, value, disabled: true, readonly: true });
-    assert.equal(disabled.disabled, true);
-    assert.equal(disabled.readOnly, true);
-  } finally {
-    game.settings.get = previousSettingsGet;
-    if (previousDocument === undefined) delete globalThis.document;
-    else globalThis.document = previousDocument;
-    dom.window.close();
-  }
+test("Recall Knowledge has no configurable prompt field in world settings", () => {
+  assert.equal(settings.has("pf2e-zone-automation.recallKnowledgePrompt"), false);
 });
 
-test("AI settings expose the endpoint and model, and restrict key entry to a GM submenu", () => {
+test("AI settings expose model, reasoning dropdown, output allowance, and restricted key entry", () => {
   const endpoint = settings.get(`pf2e-zone-automation.${KNOWLEDGE_API_ENDPOINT_SETTING}`);
   const model = settings.get(`pf2e-zone-automation.${KNOWLEDGE_MODEL_SETTING}`);
+  const reasoning = settings.get(`pf2e-zone-automation.${KNOWLEDGE_REASONING_SETTING}`);
+  const output = settings.get(`pf2e-zone-automation.${KNOWLEDGE_OUTPUT_SETTING}`);
   assert.equal(endpoint.default, DEFAULT_KNOWLEDGE_API_ENDPOINT);
   assert.equal(endpoint.scope, "world");
   assert.equal(endpoint.type.options.initial, DEFAULT_KNOWLEDGE_API_ENDPOINT);
   assert.equal(model.default, DEFAULT_KNOWLEDGE_MODEL);
   assert.equal(model.scope, "world");
+  assert.equal(model.type.options.initial, "gpt-6-luna");
+  assert.equal(reasoning.scope, "world");
+  assert.equal(reasoning.config, true);
+  assert.equal(reasoning.default, DEFAULT_KNOWLEDGE_REASONING);
+  assert.equal(reasoning.type.options.initial, "low");
+  assert.deepEqual(reasoning.choices, KNOWLEDGE_REASONING_CHOICES);
+  assert.deepEqual(Object.keys(reasoning.choices), ["none", "low", "medium", "high", "xhigh", "max"]);
+  assert.equal(output.scope, "world");
+  assert.equal(output.config, true);
+  assert.equal(output.default, DEFAULT_KNOWLEDGE_OUTPUT);
+  assert.equal(output.type.options.initial, 4000);
+  assert.equal(output.type.options.integer, true);
+  assert.equal(output.type.options.min, 16);
+  assert.equal(output.type.options.max, 128000);
   assert.equal(menus.get("pf2e-zone-automation.recallKnowledgeAIConnection").restricted, true);
   assert.deepEqual([...settings.keys()].filter((key) => /api.?key|token|credential/i.test(key)), []);
   assert.equal(module.api.setKnowledgeApiKey, undefined);

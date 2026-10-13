@@ -5,7 +5,7 @@ import { actorLoreSkills, bestKnowledgeSkill, creatureKnowledgeDC, creatureType,
 import { executeAskQuestion, QUESTION_MESSAGE_FLAG } from "../scripts/recall-knowledge-worker.js";
 import { compactCreatureData } from "../scripts/recall-knowledge-data.js";
 import { openAskQuestion, registerQuestionChat } from "../scripts/recall-knowledge.js";
-import { DEFAULT_KNOWLEDGE_PROMPT, KNOWLEDGE_PROMPT_SETTING } from "../scripts/recall-knowledge-prompt.js";
+import { DEFAULT_KNOWLEDGE_PROMPT } from "../scripts/recall-knowledge-prompt.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 let operationCounter = 0;
@@ -59,15 +59,10 @@ function setup() {
   const messages = [];
   const notifications = [];
   const rolls = [];
-  const fixture = { gm, player, users, source, creature, sourceToken, targetToken, messages, notifications, rolls, natural: 10,
-    promptInstructions: DEFAULT_KNOWLEDGE_PROMPT };
+  const fixture = { gm, player, users, source, creature, sourceToken, targetToken, messages, notifications, rolls, natural: 10 };
   globalThis.CONFIG = { PF2E: { creatureTraits: {} } };
   globalThis.game = { user: gm, system: { id: "pf2e" }, users, messages: { contents: messages }, i18n: { localize: (key) => key },
-    settings: { get(namespace, key) {
-      assert.equal(namespace, MODULE_ID);
-      assert.equal(key, KNOWLEDGE_PROMPT_SETTING);
-      return fixture.promptInstructions;
-    } } };
+    settings: { get: () => assert.fail("New questions must use the built-in prompt without reading world settings") } };
   globalThis.ui = { notifications: Object.fromEntries(["warn", "error", "info"].map((level) => [level, (text) => notifications.push({ level, text })])) };
   globalThis.fromUuid = async (uuid) => [sourceToken, targetToken].find((token) => token.uuid === uuid);
   globalThis.Roll = class {
@@ -308,7 +303,7 @@ test("private GM prompt includes creature facts but response contains no secret 
   assert.deepEqual(response, { action: "ask-question", messageId: "message-1" });
   assert.equal(f.rolls.length, 1);
   const card = f.messages[0];
-  assert.equal(card.user, f.gm.id, "The player must not be the author of the secret chat");
+  assert.equal(card.author, f.gm.id, "The player must not be the author of the secret chat");
   assert.deepEqual(card.whisper, ["gm", "second-gm"]);
   assert.equal(card.blind, true);
   assert.match(card.content, /Type:<\/strong> Construct, Dragon/);
@@ -330,25 +325,24 @@ test("private GM prompt includes creature facts but response contains no secret 
   dom.window.close();
 });
 
-test("new questions use the current world instructions while existing cards keep their saved prompts", async () => {
+test("new questions use the built-in instructions while existing cards keep their saved prompts", async () => {
   const f = setup();
-  f.promptInstructions = "Use a weary scholar's voice.\nAnswer in two sentences.";
   await executeAskQuestion(request(f));
-  const original = f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt;
-  assert.ok(original.startsWith(`${f.promptInstructions}\n\nPLAYER:`));
-  assert.doesNotMatch(original, /You are helping a Pathfinder/);
+  const saved = f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG];
+  const original = saved.prompt;
+  assert.equal(saved.instructions, DEFAULT_KNOWLEDGE_PROMPT);
+  assert.ok(original.startsWith(`${DEFAULT_KNOWLEDGE_PROMPT}\n\nPLAYER:`));
   assert.match(original, /QUESTION: "What is its weakest defense\?"/);
   assert.match(original, /RESULT: Success/);
   assert.match(original, /CREATURE TYPE \(ALWAYS REVEAL\): Construct, Dragon/);
   assert.match(original, /CREATURE TRAITS \(ALWAYS REVEAL\): Construct, Dragon, Fire/);
   assert.match(original, /"name": "Burning Breath"/);
-  f.promptInstructions = "Use a sailor's voice instead.";
+  saved.instructions = "Older customized instructions.";
+  saved.prompt = `${saved.instructions}\n\n${saved.input}`;
+  const olderPrompt = saved.prompt;
   await executeAskQuestion(request(f));
-  assert.ok(f.messages[1].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt.startsWith(f.promptInstructions));
-  assert.equal(f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt, original);
-  f.promptInstructions = " \n ";
-  await executeAskQuestion(request(f));
-  assert.ok(f.messages[2].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt.startsWith(DEFAULT_KNOWLEDGE_PROMPT));
+  assert.ok(f.messages[1].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt.startsWith(DEFAULT_KNOWLEDGE_PROMPT));
+  assert.equal(saved.prompt, olderPrompt);
 });
 
 test("nonmatching Lore uses its normal bonus against DC minus three in chat and the copied prompt", async () => {
@@ -395,17 +389,15 @@ test("duplicate requests share one roll and one message, and changed replays are
 
 test("retry after chat creation failure uses the already-rolled result", async () => {
   const f = setup();
-  f.promptInstructions = "Keep this original voice for retries.";
   const payload = request(f);
   const create = ChatMessage.create;
   ChatMessage.create = async () => { throw new Error("Chat temporarily unavailable"); };
   await assert.rejects(executeAskQuestion(payload), (error) => error.retryable === true);
-  f.promptInstructions = "Changed instructions apply only to new questions.";
   ChatMessage.create = create;
   await executeAskQuestion(payload);
   assert.equal(f.rolls.length, 1);
   assert.equal(f.messages.length, 1);
-  assert.ok(f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt.startsWith("Keep this original voice for retries."));
+  assert.ok(f.messages[0].flags[MODULE_ID][QUESTION_MESSAGE_FLAG].prompt.startsWith(DEFAULT_KNOWLEDGE_PROMPT));
 });
 
 test("a server-confirmed message is recovered when creation throws after posting", async () => {

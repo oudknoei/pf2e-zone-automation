@@ -10,9 +10,13 @@ export function isKnowledgeActiveGM() {
 
 /** Accepts only authentic, blind question cards whose author and all recipients are GMs. */
 export function privateKnowledgeQuestion(message) {
-  if (!game.user?.isGM || !message?.blind || !message.whisper?.includes(game.user.id)) return null;
-  const authorId = typeof message.user === "string" ? message.user : message.user?.id;
-  if (!game.users?.get(authorId)?.isGM || !message.whisper.every((id) => game.users.get(id)?.isGM)) return null;
+  if (!game.user?.isGM || !message?.blind || !Array.isArray(message.whisper)) return null;
+  const recipients = message.whisper.map((recipient) => typeof recipient === "string" ? recipient : recipient?.id);
+  if (!recipients.includes(game.user.id) || !recipients.every((id) => typeof id === "string" && game.users.get(id)?.isGM)) return null;
+  // Live Foundry documents expose author; older source-shaped cards can still use user.
+  const author = message.author !== undefined ? message.author : message.user;
+  const authorId = typeof author === "string" ? author : author?.id;
+  if (!game.users?.get(authorId)?.isGM) return null;
   const marker = readDocumentFlag(message, QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG);
   return typeof marker?.prompt === "string" && typeof marker.operationId === "string"
     && typeof marker.requesterUserId === "string" && typeof marker.fingerprint === "string" ? marker : null;

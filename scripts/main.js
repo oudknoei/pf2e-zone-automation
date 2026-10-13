@@ -6,7 +6,6 @@ import { installZoneOutlines } from "./zone-outline.js";
 import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
 import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
 import { openAskQuestion, requestAskQuestion, registerQuestionChat } from "./recall-knowledge.js";
-import { registerKnowledgePromptSetting } from "./recall-knowledge-prompt.js";
 import { registerKnowledgeAISettings } from "./recall-knowledge-settings.js";
 import { registerKnowledgeAI } from "./recall-knowledge-ai.js";
 
@@ -15,7 +14,6 @@ const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
 
 /** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
-  registerKnowledgePromptSetting();
   registerKnowledgeAISettings();
   game.settings.register(MODULE_ID, SHARED_IMMUNITIES_SETTING, {
     name: "Shared temporary immunities",

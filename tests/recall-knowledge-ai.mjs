@@ -3,16 +3,18 @@ import test from "node:test";
 import { JSDOM } from "jsdom";
 import { clearKnowledgeApiKey, hasKnowledgeApiKey, KNOWLEDGE_AI_TIMEOUT_MS, knowledgeLocalAIStatus,
   parseKnowledgeAIResponse, queueKnowledgeAnswer, reconcileKnowledgeAI, setKnowledgeApiKey } from "../scripts/recall-knowledge-ai.js";
-import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, KNOWLEDGE_API_ENDPOINT_SETTING,
-  KNOWLEDGE_MODEL_SETTING, normalizeKnowledgeEndpoint } from "../scripts/recall-knowledge-ai-config.js";
-import { DEFAULT_KNOWLEDGE_PROMPT, KNOWLEDGE_PROMPT_SETTING } from "../scripts/recall-knowledge-prompt.js";
+import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
+  KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
+  KNOWLEDGE_REASONING_CHOICES, knowledgeAIProfile, normalizeKnowledgeEndpoint } from "../scripts/recall-knowledge-ai-config.js";
+import { DEFAULT_KNOWLEDGE_PROMPT } from "../scripts/recall-knowledge-prompt.js";
 import { executeAskQuestion } from "../scripts/recall-knowledge-worker.js";
 import { registerQuestionChat } from "../scripts/recall-knowledge.js";
 import { openKnowledgeAIConnection, registerKnowledgeAISettings } from "../scripts/recall-knowledge-settings.js";
-import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG } from "../scripts/recall-knowledge-message.js";
+import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG, privateKnowledgeQuestion } from "../scripts/recall-knowledge-message.js";
 
 const KEY = "fake-session-secret-do-not-persist";
 let counter = 0;
+const diagnostics = [];
 function marker(message) { return message.flags[MODULE_ID][FLAG]; }
 function response(answer = "You recall a warning about the drake's flame.") {
   return { id: "resp-test", status: "completed", output: [{ type: "message", role: "assistant", status: "completed",
@@ -35,7 +37,8 @@ function setup() {
   users.get = (id) => users.find((user) => user.id === id);
   users.activeGM = gm;
   const values = new Map([[KNOWLEDGE_API_ENDPOINT_SETTING, DEFAULT_KNOWLEDGE_API_ENDPOINT],
-    [KNOWLEDGE_MODEL_SETTING, DEFAULT_KNOWLEDGE_MODEL], [KNOWLEDGE_PROMPT_SETTING, DEFAULT_KNOWLEDGE_PROMPT]]);
+    [KNOWLEDGE_MODEL_SETTING, DEFAULT_KNOWLEDGE_MODEL], [KNOWLEDGE_REASONING_SETTING, DEFAULT_KNOWLEDGE_REASONING],
+    [KNOWLEDGE_OUTPUT_SETTING, DEFAULT_KNOWLEDGE_OUTPUT]]);
   const f = { gm, secondGM, player, users, values, messages: [], requests: [], writes: [], notifications: [], rolls: 0, fetch: null };
   globalThis.game = { world: { id: `world-${++counter}` }, user: gm, users, system: { id: "pf2e" }, i18n: { localize: (key) => key },
     settings: { get: (_namespace, key) => values.get(key) },
@@ -56,7 +59,9 @@ function setup() {
   globalThis.ChatMessage = {
     getSpeaker: () => ({ alias: "Scholar" }),
     async create(data) {
-      const message = { ...data, id: `message-${f.messages.length + 1}`, async update(changes) {
+      assert.equal(data.author, gm.id, "Chat creation must use Foundry's canonical author field");
+      assert.equal(data.user, undefined);
+      const message = { ...data, author: users.get(data.author), id: `message-${f.messages.length + 1}`, async update(changes) {
         await f.beforeUpdate?.(message, changes);
         f.writes.push(structuredClone(changes));
         marker(message).ai = { ...marker(message).ai, ...structuredClone(changes[`flags.${MODULE_ID}.${FLAG}.ai`]) };
@@ -75,6 +80,10 @@ function setup() {
   f.card = async () => { await f.ask(); return f.messages.at(-1); };
   return f;
 }
+test.beforeEach((t) => {
+  diagnostics.length = 0;
+  t.mock.method(console, "error", (...args) => diagnostics.push(structuredClone(args)));
+});
 test.afterEach(() => clearKnowledgeApiKey());
 
 test("acknowledgment precedes a delayed API call and only GMs receive the answer, with no reroll", async () => {
@@ -85,6 +94,8 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   const result = await f.ask();
   assert.deepEqual(result, { action: "ask-question", messageId: "message-1" });
   assert.equal(f.requests.length, 0);
+  assert.equal(f.messages[0].user, undefined);
+  assert.equal(f.messages[0].author, f.gm);
   await until(() => finish);
   assert.equal(f.messages[0].blind, true);
   assert.deepEqual(f.messages[0].whisper, ["gm", "other-gm"]);
@@ -95,8 +106,10 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   assert.equal(options.headers.Authorization, `Bearer ${KEY}`);
   const body = JSON.parse(options.body);
   assert.equal(body.model, DEFAULT_KNOWLEDGE_MODEL);
+  assert.equal(body.model, "gpt-6-luna");
+  assert.deepEqual(body.reasoning, { effort: "low" });
   assert.equal(body.store, false);
-  assert.equal(body.max_output_tokens, 600);
+  assert.equal(body.max_output_tokens, 4000);
   assert.equal(body.stream, false);
   assert.equal(body.background, false);
   assert.deepEqual(body.tools, []);
@@ -110,6 +123,63 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   assert.equal(f.messages.length, 1);
   assert.equal(f.rolls, 1);
   assert.doesNotMatch(JSON.stringify([result, f.writes, f.messages, f.notifications]), new RegExp(KEY));
+});
+
+test("private cards accept live author documents and legacy source data without trusting a conflicting legacy author", async () => {
+  const f = setup();
+  const card = await f.card();
+  assert.equal(privateKnowledgeQuestion(card), marker(card));
+  card.author = f.gm.id;
+  assert.equal(privateKnowledgeQuestion(card), marker(card));
+  delete card.author;
+  card.user = f.gm.id;
+  assert.equal(privateKnowledgeQuestion(card), marker(card));
+  card.user = f.gm;
+  assert.equal(privateKnowledgeQuestion(card), marker(card));
+  card.author = f.player;
+  assert.equal(privateKnowledgeQuestion(card), null);
+  card.author = null;
+  assert.equal(privateKnowledgeQuestion(card), null);
+  card.author = f.gm;
+  card.whisper = [f.gm, f.secondGM];
+  assert.equal(privateKnowledgeQuestion(card), marker(card));
+  card.whisper.push(f.player);
+  assert.equal(privateKnowledgeQuestion(card), null);
+  card.whisper.pop();
+  card.whisper.push(null);
+  assert.equal(privateKnowledgeQuestion(card), null);
+});
+
+test("queue diagnostics preserve the underlying error while excluding credentials and saved prompt data", async () => {
+  const f = setup();
+  const card = await f.card();
+  const prompt = marker(card).prompt;
+  f.beforeUpdate = () => { throw new TypeError(`Chat write failed: ${KEY}; ${prompt}; ${JSON.stringify(prompt)}`); };
+  setKnowledgeApiKey(KEY);
+  await assert.rejects(queueKnowledgeAnswer(card.id), /could not be queued/);
+  assert.equal(f.requests.length, 0);
+  const [label, detail] = diagnostics[0];
+  assert.equal(label, "PF2e Zone Recall Knowledge AI queue failed");
+  assert.equal(detail.stage, "save-queued-state");
+  assert.equal(detail.messageId, card.id);
+  assert.equal(detail.authorId, f.gm.id);
+  assert.equal(detail.privateQuestion, true);
+  assert.equal(detail.error.name, "TypeError");
+  assert.match(detail.error.message, /Chat write failed/);
+  assert.match(detail.error.stack, /recall-knowledge-ai/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(KEY));
+  assert.doesNotMatch(JSON.stringify(diagnostics), /How do I survive|Flame Breath/);
+  f.beforeUpdate = null;
+  await queueKnowledgeAnswer(card.id);
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.rolls, 1);
+
+  const invalid = await f.card();
+  invalid.author = f.player;
+  assert.throws(() => queueKnowledgeAnswer(invalid.id), /private GM/);
+  assert.equal(diagnostics.at(-1)[1].stage, "validate");
+  assert.equal(diagnostics.at(-1)[1].authorIsGM, false);
 });
 
 test("duplicate requests join one attempt and the queue issues only one network call at a time", async () => {
@@ -133,18 +203,100 @@ test("duplicate requests join one attempt and the queue issues only one network 
   assert.equal(f.requests.length, 2);
 });
 
-test("entering a key does not submit a backlog, and saved instructions survive later world edits", async () => {
+test("queued attempts capture reasoning and allowance, while a manual retry reads the latest settings without rerolling", async () => {
+  const f = setup();
+  const first = await f.card();
+  const waiting = await f.card();
+  const completions = [];
+  f.fetch = () => new Promise((resolve) => completions.push(resolve));
+  setKnowledgeApiKey(KEY);
+  await queueKnowledgeAnswer(first.id);
+  await until(() => completions.length === 1);
+  f.values.set(KNOWLEDGE_REASONING_SETTING, "high");
+  f.values.set(KNOWLEDGE_OUTPUT_SETTING, 8000);
+  await queueKnowledgeAnswer(waiting.id);
+  f.values.set(KNOWLEDGE_REASONING_SETTING, "none");
+  f.values.set(KNOWLEDGE_OUTPUT_SETTING, 600);
+  assert.equal(hasKnowledgeApiKey(), true);
+  completions[0]({ ok: true, json: async () => response() });
+  await until(() => completions.length === 2);
+  const body = JSON.parse(f.requests[1].options.body);
+  assert.deepEqual(body.reasoning, { effort: "high" });
+  assert.equal(body.max_output_tokens, 8000);
+  assert.equal(marker(waiting).ai.reasoningEffort, "high");
+  assert.equal(marker(waiting).ai.maxOutputTokens, 8000);
+  completions[1]({ ok: true, json: async () => ({ ...response(), status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }) });
+  await until(() => marker(waiting).ai.status === "error");
+  assert.match(marker(waiting).ai.error, /output allowance.*Increase it/);
+  f.fetch = null;
+  await queueKnowledgeAnswer(waiting.id);
+  await until(() => marker(waiting).ai.status === "complete");
+  const retryBody = JSON.parse(f.requests[2].options.body);
+  assert.deepEqual(retryBody.reasoning, { effort: "none" });
+  assert.equal(retryBody.max_output_tokens, 600);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.rolls, 2);
+});
+
+test("supported reasoning choices reach the API and older GPT models omit unsupported reasoning parameters", async () => {
+  for (const effort of Object.keys(KNOWLEDGE_REASONING_CHOICES)) {
+    const f = setup();
+    const card = await f.card();
+    f.values.set(KNOWLEDGE_REASONING_SETTING, effort);
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "complete");
+    assert.deepEqual(JSON.parse(f.requests[0].options.body).reasoning, { effort });
+  }
+  for (const model of ["gpt-4.1-mini", "gpt-4.1-mini-2025-04-14", "gpt-4o-mini"]) {
+    const f = setup();
+    const card = await f.card();
+    f.values.set(KNOWLEDGE_MODEL_SETTING, model);
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "complete");
+    const body = JSON.parse(f.requests[0].options.body);
+    assert.equal(Object.hasOwn(body, "reasoning"), false);
+    assert.equal(body.model, model);
+    assert.equal(body.max_output_tokens, 4000);
+  }
+});
+
+test("profile defaults apply to unset options, and invalid effort or allowance is rejected before an API request", () => {
+  const f = setup();
+  f.values.clear();
+  assert.deepEqual(knowledgeAIProfile(), { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: "gpt-6-luna",
+    reasoningEffort: "low", maxOutputTokens: 4000 });
+  for (const invalid of ["minimal", "extreme", "", ["low"], {}, 1]) {
+    f.values.set(KNOWLEDGE_REASONING_SETTING, invalid);
+    assert.throws(() => knowledgeAIProfile(), /reasoning effort/);
+  }
+  f.values.delete(KNOWLEDGE_REASONING_SETTING);
+  for (const invalid of [0, 15, 128001, 4000.5, "4000", NaN, Infinity, ""]) {
+    f.values.set(KNOWLEDGE_OUTPUT_SETTING, invalid);
+    assert.throws(() => knowledgeAIProfile(), /output allowance/);
+  }
+  for (const valid of [16, 4000, 128000]) {
+    f.values.set(KNOWLEDGE_OUTPUT_SETTING, valid);
+    assert.equal(knowledgeAIProfile().maxOutputTokens, valid);
+  }
+  assert.equal(f.requests.length, 0);
+});
+
+test("entering a key does not submit a backlog, and older cards keep their saved customized instructions", async () => {
   const f = setup();
   const card = await f.card();
+  const savedInstructions = "Older saved instructions: speak as a weary scholar.";
+  marker(card).instructions = savedInstructions;
+  marker(card).prompt = `${savedInstructions}\n\n${marker(card).input}`;
   assert.equal(marker(card).ai.status, "needs-key");
   assert.throws(() => queueKnowledgeAnswer(card.id), /Enter an API key/);
   setKnowledgeApiKey(KEY);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(f.requests.length, 0);
-  f.values.set(KNOWLEDGE_PROMPT_SETTING, "Different instructions now");
   await queueKnowledgeAnswer(card.id);
   await until(() => marker(card).ai.status === "complete");
-  assert.equal(JSON.parse(f.requests[0].options.body).instructions, DEFAULT_KNOWLEDGE_PROMPT);
+  assert.equal(JSON.parse(f.requests[0].options.body).instructions, savedInstructions);
 });
 
 test("HTTP, network and invalid answer errors are sanitized; manual retries retain the roll", async () => {
@@ -355,7 +507,6 @@ test("legacy private cards use their saved prompt and entering a new key cancels
   const card = await f.card();
   delete marker(card).instructions;
   delete marker(card).input;
-  f.values.set(KNOWLEDGE_PROMPT_SETTING, "New world text");
   setKnowledgeApiKey(KEY);
   await queueKnowledgeAnswer(card.id);
   await until(() => marker(card).ai.status === "complete");
@@ -422,7 +573,8 @@ test("key entry begins blank, stays out of settings, and clears after session us
   game.settings.registerMenu = (_namespace, key, value) => menus.set(key, value);
   const dom = new JSDOM("<!doctype html>");
   globalThis.document = dom.window.document;
-  globalThis.foundry = { data: { fields: { StringField: class { constructor(options) { this.options = options; } } } }, applications: { api: { DialogV2: class {
+  class TestField { constructor(options) { this.options = options; } }
+  globalThis.foundry = { data: { fields: { StringField: TestField, NumberField: TestField } }, applications: { api: { DialogV2: class {
     constructor(options) { this.options = options; this.listeners = new Map(); }
     addEventListener(event, callback) { this.listeners.set(event, callback); }
     async render() { this.rendered = true; this.element = document.createElement("form"); this.element.innerHTML = this.options.content.innerHTML; }
@@ -441,7 +593,7 @@ test("key entry begins blank, stays out of settings, and clears after session us
     dialog.options.buttons.find((button) => button.action === "use").callback(null, { form: dialog.element });
     assert.equal(input.value, "");
     assert.equal(hasKnowledgeApiKey(), true);
-    assert.equal(registered.size, 2);
+    assert.equal(registered.size, 4);
     assert.doesNotMatch(JSON.stringify([...registered.values()]), /replacement-secret|fake-session-secret/);
     dialog.options.buttons.find((button) => button.action === "clear").callback(null, { form: dialog.element });
     assert.equal(hasKnowledgeApiKey(), false);

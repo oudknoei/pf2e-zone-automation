@@ -1,6 +1,6 @@
 import { bestKnowledgeSkill, creatureKnowledgeDC, creatureTraits, creatureType, knowledgeDegree, traitLabel } from "./recall-knowledge-rules.js";
 import { compactCreatureData } from "./recall-knowledge-data.js";
-import { knowledgePromptInstructions } from "./recall-knowledge-prompt.js";
+import { DEFAULT_KNOWLEDGE_PROMPT } from "./recall-knowledge-prompt.js";
 import { scheduleKnowledgeAnswer } from "./recall-knowledge-ai.js";
 import { QUESTION_MODULE_ID, QUESTION_MESSAGE_FLAG } from "./recall-knowledge-message.js";
 import { oncePerOperation } from "./request-cache.js";
@@ -61,7 +61,7 @@ async function questionToken(uuid, label) {
 
 /** Builds a portable prompt whose answer instructions stay separate from untrusted question and creature text. */
 export function buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total, degree,
-  instructions = knowledgePromptInstructions() }) {
+  instructions = DEFAULT_KNOWLEDGE_PROMPT }) {
   const traits = creatureTraits(creature).map(traitLabel).join(", ") || "None listed";
   const type = creatureType(creature);
   const data = compactCreatureData(creature.toObject(), creature.toObject(false).system);
@@ -96,11 +96,11 @@ async function prepareQuestion(request, requester, sourceToken, targetToken) {
     throw new Error("The Recall Knowledge die roll could not be read.");
   }
   const degree = knowledgeDegree(roll.total, dc, natural);
-  const instructions = knowledgePromptInstructions();
+  const instructions = DEFAULT_KNOWLEDGE_PROMPT;
   const prompt = buildKnowledgePrompt({ request, requester, source, creature, skill, dc, natural, total: roll.total, degree, instructions });
   const traits = creatureTraits(creature).map(traitLabel).join(", ") || "None listed";
   return {
-    user: game.user.id,
+    author: game.user.id,
     speaker: ChatMessage.getSpeaker({ actor: source, token: sourceToken }),
     blind: true,
     rolls: [roll],

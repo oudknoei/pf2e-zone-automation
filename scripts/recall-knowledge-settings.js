@@ -1,6 +1,8 @@
 import { clearKnowledgeApiKey, hasKnowledgeApiKey, setKnowledgeApiKey } from "./recall-knowledge-ai.js";
-import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, KNOWLEDGE_API_ENDPOINT_SETTING,
-  KNOWLEDGE_MODEL_SETTING, knowledgeAIProfile, normalizeKnowledgeEndpoint } from "./recall-knowledge-ai-config.js";
+import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
+  KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
+  KNOWLEDGE_REASONING_CHOICES, MIN_KNOWLEDGE_OUTPUT, MAX_KNOWLEDGE_OUTPUT,
+  knowledgeAIProfile, normalizeKnowledgeEndpoint } from "./recall-knowledge-ai-config.js";
 import { isKnowledgeActiveGM, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
 
 let connectionClass;
@@ -44,7 +46,7 @@ function connectionOptions() {
           setKnowledgeApiKey(input.value);
           input.value = "";
           updateConnectionStatus(button.form);
-        } catch (_error) { ui.notifications.warn("Enter a valid API key and check the API endpoint in game settings."); }
+        } catch (_error) { ui.notifications.warn("Enter a valid API key and check the AI options in game settings."); }
       } },
       { action: "clear", label: "Clear key", callback: (_event, button) => {
         requireConnectionGM();
@@ -72,6 +74,22 @@ export function registerKnowledgeAISettings() {
     scope: "world", config: true,
     type: new foundry.data.fields.StringField({ blank: false, nullable: false, trim: true, initial: DEFAULT_KNOWLEDGE_MODEL }),
     default: DEFAULT_KNOWLEDGE_MODEL
+  });
+  game.settings.register(QUESTION_MODULE_ID, KNOWLEDGE_REASONING_SETTING, {
+    name: "Recall Knowledge reasoning effort",
+    hint: "How much the model thinks before answering. Choose a level supported by your model. GPT-4 models ignore this option. Changes apply to new AI attempts.",
+    scope: "world", config: true, choices: KNOWLEDGE_REASONING_CHOICES,
+    type: new foundry.data.fields.StringField({ blank: false, nullable: false, trim: true,
+      initial: DEFAULT_KNOWLEDGE_REASONING, choices: KNOWLEDGE_REASONING_CHOICES }),
+    default: DEFAULT_KNOWLEDGE_REASONING
+  });
+  game.settings.register(QUESTION_MODULE_ID, KNOWLEDGE_OUTPUT_SETTING, {
+    name: "Recall Knowledge output allowance",
+    hint: "Maximum tokens for thinking and the answer combined. The answer is still kept brief. Changes apply to new AI attempts.",
+    scope: "world", config: true,
+    type: new foundry.data.fields.NumberField({ nullable: false, required: true, integer: true,
+      min: MIN_KNOWLEDGE_OUTPUT, max: MAX_KNOWLEDGE_OUTPUT, step: 1, initial: DEFAULT_KNOWLEDGE_OUTPUT }),
+    default: DEFAULT_KNOWLEDGE_OUTPUT
   });
   connectionClass = class KnowledgeAIConnection extends foundry.applications.api.DialogV2 {
     /** Builds the settings submenu with an empty input and current session status. */
