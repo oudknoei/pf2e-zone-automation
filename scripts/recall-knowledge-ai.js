@@ -1,4 +1,5 @@
 import { knowledgeAIProfile } from "./recall-knowledge-ai-config.js";
+import { logKnowledgeAICost } from "./recall-knowledge-ai-cost.js";
 import { ANSWER_MESSAGE_FLAG, isKnowledgeActiveGM, knowledgeAnswerMarker, knowledgeAnswerText, plainKnowledgeAnswer,
   privateKnowledgeQuestion, QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
 import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
@@ -195,6 +196,7 @@ async function fetchAnswer(job) {
   const controller = new AbortController();
   job.controller = controller;
   let timedOut = false;
+  let costLogged = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, KNOWLEDGE_AI_TIMEOUT_MS);
   try {
     const response = await fetch(job.profile.endpoint, {
@@ -204,9 +206,15 @@ async function fetchAnswer(job) {
         max_output_tokens: job.profile.maxOutputTokens, store: false,
         tools: [], stream: false, background: false })
     });
-    if (!response.ok) throw new KnowledgeAIError(await httpError(response));
+    if (!response.ok) {
+      costLogged = true;
+      logKnowledgeAICost(job.profile);
+      throw new KnowledgeAIError(await httpError(response));
+    }
     let data;
     try { data = await response.json(); } catch (_error) { throw new KnowledgeAIError("The endpoint did not return valid Responses API JSON."); }
+    costLogged = true;
+    logKnowledgeAICost(job.profile, data);
     const result = parseKnowledgeAIResponse(data);
     // A custom provider must not be able to echo the authorization value into chat or flags.
     if (job.session.key) {
@@ -217,6 +225,7 @@ async function fetchAnswer(job) {
     if (!result.answer) throw new KnowledgeAIError("The API returned no usable answer.");
     return result;
   } catch (error) {
+    if (!costLogged) logKnowledgeAICost(job.profile);
     if (timedOut) throw new KnowledgeAIError("The API request timed out. A manual retry may incur another charge.");
     if (error instanceof KnowledgeAIError) throw error;
     throw new KnowledgeAIError("Could not reach the API. Check the endpoint and browser connection policy; a manual retry may incur another charge.");

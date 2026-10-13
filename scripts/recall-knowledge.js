@@ -216,7 +216,7 @@ function renderKnowledgeAI(message, html) {
   }
 }
 
-/** Restores literal answer text for private and public messages, with copying offered only to GMs. */
+/** Restores literal answer text for private and public messages without adding chat controls. */
 function renderKnowledgeAnswer(message, html) {
   const marker = knowledgeAnswerMarker(message);
   if (!marker) return false;
@@ -224,22 +224,6 @@ function renderKnowledgeAnswer(message, html) {
   if (!answer) return true;
   answer.textContent = marker.text;
   html.querySelectorAll("[data-pza-copy-answer]").forEach((button) => button.remove());
-  if (!game.user?.isGM) return true;
-  const copy = answer.ownerDocument.createElement("button");
-  copy.type = "button";
-  copy.dataset.pzaCopyAnswer = "";
-  copy.textContent = "Copy answer";
-  copy.addEventListener("click", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (copy.disabled || !game.user?.isGM) return;
-    const current = knowledgeAnswerMarker(message);
-    if (!current) return;
-    copy.disabled = true;
-    try { await copyKnowledgeText(current.text, answer, "Answer"); }
-    finally { copy.disabled = false; }
-  });
-  answer.after(copy);
   return true;
 }
 

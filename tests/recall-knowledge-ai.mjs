@@ -6,6 +6,7 @@ import { clearKnowledgeApiKey, hasKnowledgeApiKey, KNOWLEDGE_AI_TIMEOUT_MS, know
 import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
   KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
   KNOWLEDGE_REASONING_CHOICES, knowledgeAIProfile, normalizeKnowledgeEndpoint } from "../scripts/recall-knowledge-ai-config.js";
+import { knowledgeCostSummary } from "../scripts/recall-knowledge-ai-cost.js";
 import { DEFAULT_KNOWLEDGE_PROMPT } from "../scripts/recall-knowledge-prompt.js";
 import { executeAskQuestion } from "../scripts/recall-knowledge-worker.js";
 import { registerQuestionChat } from "../scripts/recall-knowledge.js";
@@ -16,6 +17,7 @@ import { QUESTION_MODULE_ID as MODULE_ID, QUESTION_MESSAGE_FLAG as FLAG, ANSWER_
 const KEY = "fake-session-secret-do-not-persist";
 let counter = 0;
 const diagnostics = [];
+const costWarnings = [];
 function marker(message) { return message.flags[MODULE_ID][FLAG]; }
 function response(answer = "You recall a warning about the drake's flame.") {
   return { id: "resp-test", status: "completed", output: [{ type: "message", role: "assistant", status: "completed",
@@ -85,9 +87,111 @@ function setup() {
 }
 test.beforeEach((t) => {
   diagnostics.length = 0;
+  costWarnings.length = 0;
   t.mock.method(console, "error", (...args) => diagnostics.push(structuredClone(args)));
+  t.mock.method(console, "warn", (...args) => costWarnings.push(structuredClone(args)));
 });
 test.afterEach(() => clearKnowledgeApiKey());
+
+test("cost estimates use actual cache and output counts without charging reasoning twice", () => {
+  const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
+  const data = { model: "gpt-6-luna", service_tier: "default", status: "completed", usage: {
+    input_tokens: 10000, input_tokens_details: { cached_tokens: 2000, cache_write_tokens: 1000 },
+    output_tokens: 800, output_tokens_details: { reasoning_tokens: 600 }, total_tokens: 10800
+  } };
+  const cost = knowledgeCostSummary(profile, data);
+  assert.deepEqual(cost.usage, { inputTokens: 10000, cachedInputTokens: 2000, cacheWriteInputTokens: 1000,
+    outputTokens: 800, reasoningTokens: 600, totalTokens: 10800 });
+  assert.equal(cost.estimatedInputCostUSD, 0.000845);
+  assert.equal(cost.estimatedOutputCostUSD, 0.0004);
+  assert.ok(Math.abs(cost.estimatedCostUSD - 0.001245) < 1e-12);
+  assert.match(cost.note, /Estimate.*Actual billed credit debit may differ/);
+  assert.equal(cost.currency, "USD");
+  for (const [tier, factor] of [["flex", 0.5], ["fast", 2], ["priority", 2]]) {
+    assert.ok(Math.abs(knowledgeCostSummary(profile, { ...data, service_tier: tier }).estimatedCostUSD - 0.001245 * factor) < 1e-12);
+  }
+  const large = knowledgeCostSummary(profile, { ...data, usage: { ...data.usage, input_tokens: 272001, total_tokens: 272801 } });
+  assert.equal(large.estimatedOutputCostUSD, 0.0006);
+  assert.ok(Math.abs(large.estimatedInputCostUSD - ((269001 * 0.1 + 2000 * 0.01 + 1000 * 0.125) * 2 / 1e6)) < 1e-12);
+  const mini = knowledgeCostSummary(profile, { model: "gpt-4.1-mini", usage: {
+    input_tokens: 1000, input_tokens_details: { cached_tokens: 200 }, output_tokens: 100, total_tokens: 1100
+  } });
+  assert.ok(Math.abs(mini.estimatedCostUSD - 0.0005) < 1e-12);
+  assert.equal(knowledgeCostSummary(profile, { model: "gpt-4.1-mini-2025-04-14", usage: {
+    input_tokens: 1000, input_tokens_details: { cached_tokens: 200 }, output_tokens: 100, total_tokens: 1100
+  } }).estimatedCostUSD, mini.estimatedCostUSD);
+});
+
+test("unknown providers, pricing and malformed usage never produce a misleading cost or leak provider strings", () => {
+  const profile = { endpoint: DEFAULT_KNOWLEDGE_API_ENDPOINT, model: DEFAULT_KNOWLEDGE_MODEL };
+  const valid = { input_tokens: 1000, output_tokens: 100, total_tokens: 1100 };
+  for (const data of [{}, { usage: null }, { usage: { ...valid, input_tokens: KEY } },
+    { usage: { ...valid, output_tokens: -1 } }, { usage: { ...valid, input_tokens: 1.5 } },
+    { usage: { ...valid, total_tokens: 999 } }, { usage: { ...valid, output_tokens_details: { reasoning_tokens: 101 } } },
+    { usage: { ...valid, input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 1 } } },
+    { model: KEY, usage: valid }, { service_tier: KEY, usage: valid }]) {
+    const cost = knowledgeCostSummary(profile, data);
+    assert.equal(cost.estimatedCostUSD, null);
+    assert.doesNotMatch(JSON.stringify(cost), new RegExp(KEY));
+  }
+  const custom = knowledgeCostSummary({ ...profile, endpoint: `https://custom.example/${KEY}` }, { usage: valid });
+  assert.equal(custom.estimatedCostUSD, null);
+  assert.equal(custom.usage.totalTokens, 1100);
+  assert.match(custom.note, /Custom endpoint pricing/);
+  assert.doesNotMatch(JSON.stringify(custom), new RegExp(KEY));
+});
+
+test("each API response warns about cost even when incomplete, without copying prompts, answers or secrets", async () => {
+  for (const incomplete of [false, true]) {
+    const f = setup();
+    const card = await f.card();
+    f.fetch = async () => ({ ok: true, json: async () => ({ ...response(`Provider answer ${KEY}`),
+      model: DEFAULT_KNOWLEDGE_MODEL, status: incomplete ? "incomplete" : "completed",
+      ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+      input: marker(card).prompt, metadata: { secret: KEY },
+      usage: { input_tokens: 10000, input_tokens_details: { cached_tokens: 2000, cache_write_tokens: 1000 },
+        output_tokens: 800, output_tokens_details: { reasoning_tokens: 600 }, total_tokens: 10800 }
+    }) });
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === (incomplete ? "error" : "complete"));
+    const [label, details] = costWarnings.at(-1);
+    assert.match(label, /estimated cost \$0\.00124500 USD/);
+    assert.equal(details.status, incomplete ? "incomplete" : "completed");
+    assert.equal(details.usage.reasoningTokens, 600);
+    assert.equal(f.requests.length, 1);
+    assert.doesNotMatch(JSON.stringify(costWarnings), new RegExp(KEY));
+    assert.doesNotMatch(JSON.stringify(costWarnings), /How do I survive|Flame Breath|Provider answer/);
+    assert.doesNotMatch(JSON.stringify(f.messages), /estimatedCostUSD|pricingAsOf/);
+  }
+});
+
+test("failures without returned usage warn that cost is unknown, and console failures do not block answers", async (t) => {
+  for (const failure of ["network", "json", "http"]) {
+    const f = setup();
+    const card = await f.card();
+    const initialWarnings = costWarnings.length;
+    f.fetch = async () => {
+      if (failure === "network") throw new Error(KEY);
+      if (failure === "http") return { ok: false, status: 401 };
+      return { ok: true, json: async () => { throw new Error(KEY); } };
+    };
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => marker(card).ai.status === "error");
+    assert.equal(costWarnings.length, initialWarnings + 1);
+    assert.match(costWarnings.at(-1)[0], /cost unavailable/);
+    assert.equal(costWarnings.at(-1)[1].estimatedCostUSD, null);
+    assert.doesNotMatch(JSON.stringify(costWarnings), new RegExp(KEY));
+  }
+  const f = setup();
+  const card = await f.card();
+  t.mock.method(console, "warn", () => { throw new Error("Console hook failed"); });
+  setKnowledgeApiKey(KEY);
+  await queueKnowledgeAnswer(card.id);
+  await until(() => marker(card).ai.status === "complete");
+  assert.equal(f.requests.length, 1);
+});
 
 test("acknowledgment precedes a delayed API call and only GMs receive the answer, with no reroll", async () => {
   const f = setup();
@@ -212,6 +316,7 @@ test("duplicate requests join one attempt and the queue issues only one network 
   await until(() => marker(second).ai.status === "complete");
   await queueKnowledgeAnswer(first.id);
   assert.equal(f.requests.length, 2);
+  assert.equal(costWarnings.length, 2);
 });
 
 test("queued attempts capture reasoning and allowance, while a manual retry reads the latest settings without rerolling", async () => {
@@ -452,6 +557,7 @@ test("chat delivery retry saves a received answer without making another API req
   assert.equal(f.requests.length, 1);
   assert.equal(f.rolls, 1);
   assert.equal(f.messages.length, 2, "Retry must reuse the separately posted answer");
+  assert.equal(costWarnings.length, 1, "Retrying chat delivery must not log another API charge");
 });
 
 test("answer creation failures and lost acknowledgments retry delivery without another API call or duplicate message", async () => {
@@ -735,7 +841,7 @@ test("without a session key the question displays only its non-API content, and 
   } finally { unregister(); dom.window.close(); }
 });
 
-test("separate answer rendering stays literal when made public; copying includes truthful type/traits without GM mechanics", async () => {
+test("separate answer rendering stays literal when made public and includes type/traits without buttons or GM mechanics", async () => {
   const f = setup();
   const card = await f.card();
   f.fetch = async () => ({ ok: true, json: async () => response(`<script>alert(1)</script> [[1d20]] @UUID[Actor.secret] ${KEY}`) });
@@ -749,31 +855,24 @@ test("separate answer rendering stays literal when made public; copying includes
   const answerMessage = f.messages[1];
   const dom = new JSDOM(answerMessage.content);
   const html = dom.window.document;
-  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  let copied;
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async (text) => { copied = text; } } } });
   try {
     assert.doesNotMatch(card.content, /alert\(1\)|\[\[1d20\]\]/);
     render(answerMessage, html);
     const answer = html.querySelector("[data-pza-knowledge-answer]");
     assert.equal(html.querySelectorAll("script,a,.inline-roll").length, 0);
     assert.match(answer.textContent, /alert\(1\).*\[\[1d20\]\].*@UUID/);
-    html.querySelector("button").click();
-    await until(() => copied && !html.querySelector("button").disabled);
-    assert.match(copied, /^Type: Dragon\nTraits: Dragon, Fire\n\n/);
-    navigator.clipboard.writeText = async () => { throw new Error("Denied"); };
-    html.querySelector("button").click();
-    await until(() => dom.window.getSelection().toString() === copied);
+    assert.match(answer.textContent, /^Type: Dragon\nTraits: Dragon, Fire\n\n/);
+    assert.equal(html.querySelector("button"), null);
+    const originalText = answer.textContent;
     game.user = f.player;
     answerMessage.whisper = [];
     html.querySelector("[data-pza-knowledge-answer]").innerHTML = '<a class="inline-roll">Enriched roll</a>';
     render(answerMessage, html);
-    assert.equal(answer.textContent, copied);
+    assert.equal(answer.textContent, originalText);
     assert.equal(html.querySelectorAll("a,.inline-roll").length, 0);
     assert.equal(html.querySelector("button"), null);
     assert.doesNotMatch(html.body.textContent, /vs\. DC|Success|Flame Breath|How do I survive|LLM prompt/);
   } finally {
-    Object.defineProperty(globalThis, "navigator", originalNavigator);
     unregister();
     dom.window.close();
   }
