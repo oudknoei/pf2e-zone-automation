@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import test from "node:test";
 
 import { handleWorkerRequest } from "../scripts/worker.js";
@@ -94,7 +95,7 @@ test("player zones retain their saved preset revision and reject stale overwrite
       [sourceActor.uuid]: sourceActor
     })[uuid] ?? null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.21",
+      version: RUNTIME_VERSION,
       installHooks() {},
       async activateRegion() {},
       async endZone(target) { endedRegion = target; }

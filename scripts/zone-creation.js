@@ -3,11 +3,11 @@ import { combatForZone } from "./scene-combat.js";
 import { resolveDurationRounds } from "./duration.js";
 import { postFormulaDurationMessage } from "./duration-chat.js";
 import { zoneRuntimeEntrypoint } from "./runtime.js";
+import { VERSION as RUNTIME_VERSION } from "./runtime-constants.js";
 import { damageTypeAvailable, normalizeConfig, validateConfig } from "./zone-config.js";
 import { validateEffectItems } from "./effect-items.js";
 import { canonicalJson } from "./utils.js";
 
-const RUNTIME_VERSION = "0.5.21";
 const FLAG_SCOPE = "world";
 const FLAG_KEY = "pf2eZone";
 

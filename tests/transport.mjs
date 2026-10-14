@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import test from "node:test";
 
 const sent = [];
@@ -461,7 +462,7 @@ test("player creates and dismisses a Region through the authenticated GM socket"
     globalThis.fromUuid = async (uuid) =>
       uuid === token.uuid ? token : uuid === actor.uuid ? actor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.21",
+      version: RUNTIME_VERSION,
       installHooks() {},
       async activateRegion(region) { activated.push(region); },
       async endZone(region) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -142,7 +143,7 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
     game.scenes = { get: (id) => id === scene.id ? scene : null };
     globalThis.fromUuid = async (uuid) => uuid === "Actor.source" ? sourceActor : null;
     globalThis.PF2EZoneRuntime = {
-      version: "0.5.21",
+      version: RUNTIME_VERSION,
       installHooks: () => undefined,
       endZone: async (target, reason) => { ended = { target, reason }; }
     };

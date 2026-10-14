@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { zoneRuntimeEntrypoint } from "../scripts/runtime.js";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 
 const gm = { id: "gm", isGM: true };
 const otherGM = { id: "other-gm", isGM: true };
@@ -66,6 +67,77 @@ async function fixture(t) {
 }
 
 function handoff() { game.users.activeGM = otherGM; }
+
+test("re-entering the same runtime retains its services, hooks and explicit event dispatch", async t => {
+  const f = await fixture(t);
+  const registry = globalThis.PF2EZoneRuntimeHookRegistry;
+  const locks = f.runtime.locks;
+  const context = { event: { name: "test" }, region: f.region };
+  let handled = null;
+  t.mock.method(Hooks, "on", () => assert.fail("Re-entry must not register duplicate hooks"));
+  t.mock.method(document, "addEventListener", () => assert.fail("Re-entry must not duplicate the click handler"));
+  t.mock.method(f.runtime, "handleRegionEvent", async function(received) {
+    assert.equal(this, f.runtime);
+    handled = received;
+  });
+  assert.equal(await zoneRuntimeEntrypoint(context), f.runtime);
+  assert.equal(f.runtime.locks, locks);
+  assert.equal(globalThis.PF2EZoneRuntimeHookRegistry, registry);
+  assert.equal(handled, context);
+});
+
+test("upgrading a runtime retires old work and replaces its hooks, timers and service state once", async t => {
+  const f = await fixture(t);
+  const blocked = gate();
+  t.after(() => blocked.release());
+  const hookNames = [...hooks.keys()].sort();
+  const oldRegistry = globalThis.PF2EZoneRuntimeHookRegistry;
+  f.runtime.locks.set(f.region.uuid, blocked.promise);
+  const queued = f.runtime.withState(f.region, () => assert.fail("Work from the replaced runtime must stop"));
+  for (const timers of [f.runtime.regionReconcileTimers, f.runtime.activationFinalizeTimers, f.runtime.sharedImmunityCancellationTimers]) {
+    timers.set("old", setTimeout(() => assert.fail("A replaced runtime timer must be cancelled"), 60000));
+  }
+  f.runtime.areaBoundarySuppression.set("old", {
+    timer: setTimeout(() => assert.fail("A replaced boundary timer must be cancelled"), 60000)
+  });
+  f.runtime.version = "0.5.21";
+  const replacement = await zoneRuntimeEntrypoint();
+  t.after(() => replacement.teardownHooks());
+  blocked.release();
+  assert.equal(await queued, null);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.runtime.retired, true);
+  assert.equal(f.runtime.hooksInstalled, false);
+  assert.notEqual(replacement, f.runtime);
+  assert.equal(replacement.version, RUNTIME_VERSION);
+  assert.equal(globalThis.PF2EZoneRuntimeHookRegistry.runtime, replacement);
+  assert.notEqual(globalThis.PF2EZoneRuntimeHookRegistry, oldRegistry);
+  assert.deepEqual([...hooks.keys()].sort(), hookNames);
+  for (const key of ["regionReconcileTimers", "activationFinalizeTimers", "sharedImmunityCancellationTimers", "areaBoundarySuppression"]) {
+    assert.equal(f.runtime[key].size, 0);
+    assert.equal(replacement[key].size, 0);
+    assert.notEqual(replacement[key], f.runtime[key]);
+  }
+  assert.equal(replacement.locks.size, 0);
+  assert.notEqual(replacement.locks, f.runtime.locks);
+  assert.equal(await zoneRuntimeEntrypoint(), replacement);
+  assert.equal(globalThis.PF2EZoneRuntimeHookRegistry.runtime, replacement);
+});
+
+test("an older entry point keeps a newer installed runtime and its hook registry", async t => {
+  const f = await fixture(t);
+  const registry = globalThis.PF2EZoneRuntimeHookRegistry;
+  f.runtime.version = "99.0.0";
+  t.mock.method(f.runtime, "teardownHooks", () => assert.fail("A newer runtime must not be retired"));
+  try {
+    assert.equal(await zoneRuntimeEntrypoint(), f.runtime);
+    assert.equal(f.runtime.version, "99.0.0");
+    assert.equal(f.runtime.retired, false);
+    assert.equal(globalThis.PF2EZoneRuntimeHookRegistry, registry);
+  } finally {
+    t.mock.restoreAll();
+  }
+});
 
 test("queued Region turn events stop after handoff and the new GM can run fresh work", async t => {
   const f = await fixture(t);

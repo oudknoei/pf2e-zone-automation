@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
@@ -144,7 +145,7 @@ globalThis.fromUuid = async (uuid) => effectDocuments.get(uuid) ?? ({
   [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.21",
+  version: RUNTIME_VERSION,
   installHooks() {},
   async activateRegion(region) { runtimeCalls.activated.push(region); },
   async endZone(region) {

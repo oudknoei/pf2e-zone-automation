@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import test from "node:test";
 
 import { createZoneDocument, creationRequestFingerprint, requireValidConfig } from "../scripts/zone-creation.js";
@@ -61,7 +62,7 @@ globalThis.game = {
 const effectDocuments = new Map();
 globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : effectDocuments.get(uuid) ?? null;
 globalThis.PF2EZoneRuntime = {
-  version: "0.5.21", installHooks() {},
+  version: RUNTIME_VERSION, installHooks() {},
   async activateRegion(region) { activated.push(region); }
 };
 
