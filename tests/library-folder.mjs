@@ -72,3 +72,28 @@ test("the shared zone library creates its Journal in the PF2e Zone Automation fo
   assert.equal(journals[0].folder, createdFolders[0].id);
   assert.equal(journals[0].pages.length, 1);
 });
+
+test("library discovery repairs a moved Journal and missing index without duplicating the library or exposing preset HTML", async () => {
+  const journal = journals[0];
+  journal.folder = "another-folder";
+  journal.pages = [];
+  journal.flags.world.pf2eZoneLibrary.zones = {
+    dangerous: { id: "dangerous", name: '<img src="x" onerror="run()">',
+      createdBy: { userId: "gm", name: "<script>GM</script>" }, config: {} }
+  };
+  const request = { protocol: 1, action: "library-list", requesterUserId: "gm" };
+  const repaired = await handleWorkerRequest(request);
+  assert.equal(repaired.ok, true, repaired.error);
+  assert.equal(repaired.records[0].name, '<img src="x" onerror="run()">');
+  assert.equal(journal.folder, createdFolders[0].id);
+  assert.equal(journal.pages.length, 1);
+  const page = journal.pages[0];
+  assert.equal(page.getFlag("world", "pf2eZoneLibraryIndex"), true);
+  assert.match(page.text.content, /&lt;img/);
+  assert.match(page.text.content, /&lt;script&gt;GM&lt;\/script&gt;/);
+  assert.doesNotMatch(page.text.content, /<img|<script/);
+  assert.equal((await handleWorkerRequest(request)).ok, true);
+  assert.equal(journals.length, 1);
+  assert.equal(createdFolders.length, 1);
+  assert.equal(journal.pages.length, 1);
+});

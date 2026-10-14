@@ -1,5 +1,6 @@
 import { handleWorkerRequest } from "./worker.js";
 import { newOperationId } from "./utils.js";
+import { canExecuteWorkerLocally } from "./worker-action-policy.js";
 
 const CHANNEL = "module.pf2e-zone-automation";
 const RESPONSE_TIMEOUT_MS = 60000;
@@ -17,9 +18,8 @@ export function registerZoneSocket() {
 /** Gives callers a bounded request-response path instead of leaving player actions pending indefinitely. */
 export async function requestGMWorker(request) {
   const gm = game.users.activeGM;
-  const activeGMAction = ["library-list", "library-save", "library-delete", "cancel-pending-save", "shielding-taunt", "ask-question", "set-hero-points", "create-hero-point-reminder"].includes(request?.action);
   // Shared state mutations must reach one authoritative GM so retries cannot race across clients.
-  if (game.user.isGM && (!activeGMAction || !gm || gm.id === game.user.id)) {
+  if (canExecuteWorkerLocally(request?.action, game.user, gm)) {
     return handleWorkerRequest(request);
   }
 

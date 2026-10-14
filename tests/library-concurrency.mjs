@@ -507,3 +507,83 @@ test("preset operation identities are isolated by requester and survive a GM han
     assert.equal(f.writes, 2);
   } finally { f.restore(); }
 });
+
+test("preset record permissions permit shared reads but restrict overwrites and deletion to the creator or a GM", async () => {
+  const f = saveFixture();
+  const other = { id: "another-preset-player", name: "Another player", isGM: false, active: true };
+  game.users.set(other.id, other);
+  try {
+    const listed = await f.run({ protocol: 1, action: "library-list", requesterUserId: other.id });
+    assert.equal(listed.ok, true, listed.error);
+    assert.equal(listed.records[0].id, "existing");
+    const overwrite = { ...f.request, requesterUserId: other.id, recordId: "existing", expectedRevision: 1 };
+    const deniedSave = await f.run(overwrite);
+    assert.equal(deniedSave.ok, false);
+    assert.match(deniedSave.error, /Only Player or a GM can overwrite/);
+    const deletion = { protocol: 1, action: "library-delete", requesterUserId: other.id,
+      recordId: "existing", expectedRevision: 1 };
+    const deniedDelete = await f.run(deletion);
+    assert.equal(deniedDelete.ok, false);
+    assert.match(deniedDelete.error, /Only Player or a GM can delete/);
+    assert.equal(f.writes, 0);
+    const saved = await f.run({ ...overwrite, requesterUserId: f.gm.id });
+    assert.equal(saved.ok, true, saved.error);
+    assert.equal(saved.record.revision, 2);
+    assert.equal(saved.record.createdBy.userId, f.user.id);
+    const stale = await f.run({ ...deletion, requesterUserId: f.gm.id });
+    assert.equal(stale.ok, false);
+    assert.match(stale.error, /changed since you opened the list/);
+    const deleted = await f.run({ ...deletion, requesterUserId: f.gm.id, expectedRevision: 2 });
+    assert.equal(deleted.ok, true, deleted.error);
+    assert.equal(f.data().zones.existing, undefined);
+    assert.equal(f.writes, 2);
+  } finally { f.restore(); }
+});
+
+test("an inactive requester cannot reuse a cached preset completion or perform library reads or deletes", async () => {
+  const f = saveFixture();
+  try {
+    const original = await f.run();
+    assert.equal(original.ok, true, original.error);
+    f.user.active = false;
+    for (const request of [f.request,
+      { protocol: 1, action: "library-list", requesterUserId: f.user.id },
+      { protocol: 1, action: "library-delete", requesterUserId: f.user.id, recordId: "existing", expectedRevision: 1 }]) {
+      const rejected = await f.run(request);
+      assert.equal(rejected.ok, false);
+      assert.match(rejected.error, /is not active/);
+    }
+    assert.equal(f.writes, 1);
+    f.user.active = true;
+    assert.deepEqual(await f.run(), original);
+    assert.equal(f.writes, 1);
+  } finally { f.restore(); }
+});
+
+test("library reads wait for an outstanding preset save and observe its committed record", async () => {
+  const f = saveFixture();
+  const started = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  f.beforeWrite = async () => { started.resolve(); await gate.promise; };
+  let save;
+  let read;
+  try {
+    save = f.run();
+    await started.promise;
+    let readFinished = false;
+    read = f.run({ protocol: 1, action: "library-list", requesterUserId: f.user.id })
+      .then(result => { readFinished = true; return result; });
+    await new Promise(setImmediate);
+    assert.equal(readFinished, false);
+    gate.resolve();
+    const [saved, listed] = await Promise.all([save, read]);
+    assert.equal(saved.ok, true, saved.error);
+    assert.equal(listed.ok, true, listed.error);
+    assert.deepEqual(listed.records.find(record => record.id === saved.record.id), saved.record);
+    assert.equal(f.writes, 1);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([save, read]);
+    f.restore();
+  }
+});

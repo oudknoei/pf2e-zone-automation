@@ -22,6 +22,12 @@ Capture the source Actor and token. Show their identity and require **Use Curren
 
 Errors prevent mutation; warnings remain visible without preventing creation. Freeze click-time configuration, source, Scene, preset revision, and editor revision before asynchronous validation. Guard duplicate clicks and ignore obsolete responses after a later editor change. Do not overwrite newer edits with an earlier Save response.
 
+`scripts/builder.js` remains the public entry point and delegates to `builder-controller.js`. The controller owns source selection, editor state, mutation reservations, validation, effect lookups, creation, canvas placement, event bindings, and close-time cleanup. A per-dialog editor facade lets the preset and manager controllers update configuration/preset state without owning the source or mutation guard. Preset operations retain their frozen uncertain save request inside their own controller; multiple open builders do not share retry state. The manager owns permission checks and active-zone actions, including closing its dialog and the originating builder before terminal Move placement.
+
+The view module renders editor fields, summaries, previews, JSON/validation/activation dialogs, shared presets, and managed zones from supplied data. Capture source names/images, configuration, choices, and permission/selection results in an explicit rendering model. Views perform no document operations, read no Foundry globals, and do not mutate their inputs. The catalog adapter resolves current PF2e labels, and the controller captures source statistic choices; form readers preserve the existing normalized configuration contract. The DOM view adapter applies derived readiness, errors, effect details, visibility, and the editor's native-footer suppression. Controllers retain action-time validation and permission checks.
+
+All static presentation rules are in `styles/pf2e-zone.css`, including the saved-zone/manager lists, JSON textareas, activation spacing, and preview opacity. Templates inject no style blocks or inline presentation rules. Dynamic visibility and canvas interaction still use their existing show/hide behavior. Preserve the exact labels, helper text, selectors, conditional controls, custom sticky footer, and terminal placement workflow.
+
 ## Configuration model
 
 Configurations use schema version 16 in `scripts/zone-config.js`. Normalization supplies missing legacy fields and repairs duplicate/missing Effect Block IDs. Strict import/creation validation rejects unsupported supplied choices rather than silently substituting defaults. Older one-round and until-dismissed duration choices migrate to current equivalents.
@@ -47,6 +53,8 @@ Damage and healing formulas are validated with the available roll parsers before
 ## Preset library
 
 Store shared presets in **PF2e Zone Library**, inside the **PF2e Zone Automation** Journal folder, with a readable index page. The authoritative data is the Journal's `world.pf2eZoneLibrary` flag; index rendering failure must not hide an already committed save. The worker repairs older library placement and page metadata as needed.
+
+`createPresetRepository` in `scripts/preset-repository.js` owns Journal/folder discovery and repair, flag replacement, index rendering, record permissions, and revision checks. Each worker creates one repository instance with its own ordered operation queue and ten-minute save cache. Requests receive their existing worker response shape at the dispatch boundary. The repository freezes and authenticates each save before reserving its operation; all list/save/delete operations read the current flag after preceding library work finishes. Region creation delegates its preset-origin existence check to the same discovery and repair path.
 
 Each record carries ID, name, normalized config, creator/modifier identities, timestamps, and a revision. All active users can load presets through the GM worker without Journal write permission. Only the creator or a GM can overwrite/delete a record; require an exact expected revision. **Save As** creates a new record owned by the requester. The **Load** control uses that exact concise label.
 
@@ -120,10 +128,19 @@ Draw module Regions as a dark outer boundary with a colored inner boundary and n
 
 | File | Responsibility |
 | --- | --- |
-| `scripts/builder.js` | Editor, validation presentation, preview, placement, library and manager dialogs |
+| `scripts/builder.js` | Stable public builder entry point |
+| `scripts/builder-controller.js` | Editor/source state, mutation guards, validation, bindings, placement, creation, and cleanup |
+| `scripts/builder-view.js` | Pure templates, dropdowns, summaries, previews, and auxiliary/list dialogs |
+| `scripts/builder-dom-view.js` | Derived status, inline errors, effect details, visibility, and native-footer presentation |
+| `scripts/builder-form.js` / `builder-catalog.js` | Form-to-configuration reads and current PF2e choice/label adapters |
+| `scripts/builder-preset-controller.js` | Shared preset load/save/delete operations and per-dialog frozen retry state |
+| `scripts/builder-manager-controller.js` | Existing-zone permissions, pending-save cancellation, dismissal, and terminal Move |
 | `scripts/zone-config.js` / `config-input.js` | Schema, normalization, supported choices, and input validation |
 | `scripts/zone-creation.js` | Shared validation, Region payload, duration resolution, and activation |
-| `scripts/worker.js` / `transport.js` | Authenticated GM operations, library authorization, and retries |
+| `scripts/worker.js` / `transport.js` | GM operation dispatch, authenticated socket requests/responses, and creation/Taunt retries |
+| `scripts/worker-action-policy.js` | One immutable action-to-handler and GM authority policy shared by dispatch and transport |
+| `scripts/worker-permissions.js` | Active requester lookup and source-Actor ownership checks shared by worker and repository |
+| `scripts/preset-repository.js` | Journal discovery/repair, flag replacement, index rendering, record authorization/revisions, library queue, and save recovery |
 | `scripts/preset-save.js` / `utils.js` | Full preset-save fingerprints and stable JSON serialization shared with creation |
 | `scripts/runtime.js` | Singleton composition, trigger/targeting/occupancy/immunity policy, movement, and event dispatch |
 | `scripts/runtime-state.js` | Payload normalization/replacement, history, Region/shared-state locks, and after-commit ordering |
@@ -143,4 +160,10 @@ The automated suite covers editor/source races, validation, library concurrency/
 
 Service extraction verified on 2026-10-14: all 426 automated tests and full ESLint pass. A one-time parser comparison confirmed that all 182 runtime members retained their definitions during extraction. Three additional regressions cover singleton re-entry with explicit event dispatch, upgrade retirement of queued work and timer/hook state, and preserving a newer installed runtime. Existing tests continue to cover legacy payload normalization, replacement/no-op writes, after-commit ordering, handoff, cleanup retries, save authorization/delivery, condition ownership, and shared immunity.
 
-The user reported live Forge verification complete on 2026-10-14 for the implementation preceding this extraction. This refactor was verified locally; no live Foundry session was run during the extraction. The optional local integration harness in `tests/foundry` requires a licensed installation; it is not an installation requirement for a Forge user.
+Builder separation verified on 2026-10-14: all 433 automated tests and full ESLint pass. Seven additional regressions cover rendering frozen models without Foundry globals, form round-trip preservation, literal text and list permissions, computed stylesheet rules, independent uncertain saves in two open builders, and both successful and cancelled terminal Move selection. Synthetic canvas tests verify that both dialogs stay closed, live resized/rotated shapes are translated, cursor/input handling is restored, and ordinary play clicks are no longer intercepted. A one-time parser comparison preserved the logic of 17 critical operation functions, accounting only for references through the editor facade. Existing DOM workflows continue to cover exact wording, Item drops/lookups, import, validation, preview, saved revisions, retries, and close-time hook cleanup.
+
+Preset repository and worker policy extraction verified on 2026-10-14: all 441 automated tests and full ESLint pass. Eight additional regressions cover creator/GM record permissions and stale deletion revisions, inactive requesters on cached completions, ordered reads after an outstanding save, folder/index repair with escaped preset text, routing all shared actions through the active GM, direct GM zone operations without a socket, dispatch coverage and the no-active-GM fallback, and rejecting inherited action names. A one-time parser comparison preserved 15 repository operation bodies, two permission helpers, and six zone operation bodies, allowing only explicit request parameters, response wrapping, shared permission calls, and delegated preset lookup. Existing concurrency and retry tests continue to exercise separate worker instances, refresh/handoff recovery, lost acknowledgments, and durable receipts.
+
+`scripts/worker-action-policy.js` defines each supported action once with its handler and GM authority. Shared-library, save-cancellation, Shielding Taunt, Recall Knowledge, Hero Point, and reminder requests go to the active GM when one is elected. Zone creation, movement, dismissal, and ping retain direct GM execution. A GM without an elected active GM still takes the existing direct fallback; feature workers can enforce stricter authority requirements. Player requests always use the GM socket. Unknown actions are rejected before handler lookup, and feature-specific requester permissions remain in their operation/repository checks. The socket still authenticates its sender independently of the request's claimed user ID and accepts replies only from the addressed GM.
+
+The user reported live Forge verification complete on 2026-10-14 for the implementation preceding these refactors. The runtime, builder, and repository/policy refactors were verified locally; no live Foundry session was run during these extractions. The optional local integration harness in `tests/foundry` requires a licensed installation; it is not an installation requirement for a Forge user.

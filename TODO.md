@@ -23,10 +23,4 @@
 
   **Scope recommendation:** Start with passable, damaging walls—especially *Wall of Fire* and *Wall of Radiance*—using straight-line and ring footprints, crossing detection, and existing turn/save/damage/condition effects. Treat physical obstruction, cover/sight, difficult terrain, projectile interception, and destructible sections as explicit later integrations, not promises of a generic Wall shape. *Prismatic Wall*, *Chromatic Wall*, *Wall of Virtue*, and *Wall of Water* above are marked Legacy on Archives of Nethys and have no linked Remaster reprint there; this table retains their printed rules instead of inventing a replacement. In particular, do not map *Wall of Virtue*'s good/positive damage to new damage types without an approved rules decision.
 
-## Refactoring opportunities
-
 Feature designs are in [Shielding Taunt](docs/shielding-taunt.md), [Set Hero Points](docs/set-hero-points.md), [Ask a Question About](docs/ask-a-question-about.md), and [Zone Builder](docs/zone-builder.md).
-
-- [ ] **Separate builder rendering from its operation controller.** `scripts/builder.js` combines large HTML templates, inline styles, validation, preset storage, placement, and zone management. Extract pure view/summary helpers and distinct preset/manager controllers, move presentation styles to `styles/pf2e-zone.css`, and retain exact user wording, mutation snapshots, stale-response checks, and terminal Move behavior. Validate with `tests/builder-ui.mjs` and `tests/builder-workflow.mjs` plus live canvas placement.
-
-- [ ] **Extract the preset repository and centralize worker action policy.** Move Journal discovery/repair, flag persistence, index rendering, record authorization, and revision checks out of the per-request closure in `scripts/worker.js`. Define action routing/authority policy once instead of separately extending the action switch and `activeGMAction` list in `scripts/transport.js`. Preserve authenticated sender checks and intentional direct-GM paths; retain library concurrency and transport regressions.

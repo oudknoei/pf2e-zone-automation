@@ -381,6 +381,105 @@ test("send failures and a missing GM preserve an earlier uncertain save until it
   await until(() => !f.root().querySelector(".zb-save-as").disabled);
 }));
 
+test("two builder dialogs retain independent uncertain preset saves", async () => {
+  await withSavingBuilder(async f => {
+    f.root().querySelector(".zb-save-as").click();
+    await until(() => f.sent.length === 1 && f.timeouts.length === 1);
+    const original = f.sent[0];
+    f.timeouts.shift()();
+    await until(() => !f.root().querySelector(".zb-save-as").disabled);
+    let second;
+    try {
+      await openZoneBuilder();
+      second = dialogs.at(-1);
+      const secondRoot = second.window.content.querySelector(".pf2e-zone-builder");
+      change(secondRoot.querySelector('[data-zone="name"]'), "Independent preset", "input");
+      change(secondRoot.querySelector('[data-zone="affects-enemies"]'), true);
+      change(secondRoot.querySelector('[data-trigger="activation"]'), true);
+      change(secondRoot.querySelector('[data-field="chat-alert-enabled"]'), true);
+      change(secondRoot.querySelector('[data-field="chat-alert-text"]'), "Another alert", "input");
+      secondRoot.querySelector(".zb-save").click();
+      await until(() => f.sent.length === 2);
+      assert.notEqual(f.sent[1].request.operationId, original.request.operationId);
+      await f.reply(f.sent[1]);
+      await until(() => second.window.content.querySelector(".zb-summary-note"));
+      assert.match(second.window.content.querySelector(".zb-summary-note").textContent, /Independent preset/);
+      assert.equal(f.root().querySelector(".zb-summary-note"), null);
+      assert.equal(f.root().querySelector(".zb-save").disabled, true);
+      f.root().querySelector(".zb-save-as").click();
+      await until(() => f.sent.length === 3);
+      assert.deepEqual(f.sent[2].request, original.request);
+      await f.reply(f.sent[2]);
+      await until(() => f.root().querySelector(".zb-summary-note"));
+      assert.match(f.root().querySelector(".zb-summary-note").textContent, /Original preset/);
+      assert.match(second.window.content.querySelector(".zb-summary-note").textContent, /Independent preset/);
+    } finally {
+      if (second?.element.isConnected) await second.close();
+    }
+  });
+});
+
+for (const cancel of [false, true]) {
+  test(`Move ${cancel ? "cancellation" : "placement"} closes both dialogs and returns to normal canvas play`, async () => {
+    const previous = { users: game.users, app: canvas.app, coordinates: canvas.canvasCoordinatesFromClient };
+    const activeGM = { ...gm, active: true };
+    const users = new Map([[gm.id, activeGM]]);
+    users.activeGM = activeGM;
+    game.users = users;
+    const canvasElement = document.createElement("canvas");
+    document.body.append(canvasElement);
+    canvas.app = { canvas: canvasElement };
+    canvas.canvasCoordinatesFromClient = () => ({ x: 400, y: 600 });
+    let shapes = [{ type: "rectangle", x: 25, y: 30, width: 200, height: 100, rotation: 15 }];
+    let moves = 0;
+    const region = {
+      id: `terminal-move-${cancel}`, uuid: `Scene.scene.Region.terminal-move-${cancel}`,
+      name: "Move test", parent: scene, get shapes() { return shapes; },
+      getFlag: () => ({ config: { mode: "area", areaShape: "square", sideLength: 5, duration: { type: "unlimited" } },
+        state: { sourceActorUuid: actor.uuid, createdBy: { name: "GM" } } }),
+      async update(changes) { moves++; shapes = structuredClone(changes.shapes); }
+    };
+    regions.set(region.id, region);
+    let builder;
+    let manager;
+    try {
+      await openZoneBuilder();
+      builder = dialogs.at(-1);
+      builder.window.content.querySelector(".zb-manage").click();
+      await until(() => dialogs.at(-1) !== builder && dialogs.at(-1).element.isConnected);
+      manager = dialogs.at(-1);
+      const dialogCount = dialogs.length;
+      manager.window.content.querySelector(`[data-region-id="${region.id}"] [data-action="move"]`).click();
+      await until(() => !manager.element.isConnected && !builder.element.isConnected && canvasElement.style.cursor === "crosshair");
+      if (cancel) {
+        window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+      } else {
+        canvasElement.dispatchEvent(new window.MouseEvent("pointerdown", { button: 0, clientX: 400, clientY: 600, cancelable: true }));
+      }
+      await until(() => notices.some(notice => notice.message === (cancel ? "Zone movement was cancelled." : "Moved 'Move test'.")));
+      assert.equal(moves, cancel ? 0 : 1);
+      if (!cancel) assert.deepEqual(shapes, [{ type: "rectangle", x: 300, y: 550, width: 200, height: 100, rotation: 15 }]);
+      assert.equal(canvasElement.style.cursor, "");
+      assert.equal(dialogs.length, dialogCount, "Neither completion nor cancellation reopens the builder");
+      assert.equal(builder.element.isConnected, false);
+      assert.equal(manager.element.isConnected, false);
+      const followingClick = new window.MouseEvent("pointerdown", { button: 0, cancelable: true });
+      canvasElement.dispatchEvent(followingClick);
+      assert.equal(followingClick.defaultPrevented, false, "Placement no longer intercepts normal play");
+    } finally {
+      if (builder?.element.isConnected) await builder.close();
+      if (manager?.element.isConnected) await manager.close();
+      canvasElement.remove();
+      regions.delete(region.id);
+      game.users = previous.users;
+      if (previous.app === undefined) delete canvas.app;
+      else canvas.app = previous.app;
+      if (previous.coordinates === undefined) delete canvas.canvasCoordinatesFromClient;
+      else canvas.canvasCoordinatesFromClient = previous.coordinates;
+    }
+  });
+}
+
 test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses a zone", async () => {
   try {
     await openZoneBuilder();

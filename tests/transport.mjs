@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import test from "node:test";
+import { WORKER_ACTION_POLICY, getWorkerActionPolicy } from "../scripts/worker-action-policy.js";
 
 const sent = [];
 let listener;
@@ -32,6 +33,105 @@ const { requestShieldingTaunt } = await import("../scripts/shielding-taunt.js");
 const { setHeroPoints } = await import("../scripts/hero-points.js");
 const { createHeroPointReminder } = await import("../scripts/hero-point-reminders.js");
 registerZoneSocket();
+
+test("every shared worker action routes a secondary GM to the active GM using the centralized policy", async () => {
+  const otherGM = { id: "policy-other-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  const actions = ["library-list", "library-save", "library-delete", "cancel-pending-save",
+    "shielding-taunt", "ask-question", "set-hero-points", "create-hero-point-reminder"];
+  try {
+    game.user = otherGM;
+    for (const action of actions) {
+      assert.equal(getWorkerActionPolicy(action).authority, "active-gm");
+      const result = requestGMWorker({ protocol: 1, action, requesterUserId: otherGM.id });
+      const outgoing = sent.shift();
+      assert.equal(outgoing.kind, "request");
+      assert.equal(outgoing.gmId, gm.id);
+      assert.equal(outgoing.request.action, action);
+      await listener({ kind: "response", id: outgoing.id, gmId: gm.id,
+        recipientUserId: otherGM.id, response: { ok: true, action } }, gm.id);
+      assert.deepEqual(await result, { ok: true, action });
+    }
+    assert.equal(sent.length, 0);
+  } finally {
+    users.delete(otherGM.id);
+    game.user = player;
+  }
+});
+
+test("secondary GMs retain direct zone operations and ping when the socket is unavailable", async () => {
+  const previous = { user: game.user, scenes: game.scenes, fromUuid: globalThis.fromUuid, error: console.error };
+  const otherGM = { id: "policy-direct-gm", name: "Other GM", isGM: true, active: true };
+  users.set(otherGM.id, otherGM);
+  game.user = otherGM;
+  game.scenes = new Map();
+  game.socket.connected = false;
+  console.error = () => {};
+  try {
+    for (const action of ["create", "move", "end", "ping"]) {
+      assert.equal(getWorkerActionPolicy(action).authority, "gm");
+      const result = await requestGMWorker({ protocol: 1, action, requesterUserId: otherGM.id });
+      if (action === "ping") assert.equal(result.ok, true);
+      else {
+        assert.equal(result.ok, false);
+        assert.match(result.error, /Scene was not found|no longer exists/);
+      }
+      assert.equal(sent.length, 0);
+    }
+  } finally {
+    users.delete(otherGM.id);
+    game.user = previous.user;
+    game.scenes = previous.scenes;
+    globalThis.fromUuid = previous.fromUuid;
+    console.error = previous.error;
+    game.socket.connected = true;
+  }
+});
+
+test("all policy handlers dispatch locally for the active GM and preserve the no-active-GM fallback", async () => {
+  const previous = { user: game.user, error: console.error };
+  game.user = gm;
+  game.socket.connected = false;
+  console.error = () => {};
+  try {
+    for (const activeGM of [gm, null]) {
+      users.activeGM = activeGM;
+      for (const action of Object.keys(WORKER_ACTION_POLICY)) {
+        // A missing requester stops each privileged handler before any document lookup or write.
+        const result = await requestGMWorker({ protocol: 1, action, requesterUserId: "missing-user",
+          question: "What is it?", operationId: "PolicyDispatch0001" });
+        if (action === "ping") assert.equal(result.ok, true);
+        else {
+          assert.equal(result.ok, false);
+          assert.match(result.error, /requesting user|active GM|active user/i, action);
+        }
+        assert.equal(sent.length, 0);
+      }
+    }
+  } finally {
+    users.activeGM = gm;
+    game.user = previous.user;
+    console.error = previous.error;
+    game.socket.connected = true;
+  }
+});
+
+test("action policy is immutable and inherited or unknown action names cannot invoke a worker handler", async () => {
+  const previousUser = game.user;
+  game.user = gm;
+  try {
+    assert.ok(Object.isFrozen(WORKER_ACTION_POLICY));
+    assert.ok(Object.values(WORKER_ACTION_POLICY).every(Object.isFrozen));
+    assert.throws(() => { WORKER_ACTION_POLICY.ping.authority = "active-gm"; }, TypeError);
+    for (const action of ["constructor", "__proto__", "toString", "unknown", undefined, 1]) {
+      assert.equal(getWorkerActionPolicy(action), null);
+      const response = await requestGMWorker({ protocol: 1, action, requesterUserId: gm.id });
+      assert.equal(response.ok, false);
+      assert.match(response.error, /Unsupported worker action/);
+      assert.equal(sent.length, 0);
+    }
+  } finally { game.user = previousUser; }
+});
 
 test("player request reaches the module GM Worker without a world macro", async () => {
   game.user = player;

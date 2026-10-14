@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
-const builder = readFileSync(resolve(root, "scripts", "builder.js"), "utf8");
+const builder = ["builder.js", "builder-controller.js", "builder-view.js", "builder-dom-view.js", "builder-form.js",
+  "builder-catalog.js", "builder-preset-controller.js", "builder-manager-controller.js"]
+  .map(file => readFileSync(resolve(root, "scripts", file), "utf8")).join("\n");
 const config = readFileSync(resolve(root, "scripts", "zone-config.js"), "utf8");
 const creation = readFileSync(resolve(root, "scripts", "zone-creation.js"), "utf8");
 const styles = readFileSync(resolve(root, "styles", "pf2e-zone.css"), "utf8");
@@ -37,7 +39,7 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-action="move"/);
   assert.match(builder, /canMove = canEnd && cfg\.mode === "area" && !cleanupPending/);
   assert.match(builder, /callGMWorker\("move"/);
-  assert.match(builder, /button\.dataset\.action === "move"[\s\S]*await dlg\.close\(\);\s*await dialog\.close\(\);/);
+  assert.match(builder, /button\.dataset\.action === "move"[\s\S]*await dlg\.close\(\);\s*await editor\.dialog\.close\(\);/);
   assert.match(builder, /data-field="immunity-group"[^>]*placeholder="e\.g\. stench"/);
   assert.doesNotMatch(builder, /placeholder="e\.g\. stench:ghonhatine"/);
   assert.match(builder, /const savedPresetId = operation\.preset\?\.id \?\? null/);
