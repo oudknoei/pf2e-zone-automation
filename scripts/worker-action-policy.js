@@ -11,6 +11,7 @@ export const WORKER_ACTION_POLICY = Object.freeze({
   "ask-question": actionPolicy("askQuestion", "active-gm"),
   "set-hero-points": actionPolicy("setHeroPoints", "active-gm"),
   "create-hero-point-reminder": actionPolicy("createHeroPointReminder", "active-gm"),
+  "clear-hero-point-reminders": actionPolicy("clearHeroPointReminders", "active-gm"),
   "shielding-taunt": actionPolicy("shieldingTaunt", "active-gm"),
   "library-list": actionPolicy("listPresets", "active-gm"),
   "library-save": actionPolicy("savePreset", "active-gm"),

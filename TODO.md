@@ -24,3 +24,16 @@
   **Scope recommendation:** Start with passable, damaging walls—especially *Wall of Fire* and *Wall of Radiance*—using straight-line and ring footprints, crossing detection, and existing turn/save/damage/condition effects. Treat physical obstruction, cover/sight, difficult terrain, projectile interception, and destructible sections as explicit later integrations, not promises of a generic Wall shape. *Prismatic Wall*, *Chromatic Wall*, *Wall of Virtue*, and *Wall of Water* above are marked Legacy on Archives of Nethys and have no linked Remaster reprint there; this table retains their printed rules instead of inventing a replacement. In particular, do not map *Wall of Virtue*'s good/positive damage to new damage types without an approved rules decision.
 
 Feature designs are in [Shielding Taunt](docs/shielding-taunt.md), [Set Hero Points](docs/set-hero-points.md), [Ask a Question About](docs/ask-a-question-about.md), and [Zone Builder](docs/zone-builder.md).
+
+## Code review — 2026-10-14
+
+Reproductions, source locations, and proposed validation are in the [full code review](docs/code-review-2026-10-14.md).
+
+- [ ] **[P1] Stop queued preset mutations after an active-GM handoff.** The library queue can start a save on the former GM after another GM is elected. Fence queued saves/deletes and discovery/repair writes with captured worker authority and recheck permissions after awaited lookups; retain committed-save recovery.
+- [ ] **[P1] Recheck Shielding Taunt authority and ownership inside its queue.** A queued Taunt can apply after GM handoff or revoked source ownership. Revalidate authority/requester/source inside the Guardian queue and before mutations after awaits, preserving completion recovery and compensation.
+
+## Usability suggestions
+
+- [ ] **Show GM availability in the Hero Points dialog.** Give players a clear connection status and disable changes/reminder controls when the active GM or socket is unavailable; preserve their selections and retry state.
+- [ ] **Refresh the Hero Point roster when characters become available.** Add newly created/owned eligible characters to an open dialog while retaining permitted selections and frozen retry details.
+- [ ] **Mask the API key while entering it.** Use a password-style input with Show/Hide, preserving session-only storage and clearing the field after submission.

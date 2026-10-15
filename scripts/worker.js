@@ -2,7 +2,7 @@ import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
 import { executeAskQuestion } from "./recall-knowledge-worker.js";
 import { executeHeroPointChange } from "./hero-points-worker.js";
-import { executeCreateHeroPointReminder } from "./hero-point-reminder-worker.js";
+import { executeClearHeroPointReminders, executeCreateHeroPointReminder } from "./hero-point-reminder-worker.js";
 import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
 import { createZoneDocument, creationRequestFingerprint } from "./zone-creation.js";
 import { cloneData as clone } from "./utils.js";
@@ -230,8 +230,10 @@ export async function handleWorkerRequest(request) {
       async askQuestion() { return succeed(await executeAskQuestion(request)); },
       /** Preserves Hero Point authorization, Actor queues, and retry plans. */
       async setHeroPoints() { return succeed(await executeHeroPointChange(request)); },
-      /** Preserves the reminder worker's GM-only reservations and persistence. */
+      /** Preserves the reminder worker's recipient isolation, reservations, and persistence. */
       async createHeroPointReminder() { return succeed(await executeCreateHeroPointReminder(request)); },
+      /** Clears only the authenticated requester's reminders in the worker's recipient queue. */
+      async clearHeroPointReminders() { return succeed(await executeClearHeroPointReminders(request)); },
       /** Checks source ownership before reserving or reusing a Shielding Taunt request. */
       async shieldingTaunt() {
         const requester = getWorkerRequester(request);

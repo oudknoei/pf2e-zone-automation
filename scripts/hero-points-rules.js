@@ -1,3 +1,9 @@
+/** Limits Hero Point access to eligible world characters owned by the requester, with a GM override. */
+export function canManageHeroPoints(actor, user) {
+  return Boolean(user && actor?.type === "character" && actor.hasPlayerOwner
+    && (user.isGM || actor.testUserPermission?.(user, "OWNER")));
+}
+
 /** Reads PF2e's Hero Point resource, respecting character maxima below three. */
 export function heroPointState(actor) {
   const resource = actor.system?.resources?.heroPoints;

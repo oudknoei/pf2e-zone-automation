@@ -38,7 +38,7 @@ test("every shared worker action routes a secondary GM to the active GM using th
   const otherGM = { id: "policy-other-gm", name: "Other GM", isGM: true, active: true };
   users.set(otherGM.id, otherGM);
   const actions = ["library-list", "library-save", "library-delete", "cancel-pending-save",
-    "shielding-taunt", "ask-question", "set-hero-points", "create-hero-point-reminder"];
+    "shielding-taunt", "ask-question", "set-hero-points", "create-hero-point-reminder", "clear-hero-point-reminders"];
   try {
     game.user = otherGM;
     for (const action of actions) {
@@ -247,7 +247,7 @@ test("two GM clients award through one authoritative Actor queue with authentica
     assert.equal(actor.system.resources.heroPoints.value, 2);
     assert.deepEqual(writes.map((data) => data["system.resources.heroPoints.value"]), [1, 2]);
     assert.equal(secondaryResult[0].before, 0);
-    assert.deepEqual(announcements.map((data) => data.user), [otherGM.id, gm.id]);
+    assert.deepEqual(announcements.map((data) => data.author), [otherGM.id, gm.id]);
     assert.ok(announcements.every((data) => data.whisper.includes(gm.id) && data.whisper.includes(otherGM.id)));
   } finally {
     release();
@@ -259,7 +259,10 @@ test("two GM clients award through one authoritative Actor queue with authentica
   }
 });
 
-test("the authenticated worker rejects a player's direct Hero Point mutation", async () => {
+test("the authenticated worker rejects a player's Hero Point mutation of an unowned character", async () => {
+  const previousActors = game.actors;
+  const actor = { id: "any-actor", type: "character", hasPlayerOwner: true, testUserPermission: () => false };
+  game.actors = { get: id => id === actor.id ? actor : null };
   game.user = player;
   const pendingChange = requestGMWorker({
     protocol: 1, action: "set-hero-points", requesterUserId: player.id,
@@ -275,7 +278,8 @@ test("the authenticated worker rejects a player's direct Hero Point mutation", a
   await listener(reply, gm.id);
   const result = await pendingChange;
   assert.equal(result.ok, false);
-  assert.match(result.error, /Only an active GM/);
+  assert.match(result.error, /characters you own/);
+  game.actors = previousActors;
 });
 
 test("a secondary GM routes save cancellation to the authoritative GM", async () => {
@@ -349,7 +353,14 @@ test("concurrent reminder requests from a secondary GM share one authenticated a
   }
 });
 
-test("the authenticated reminder worker rejects player scheduling", async () => {
+test("an authenticated player reminder is saved on the player rather than the active GM", async () => {
+  const previous = { flags: player.flags, update: player.update };
+  player.flags = {};
+  player.update = async data => {
+    const [path, record] = Object.entries(data)[0];
+    player.flags["pf2e-zone-automation"] ??= { heroPointReminders: {} };
+    player.flags["pf2e-zone-automation"].heroPointReminders[path.split(".").at(-1)] = record;
+  };
   game.user = player;
   const creating = requestGMWorker({ protocol: 1, action: "create-hero-point-reminder", requesterUserId: player.id, remindAt: Date.now() + 60000 });
   const request = sent.shift();
@@ -361,8 +372,11 @@ test("the authenticated reminder worker rejects player scheduling", async () => 
   game.user = player;
   await listener(reply, gm.id);
   const result = await creating;
-  assert.equal(result.ok, false);
-  assert.match(result.error, /Only an active GM/);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.reminder.recipientUserId, player.id);
+  assert.ok(player.flags["pf2e-zone-automation"].heroPointReminders[result.reminder.id]);
+  player.flags = previous.flags;
+  player.update = previous.update;
 });
 
 test("Shielding Taunt sends one operation ID for concurrent client retries", async () => {

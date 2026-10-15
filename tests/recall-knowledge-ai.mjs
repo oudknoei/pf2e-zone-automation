@@ -45,7 +45,8 @@ function setup({ startAI = true } = {}) {
   const values = new Map([[KNOWLEDGE_API_ENDPOINT_SETTING, DEFAULT_KNOWLEDGE_API_ENDPOINT],
     [KNOWLEDGE_MODEL_SETTING, DEFAULT_KNOWLEDGE_MODEL], [KNOWLEDGE_REASONING_SETTING, DEFAULT_KNOWLEDGE_REASONING],
     [KNOWLEDGE_OUTPUT_SETTING, DEFAULT_KNOWLEDGE_OUTPUT]]);
-  const f = { gm, secondGM, player, users, values, messages: [], requests: [], writes: [], notifications: [], rolls: 0, fetch: null };
+  const f = { gm, secondGM, player, users, values, messages: [], requests: [], writes: [], notifications: [], rolls: 0, fetch: null,
+    creates: [], serverMessages: new Map() };
   const documents = new Map();
   const hooks = new Map();
   globalThis.Hooks = {
@@ -68,6 +69,7 @@ function setup({ startAI = true } = {}) {
   f.deleteMessage = (message) => {
     f.messages.splice(f.messages.indexOf(message), 1);
     documents.delete(message.id);
+    f.serverMessages.delete(message.id);
     f.fire("deleteChatMessage", message);
   };
   f.startAI = () => { unregisterAI ??= registerKnowledgeAI(); };
@@ -90,16 +92,24 @@ function setup({ startAI = true } = {}) {
   };
   globalThis.ChatMessage = {
     getSpeaker: () => ({ alias: "Scholar" }),
-    async create(data) {
+    async create(data, options = {}) {
       assert.equal(data.author, game.user.id, "Chat creation must use Foundry's canonical author field");
       assert.equal(data.user, undefined);
-      await f.beforeCreate?.(data);
-      const message = { ...data, author: users.get(data.author), id: `message-${f.messages.length + 1}`, async update(changes) {
+      f.creates.push(structuredClone({ data, options }));
+      await f.beforeCreate?.(data, options);
+      const id = options.keepId && data._id ? data._id : `message-${f.serverMessages.size + 1}`;
+      if (f.serverMessages.has(id)) {
+        await f.beforeDuplicate?.(f.serverMessages.get(id));
+        throw new Error("Chat message ID already exists");
+      }
+      const message = { ...data, author: users.get(data.author), id, async update(changes) {
         await f.beforeUpdate?.(message, changes);
         f.writes.push(structuredClone(changes));
         marker(message).ai = { ...marker(message).ai, ...structuredClone(changes[`flags.${MODULE_ID}.${FLAG}.ai`]) };
         f.fire("updateChatMessage", message, changes);
       } };
+      f.serverMessages.set(id, message);
+      await f.beforeHydrate?.(message);
       f.addMessage(message);
       await f.afterCreate?.(message);
       return message;
@@ -269,6 +279,10 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   assert.equal(f.messages[0].user, undefined);
   assert.equal(f.messages[0].author, f.gm);
   await until(() => finish);
+  const reservedAnswerId = marker(f.messages[0]).ai.answerMessageId;
+  assert.match(reservedAnswerId, /^[A-Za-z0-9]{16}$/);
+  assert.equal(f.writes[0][`flags.${MODULE_ID}.${FLAG}.ai`].answerMessageId, reservedAnswerId,
+    "The answer ID must be durable before the paid API request starts");
   assert.equal(f.messages[0].blind, true);
   assert.deepEqual(f.messages[0].whisper, ["gm", "other-gm"]);
   const { url, options } = f.requests[0];
@@ -294,6 +308,8 @@ test("acknowledgment precedes a delayed API call and only GMs receive the answer
   assert.match(marker(f.messages[0]).ai.answer, /drake's flame/);
   assert.equal(f.messages.length, 2);
   const answer = f.messages[1];
+  assert.equal(answer.id, reservedAnswerId);
+  assert.equal(f.creates[1].options.keepId, true);
   assert.deepEqual(answer.whisper, ["gm", "other-gm"]);
   assert.equal(answer.blind, false);
   assert.equal(answer.rolls, undefined);
@@ -638,13 +654,109 @@ test("answer creation failures and lost acknowledgments retry delivery without a
     };
     setKnowledgeApiKey(KEY);
     await queueKnowledgeAnswer(card.id);
-    await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+    await until(() => lostAcknowledgment ? marker(card).ai.status === "complete"
+      : knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
     assert.equal(f.messages.length, lostAcknowledgment ? 2 : 1);
     failDelivery = false;
     await queueKnowledgeAnswer(card.id);
     await until(() => marker(card).ai.status === "complete");
     assert.equal(f.messages.length, 2);
     assert.equal(f.requests.length, 1);
+    assert.equal(f.rolls, 1);
+  }
+});
+
+test("delivery retries keep one server answer ID when acknowledgment fails before local chat hydration", async () => {
+  for (const hydrateDuringRetry of [false, true]) {
+    const f = setup();
+    const card = await f.card();
+    let savedAnswer;
+    f.beforeHydrate = (message) => {
+      if (knowledgeAnswerMarker(message)) {
+        savedAnswer = message;
+        throw new Error("Answer saved, but acknowledgment and local hydration are delayed");
+      }
+    };
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+    const reservedId = marker(card).ai.answerMessageId;
+    assert.match(reservedId, /^[A-Za-z0-9]{16}$/);
+    assert.equal(savedAnswer.id, reservedId);
+    assert.equal(f.messages.length, 1, "The GM has not received the persisted answer document yet");
+    savedAnswer.whisper = [];
+    f.beforeDuplicate = (message) => { if (hydrateDuringRetry) f.addMessage(message); };
+    await queueKnowledgeAnswer(card.id);
+    if (!hydrateDuringRetry) {
+      assert.equal(knowledgeLocalAIStatus(card.id)?.status, "delivery-error");
+      f.addMessage(savedAnswer);
+      await queueKnowledgeAnswer(card.id);
+    }
+    assert.equal(marker(card).ai.status, "complete");
+    assert.equal(marker(card).ai.answerMessageId, savedAnswer.id);
+    assert.deepEqual(savedAnswer.whisper, [], "Recovery must preserve a public answer's visibility");
+    assert.equal(f.messages.length, 2);
+    assert.equal(f.serverMessages.size, 2, "There must be only one persisted answer, including delayed documents");
+    const attempts = f.creates.filter(({ data }) => data.flags?.[MODULE_ID]?.[ANSWER_MESSAGE_FLAG]);
+    assert.equal(attempts.length, 2);
+    assert.ok(attempts.every(({ data, options }) => data._id === reservedId && options.keepId === true));
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.rolls, 1);
+  }
+});
+
+test("an occupied answer ID cannot be reused or overwritten without matching GM-authored attempt provenance", async () => {
+  for (const invalidField of ["author", "questionMessageId", "operationId", "attemptId"]) {
+    const f = setup();
+    const card = await f.card();
+    let finish;
+    f.fetch = () => new Promise((resolve) => { finish = resolve; });
+    setKnowledgeApiKey(KEY);
+    await queueKnowledgeAnswer(card.id);
+    await until(() => finish);
+    const { answerMessageId, attemptId } = marker(card).ai;
+    const answerMarker = { questionMessageId: card.id, operationId: marker(card).operationId, attemptId, text: "Unrelated text." };
+    if (invalidField !== "author") answerMarker[invalidField] = "another-operation";
+    const occupied = f.addMessage({ id: answerMessageId, author: invalidField === "author" ? f.player : f.gm,
+      whisper: [], flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: answerMarker } } });
+    const unchanged = structuredClone(occupied);
+    finish({ ok: true, json: async () => response("A legitimate answer.") });
+    await until(() => knowledgeLocalAIStatus(card.id)?.status === "delivery-error");
+    await queueKnowledgeAnswer(card.id);
+    assert.equal(knowledgeLocalAIStatus(card.id)?.status, "delivery-error");
+    assert.deepEqual(occupied, unchanged);
+    assert.equal(f.creates.length, 1, "A known ID collision must never issue another create or overwrite the document");
+    f.deleteMessage(occupied);
+    await queueKnowledgeAnswer(card.id);
+    assert.equal(marker(card).ai.status, "complete");
+    assert.equal(f.messages[1].id, answerMessageId);
+    assert.match(knowledgeAnswerMarker(f.messages[1]).text, /A legitimate answer/);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.rolls, 1);
+  }
+});
+
+test("startup recovery requires the reserved answer ID and provenance while accepting public GM answers", async () => {
+  for (const invalidField of [null, "id", "author", "questionMessageId", "operationId", "attemptId"]) {
+    const f = setup({ startAI: false });
+    const card = await f.card();
+    const answerMessageId = "FixedAnswerId001";
+    marker(card).ai = { status: "thinking", attemptId: "restored-attempt", answerMessageId };
+    const answerMarker = { questionMessageId: card.id, operationId: marker(card).operationId,
+      attemptId: "restored-attempt", text: "A public recollection." };
+    if (invalidField && !["id", "author"].includes(invalidField)) answerMarker[invalidField] = "unrelated-attempt";
+    const answer = f.addMessage({ id: invalidField === "id" ? "OtherAnswerId001" : answerMessageId,
+      author: invalidField === "author" ? f.player : f.gm, whisper: [],
+      flags: { [MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: answerMarker } } });
+    f.startAI();
+    await until(() => marker(card).ai.status === (invalidField ? "interrupted" : "complete"));
+    if (invalidField) assert.throws(() => queueKnowledgeAnswer(card.id), /Enter an API key/);
+    else {
+      assert.equal(marker(card).ai.answerMessageId, answer.id);
+      await queueKnowledgeAnswer(card.id);
+    }
+    assert.deepEqual(answer.whisper, []);
+    assert.equal(f.requests.length, 0);
     assert.equal(f.rolls, 1);
   }
 });
@@ -727,7 +839,7 @@ test("chat hooks index new answers, rekey changed attempts, preserve public answ
   assert.equal(f.requests.length, 0);
 });
 
-test("updating a duplicate matching answer preserves recovery order and deleting it exposes the remaining answer", async () => {
+test("legacy attempts without a reserved answer ID preserve duplicate recovery order and deletion fallback", async () => {
   const f = setup();
   const card = await f.card();
   marker(card).ai = { status: "interrupted", attemptId: "duplicate-answer-attempt" };
@@ -743,6 +855,7 @@ test("updating a duplicate matching answer preserves recovery order and deleting
   assert.equal(marker(card).ai.answerMessageId, first.id);
   f.deleteMessage(first);
   marker(card).ai.status = "interrupted";
+  delete marker(card).ai.answerMessageId;
   f.fire("updateChatMessage", card);
   await queueKnowledgeAnswer(card.id);
   assert.equal(marker(card).ai.answerMessageId, second.id);
@@ -978,8 +1091,8 @@ test("replayed player submissions and server-confirmed chat creation failures ea
     const f = setup();
     if (lateCreateError) {
       const create = ChatMessage.create;
-      ChatMessage.create = async (data) => {
-        const message = await create(data);
+      ChatMessage.create = async (data, options) => {
+        const message = await create(data, options);
         if (data.flags?.[MODULE_ID]?.[FLAG]) throw new Error("Lost question acknowledgment");
         return message;
       };

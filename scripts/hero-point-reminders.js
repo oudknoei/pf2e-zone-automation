@@ -1,4 +1,4 @@
-import { readDocumentFlag } from "./utils.js";
+import { isGMAuthoredMessage, readDocumentFlag } from "./utils.js";
 import { requestGMWorker } from "./transport.js";
 
 const MODULE_ID = "pf2e-zone-automation";
@@ -13,10 +13,11 @@ let retryAfter = 0;
 let reminderChatHook = null;
 const wiredReminderButtons = new WeakSet();
 
-/** Limits the private reminder's dialog shortcut to the GM who created it. */
+/** Limits the private reminder's dialog shortcut to the user who created it. */
 function canOpenReminder(message) {
   const marker = readDocumentFlag(message, MODULE_ID, MESSAGE_FLAG);
-  return game.user?.isGM && marker?.recipientUserId === game.user.id && Number.isFinite(marker?.remindAt);
+  return Boolean(game.user && Number.isFinite(marker?.remindAt)
+    && isDeliveredReminder(message, { user: game.user, remindAt: marker.remindAt }));
 }
 
 /** Adds a dialog shortcut to new and previously saved reminders whenever Foundry renders them. */
@@ -32,7 +33,7 @@ function renderReminderChat(message, html) {
   if (wiredReminderButtons.has(button)) return;
   button.type = "button";
   button.dataset.pzaHeroPointReminder = "";
-  button.textContent = "Award Hero Points";
+  button.textContent = game.user.isGM ? "Award Hero Points" : "Set Hero Points";
   if (!button.parentElement) (html.querySelector(".message-content") ?? html).append(button);
   wiredReminderButtons.add(button);
   button.addEventListener("click", async (event) => {
@@ -85,7 +86,6 @@ function isReminderGM() {
 function savedReminders() {
   const reminders = [];
   for (const user of game.users) {
-    if (!user.isGM) continue;
     const saved = readDocumentFlag(user, MODULE_ID, REMINDERS_FLAG);
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) continue;
     for (const [id, record] of Object.entries(saved)) {
@@ -97,26 +97,23 @@ function savedReminders() {
   return reminders.sort((a, b) => a.remindAt - b.remindAt);
 }
 
-/** Reports whether the current GM has any pending private reminders, including overdue reminders. */
+/** Reports whether the current user has any pending private reminders, including overdue reminders. */
 export function hasHeroPointReminders() {
-  return Boolean(game.user?.isGM && savedReminders().some((entry) => entry.user.id === game.user.id));
+  return Boolean(game.user && savedReminders().some((entry) => entry.user.id === game.user.id));
 }
 
-/** Removes the current GM's pending reminders in one update while preserving other users and flags. */
+/** Removes only the current user's pending reminders through the authenticated GM worker. */
 export async function clearHeroPointReminders() {
-  if (!game.user?.isGM) throw new Error("Only a GM can clear Hero Point reminders.");
-  const user = game.user;
-  const reminders = savedReminders().filter((entry) => entry.user.id === user.id);
-  if (!reminders.length) return 0;
-  await user.update(Object.fromEntries(reminders.map(({ id }) =>
-    [`flags.${MODULE_ID}.${REMINDERS_FLAG}.${id}`, new foundry.data.operators.ForcedDeletion()])));
+  const response = await requestGMWorker({
+    protocol: 1, action: "clear-hero-point-reminders", requesterUserId: game.user.id
+  });
+  if (!response?.ok) throw new Error(response?.error ?? "The Hero Point reminders could not be cleared. Try again.");
   scheduleNextReminder();
-  return reminders.length;
+  return response.count;
 }
 
 /** Saves a private reminder before starting its timer so a refresh cannot discard it. */
 export async function createHeroPointReminder(time) {
-  if (!game.user?.isGM) throw new Error("Only a GM can create Hero Point reminders.");
   const user = game.user;
   const remindAt = reminderTimestamp(time);
   const response = await requestGMWorker({
@@ -127,10 +124,16 @@ export async function createHeroPointReminder(time) {
   return response.reminder;
 }
 
-/** Identifies an already-delivered reminder before retrying a failed flag cleanup or concurrent GM delivery. */
+/** Accepts only a private reminder from its recipient or a GM before reusing delivery or granting its shortcut. */
 function isDeliveredReminder(message, reminder) {
   const marker = readDocumentFlag(message, MODULE_ID, MESSAGE_FLAG);
-  return marker?.recipientUserId === reminder.user.id && marker?.remindAt === reminder.remindAt;
+  if (marker?.recipientUserId !== reminder.user.id || marker?.remindAt !== reminder.remindAt
+    || !Array.isArray(message.whisper) || message.whisper.length !== 1) return false;
+  const recipient = typeof message.whisper[0] === "string" ? message.whisper[0] : message.whisper[0]?.id;
+  if (recipient !== reminder.user.id) return false;
+  const author = message.author !== undefined ? message.author : message.user;
+  const authorId = typeof author === "string" ? author : author?.id;
+  return isGMAuthoredMessage(message) || (!reminder.user.isGM && authorId === reminder.user.id);
 }
 
 /** Posts one private chat message, then removes its pending record only after confirmed delivery. */
@@ -144,9 +147,9 @@ async function deliverReminder(reminder) {
     try {
       message = await ChatMessage.create({
         _id: reminder.id,
-        user: game.user.id,
+        author: reminder.user.isGM ? game.user.id : reminder.user.id,
         whisper: [reminder.user.id],
-        content: "<p><strong>Hero Point reminder</strong></p><p>It's time to award everyone 1 Hero Point.</p>",
+        content: `<p><strong>Hero Point reminder</strong></p><p>It's time to award ${reminder.user.isGM ? "everyone" : "your characters"} 1 Hero Point.</p>`,
         flags: { [MODULE_ID]: { [MESSAGE_FLAG]: { recipientUserId: reminder.user.id, remindAt: reminder.remindAt } } }
       }, { keepId: true });
     } catch (error) {

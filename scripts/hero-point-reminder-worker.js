@@ -11,7 +11,7 @@ function requireReminderCreator(requesterUserId, workerUserId = game.user?.id) {
     throw new Error("Hero Point reminders must be saved by the active GM. Try again.");
   }
   const user = game.users.get(requesterUserId);
-  if (!user?.isGM || !user.active) throw new Error("Only an active GM can create Hero Point reminders.");
+  if (!user?.active) throw new Error("Only an active user can manage Hero Point reminders.");
   return user;
 }
 
@@ -33,7 +33,7 @@ async function reminderDocumentId(userId, remindAt) {
   return value.toString(36).padStart(16, "0");
 }
 
-/** Serializes one recipient's creation without blocking unrelated GMs or retaining rejected queue tails. */
+/** Serializes one recipient's creation and clearing without blocking unrelated users or retaining rejected queue tails. */
 function serializeReminderUser(userId, create) {
   const result = (userTails.get(userId) ?? Promise.resolve()).then(create);
   const tail = result.then(() => undefined, () => undefined);
@@ -80,4 +80,28 @@ export function executeCreateHeroPointReminder(request) {
     .finally(() => { if (creations.get(key) === creation) creations.delete(key); });
   creations.set(key, creation);
   return creation;
+}
+
+/** Clears only the authenticated requester's pending reminders in the same queue as creation. */
+export function executeClearHeroPointReminders(request) {
+  const user = requireReminderCreator(request.requesterUserId);
+  const workerUserId = game.user.id;
+  return serializeReminderUser(user.id, async () => {
+    const recipient = requireReminderCreator(user.id, workerUserId);
+    const saved = readDocumentFlag(recipient, MODULE_ID, REMINDERS_FLAG);
+    const ids = saved && typeof saved === "object" && !Array.isArray(saved)
+      ? Object.entries(saved).filter(([id, record]) => /^[a-zA-Z0-9]{16}$/.test(id) && Number.isFinite(record?.remindAt))
+        .map(([id]) => id) : [];
+    if (!ids.length) return { action: "clear-hero-point-reminders", count: 0 };
+    /** Confirms removal from the live document after an update or an uncertain acknowledgment. */
+    const cleared = () => ids.every(id => readDocumentFlag(recipient, MODULE_ID, REMINDERS_FLAG)?.[id] == null);
+    try {
+      await recipient.update(Object.fromEntries(ids.map(id =>
+        [`flags.${MODULE_ID}.${REMINDERS_FLAG}.${id}`, new foundry.data.operators.ForcedDeletion()])));
+    } catch (error) {
+      if (!cleared()) throw error;
+    }
+    if (!cleared()) throw new Error("The Hero Point reminders could not be cleared. Try again.");
+    return { action: "clear-hero-point-reminders", count: ids.length };
+  });
 }

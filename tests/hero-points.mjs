@@ -11,6 +11,9 @@ const messages = [];
 const writes = [];
 const reminderWrites = [];
 const userHooks = new Map();
+const actorHooks = new Map();
+const socketMessages = [];
+let socketListener;
 class ForcedDeletion {}
 
 class TestDialog extends window.EventTarget {
@@ -65,12 +68,12 @@ class TestDialog extends window.EventTarget {
 globalThis.foundry = { applications: { api: { DialogV2: TestDialog } }, data: { operators: { ForcedDeletion } } };
 globalThis.Hooks = {
   on(name, callback) {
-    assert.equal(name, "updateUser");
     const id = Symbol(name);
-    userHooks.set(id, callback);
+    if (name === "updateUser") userHooks.set(id, callback);
+    else { assert.ok(["updateActor", "deleteActor"].includes(name)); actorHooks.set(id, { name, callback }); }
     return id;
   },
-  off(name, id) { assert.equal(name, "updateUser"); userHooks.delete(id); }
+  off(name, id) { (name === "updateUser" ? userHooks : actorHooks).delete(id); }
 };
 globalThis.ui = { notifications: {
   error: (message) => notices.push({ level: "error", message }),
@@ -86,6 +89,8 @@ globalThis.game = {
 };
 
 const { promptSetHeroPoints, setHeroPoints } = await import("../scripts/hero-points.js");
+const { executeHeroPointChange } = await import("../scripts/hero-points-worker.js");
+const { registerZoneSocket } = await import("../scripts/transport.js");
 
 function actor(id, name, value, extra = {}) {
   return {
@@ -107,6 +112,7 @@ function actor(id, name, value, extra = {}) {
 async function reset(actors = []) {
   for (const dialog of dialogs) if (dialog.rendered) await dialog.close();
   assert.equal(userHooks.size, 0, "Closed dialogs release their reminder hooks");
+  assert.equal(actorHooks.size, 0, "Closed dialogs release their Actor hooks");
   dialogs.length = notices.length = messages.length = writes.length = reminderWrites.length = 0;
   game.actors = actors;
   game.actors.get = (id) => game.actors.find((entry) => entry.id === id);
@@ -126,6 +132,10 @@ async function reset(actors = []) {
   game.users = [game.user, { id: "player", isGM: false, active: true }];
   game.users.get = (id) => game.users.find((entry) => entry.id === id);
   game.users.activeGM = game.user;
+  game.socket = { connected: true, on: (_channel, callback) => { socketListener = callback; },
+    emit: (_channel, message) => socketMessages.push(message) };
+  socketMessages.length = 0;
+  registerZoneSocket();
   canvas.tokens.controlled = [];
 }
 
@@ -173,7 +183,7 @@ test("GM changes update PF2e resources for off-scene characters with bounded tot
   assert.equal(second.system.resources.heroPoints.value, 0);
 });
 
-test("players, invalid amounts, and ambiguous or missing recipients cannot change Hero Points", async () => {
+test("unowned characters, invalid amounts, and ambiguous or missing recipients cannot change Hero Points", async () => {
   const first = actor("one", "Same Name", 1);
   const second = actor("two", "Same Name", 1);
   await reset([first, second]);
@@ -185,8 +195,105 @@ test("players, invalid amounts, and ambiguous or missing recipients cannot chang
   game.user.isGM = false;
   assert.equal(await promptSetHeroPoints(), null);
   assert.equal(dialogs.length, 0);
-  await assert.rejects(setHeroPoints(1, first), /Only a GM/);
+  assert.match(notices.at(-1).message, /No characters you own/);
+  await assert.rejects(setHeroPoints(1, first), /Choose at least one/);
   assert.equal(writes.length, 0);
+});
+
+test("a player's dialog and API show only owned characters and submit all six choices through the GM", async () => {
+  const first = actor("player-owned", "Owned", 1, { testUserPermission: user => user.id === "player" });
+  const shared = actor("player-shared", "Shared", 0, { testUserPermission: user => ["player", "other-player"].includes(user.id) });
+  const other = actor("player-unowned", "Secret character name", 2, { testUserPermission: () => false });
+  await reset([first, shared, other]);
+  const gm = game.user;
+  const player = game.users.get("player");
+  player.targets = new Set();
+  game.user = player;
+  const dialog = await promptSetHeroPoints();
+  assert.deepEqual([...dialog.element.querySelectorAll("[data-hp-actor]")].map(row => row.dataset.hpActor), [first.id, shared.id]);
+  assert.doesNotMatch(dialog.element.textContent, /Secret character name/);
+  assert.equal(dialog.element.querySelector('[name="hero-change"]').options.length, 6);
+  assert.match(dialog.element.textContent, /award your characters/);
+  await assert.rejects(setHeroPoints(1, other), /Choose at least one/);
+  for (const [choice, expected] of [["give-1", 2], ["spend-1", 1], ["set-0", 0], ["set-1", 1], ["set-2", 2], ["set-3", 3]]) {
+    const opened = await promptSetHeroPoints();
+    change(opened, '[name="hero-change"]', choice);
+    const checkbox = opened.element.querySelector(`[name="hero-character"][value="${first.id}"]`);
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.equal(opened.element.querySelector('[data-action="apply"]').disabled, false);
+    const submitting = opened.submit();
+    const request = socketMessages.shift();
+    assert.equal(request.request.requesterUserId, player.id);
+    assert.deepEqual(request.request.actorIds, [first.id]);
+    game.user = gm;
+    await socketListener(request, player.id);
+    const reply = socketMessages.shift();
+    game.user = player;
+    await socketListener(reply, gm.id);
+    await submitting;
+    assert.equal(opened.rendered, false);
+    assert.equal(first.system.resources.heroPoints.value, expected);
+  }
+  assert.equal(other.system.resources.heroPoints.value, 2);
+  assert.ok(messages.every(message => message.whisper.includes(player.id) && message.whisper.includes(gm.id)));
+  assert.ok(messages.every(message => message.author === player.id && message.user === undefined));
+  assert.ok(messages.every(message => !message.whisper.includes("other-player")));
+});
+
+test("the worker rejects mixed owned/unowned requests before any write and rechecks ownership on cached results", async () => {
+  const owned = actor("worker-owned", "Owned", 0, { testUserPermission: () => true });
+  const unowned = actor("worker-unowned", "Secret", 0, { testUserPermission: () => false });
+  await reset([owned, unowned]);
+  const request = { requesterUserId: "player", actorIds: [owned.id, unowned.id], amount: 1, mode: "add", operationId: "PlayerMixedOp001" };
+  await assert.rejects(executeHeroPointChange(request), /characters you own/);
+  assert.equal(writes.length, 0);
+  const ownRequest = { ...request, actorIds: [owned.id], operationId: "PlayerCachedOp01" };
+  assert.equal((await executeHeroPointChange(ownRequest)).ok, true);
+  owned.testUserPermission = () => false;
+  await assert.rejects(executeHeroPointChange(ownRequest), /characters you own/);
+  assert.equal(writes.length, 1);
+});
+
+test("queued player Hero Point changes stop after ownership is revoked and omit unauthorized results", async () => {
+  const owned = actor("queued-player-owned", "Secret after revocation", 0, { testUserPermission: () => true });
+  await reset([owned]);
+  const save = owned.update;
+  const started = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  owned.update = async function(data) { started.resolve(); await gate.promise; return save.call(this, data); };
+  const first = setHeroPoints(1, owned);
+  await started.promise;
+  const second = executeHeroPointChange({ requesterUserId: "player", actorIds: [owned.id], amount: 1, mode: "add", operationId: "RevokedPlayerOp01" });
+  owned.testUserPermission = () => false;
+  gate.resolve();
+  await first;
+  const rejected = await second;
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.retryable, false);
+  assert.equal(rejected.errorCode, "PF2E_ZONE_HERO_POINTS_PERMISSION");
+  assert.deepEqual(rejected.plan, []);
+  assert.deepEqual(rejected.changes, []);
+  assert.doesNotMatch(JSON.stringify(rejected), /Secret after revocation/);
+  assert.equal(owned.system.resources.heroPoints.value, 1);
+  assert.equal(writes.length, 1);
+});
+
+test("open player dialogs remove revoked/deleted characters and release all hooks on close", async () => {
+  const owned = actor("live-player-owned", "Owned", 1, { testUserPermission: () => true });
+  const deleted = actor("live-player-deleted", "Deleted", 1, { testUserPermission: () => true });
+  await reset([owned, deleted]);
+  game.user = game.users.get("player");
+  const dialog = await promptSetHeroPoints();
+  owned.testUserPermission = () => false;
+  for (const { name, callback } of actorHooks.values()) if (name === "updateActor") callback(owned);
+  assert.equal(dialog.element.querySelector(`[data-hp-actor="${owned.id}"]`), null);
+  game.actors.splice(game.actors.indexOf(deleted), 1);
+  for (const { name, callback } of actorHooks.values()) if (name === "deleteActor") callback(deleted);
+  assert.equal(dialog.element.querySelectorAll("[data-hp-actor]").length, 0);
+  assert.equal(dialog.element.querySelector('[data-action="apply"]').disabled, true);
+  await dialog.close();
+  assert.equal(actorHooks.size + userHooks.size, 0);
 });
 
 test("independent concurrent awards read the latest total inside the Actor queue", async () => {

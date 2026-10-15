@@ -3,7 +3,7 @@ import { logKnowledgeAICost } from "./recall-knowledge-ai-cost.js";
 import { ANSWER_MESSAGE_FLAG, isKnowledgeActiveGM, knowledgeAnswerText, plainKnowledgeAnswer,
   privateKnowledgeQuestion, QUESTION_MESSAGE_FLAG, QUESTION_MODULE_ID } from "./recall-knowledge-message.js";
 import { KnowledgeChatIndex } from "./recall-knowledge-index.js";
-import { escapeHtml, newOperationId, readDocumentFlag } from "./utils.js";
+import { escapeHtml, newDocumentId, newOperationId, readDocumentFlag } from "./utils.js";
 
 export const KNOWLEDGE_AI_TIMEOUT_MS = 90000;
 const jobs = new Map();
@@ -39,8 +39,8 @@ function questionMessage(id) {
 }
 
 /** Finds a durable answer by attempt so a lost chat acknowledgment cannot duplicate it on retry. */
-function postedAnswer(messageId, operationId, attemptId) {
-  return knowledgeChatIndex().answer(messageId, operationId, attemptId);
+function postedAnswer(messageId, operationId, attemptId, answerMessageId) {
+  return knowledgeChatIndex().answer(messageId, operationId, attemptId, answerMessageId);
 }
 
 /** Refreshes chat controls after changing browser-only connection state. */
@@ -116,7 +116,8 @@ function ownsJob(job, { reserved = true } = {}) {
     || session !== job.session || !hasKnowledgeApiKey()) return false;
   const marker = privateKnowledgeQuestion(questionMessage(job.messageId));
   return Boolean(marker && marker.operationId === job.operationId
-    && marker.fingerprint === job.fingerprint && (!reserved || marker.ai?.attemptId === job.attemptId));
+    && marker.fingerprint === job.fingerprint && (!reserved
+      || (marker.ai?.attemptId === job.attemptId && marker.ai.answerMessageId === job.answerMessageId)));
 }
 
 /** Uses a numeric Retry-After delay as advice without automatically resubmitting a paid request. */
@@ -253,20 +254,28 @@ async function deliverAnswer(job) {
   const message = questionMessage(job.messageId);
   const marker = privateKnowledgeQuestion(message);
   try {
-    let answer = postedAnswer(job.messageId, job.operationId, job.attemptId);
+    let answer = postedAnswer(job.messageId, job.operationId, job.attemptId, job.answerMessageId);
     if (!answer) {
+      if (knowledgeChatIndex().message(job.answerMessageId)) throw new Error("The reserved answer message ID is already in use.");
       const text = knowledgeAnswerText({ ...marker, ai: { ...marker.ai, ...job.result } });
       const whisper = [...game.users].filter((user) => user.isGM).map((user) => user.id);
-      answer = await ChatMessage.create({
-        author: game.user.id, speaker: { alias: message.speaker?.alias ?? "Recall Knowledge" },
-        whisper, blind: false,
-        content: `<div class="pza-knowledge-answer" data-pza-knowledge-answer>${escapeHtml(text)}</div>`,
-        flags: { [QUESTION_MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: {
-          questionMessageId: job.messageId, operationId: job.operationId, attemptId: job.attemptId, text
-        } } }
-      });
+      try {
+        const created = await ChatMessage.create({
+          _id: job.answerMessageId,
+          author: game.user.id, speaker: { alias: message.speaker?.alias ?? "Recall Knowledge" },
+          whisper, blind: false,
+          content: `<div class="pza-knowledge-answer" data-pza-knowledge-answer>${escapeHtml(text)}</div>`,
+          flags: { [QUESTION_MODULE_ID]: { [ANSWER_MESSAGE_FLAG]: {
+            questionMessageId: job.messageId, operationId: job.operationId, attemptId: job.attemptId, text
+          } } }
+        }, { keepId: true });
+        if (created) knowledgeChatIndex().update(created);
+      } catch (error) {
+        // A duplicate-ID rejection or lost acknowledgment can arrive after the original answer hydrates.
+        if (!postedAnswer(job.messageId, job.operationId, job.attemptId, job.answerMessageId)) throw error;
+      }
+      answer = postedAnswer(job.messageId, job.operationId, job.attemptId, job.answerMessageId);
       if (!answer) throw new Error("The private answer could not be posted.");
-      knowledgeChatIndex().update(answer);
     }
     if (!ownsJob(job)) return;
     await writeAIState(message, { ...marker.ai, ...job.result, answerMessageId: answer.id,
@@ -365,10 +374,11 @@ function reserveKnowledgeAnswer(messageId) {
     return existing.reservation;
   }
   if (marker.ai?.status === "complete") return Promise.resolve();
-  const delivered = postedAnswer(messageId, marker.operationId, marker.ai?.attemptId);
+  const delivered = postedAnswer(messageId, marker.operationId, marker.ai?.attemptId, marker.ai?.answerMessageId);
   if (delivered) return writeAIState(message, { ...marker.ai, status: "complete", answerMessageId: delivered.id, error: null, finishedAt: Date.now() });
   if (!hasKnowledgeApiKey()) throw new Error("Enter an API key in AI Connection first.");
   const job = { messageId, operationId: marker.operationId, fingerprint: marker.fingerprint, attemptId: newOperationId(),
+    answerMessageId: newDocumentId(),
     session, profile: knowledgeAIProfile(), state: "queued", cancelled: false };
   jobs.set(messageId, job);
   job.reservation = Promise.resolve().then(async () => {
@@ -376,7 +386,7 @@ function reserveKnowledgeAnswer(messageId) {
     await writeAIState(message, { status: "queued", attemptId: job.attemptId, gmId: game.user.id,
       model: job.profile.model, endpoint: job.profile.endpoint, reasoningEffort: job.profile.reasoningEffort,
       maxOutputTokens: job.profile.maxOutputTokens, queuedAt: Date.now(), startedAt: null, finishedAt: null,
-      answer: null, answerMessageId: null, error: null, responseId: null });
+      answer: null, answerMessageId: job.answerMessageId, error: null, responseId: null });
     job.reserved = true;
     if (!ownsJob(job)) return;
     queue.push(job);
@@ -423,7 +433,7 @@ export async function reconcileKnowledgeAI() {
     if (jobs.has(message.id) || interruptedWrites.has(message.id)) continue;
     interruptedWrites.add(message.id);
     try {
-      const delivered = postedAnswer(message.id, marker.operationId, marker.ai.attemptId);
+      const delivered = postedAnswer(message.id, marker.operationId, marker.ai.attemptId, marker.ai.answerMessageId);
       await writeAIState(message, { ...marker.ai, status: delivered ? "complete" : "interrupted",
         ...(delivered ? { answerMessageId: delivered.id } : {}),
         error: delivered ? null : "Interrupted. Re-enter the key and retry the saved question.", finishedAt: Date.now() });

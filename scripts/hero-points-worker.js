@@ -1,5 +1,5 @@
 import { escapeHtml, readDocumentFlag } from "./utils.js";
-import { heroPointState, nextHeroPointTotal, validateHeroPointChange } from "./hero-points-rules.js";
+import { canManageHeroPoints, heroPointState, nextHeroPointTotal, validateHeroPointChange } from "./hero-points-rules.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const RECEIPT_FLAG = "heroPointOperation";
@@ -7,27 +7,32 @@ const REQUEST_TTL_MS = 10 * 60 * 1000;
 const operations = new Map();
 const actorTails = new Map();
 
-/** Revalidates authority and the requesting GM before queued resource changes begin. */
-function requireHeroPointGM(requesterUserId) {
+/** Revalidates the elected GM and active requester before queued resource changes begin. */
+function requireHeroPointRequester(requesterUserId) {
   if (!game.user?.isGM || game.users.activeGM?.id !== game.user.id) {
     throw new Error("Hero Point changes must be resolved by the active GM. Review the totals and try again.");
   }
   const requester = game.users.get(requesterUserId);
-  if (!requester?.isGM || !requester.active) throw new Error("Only an active GM can change Hero Points.");
+  if (!requester?.active) throw new Error("Only an active user can change Hero Points.");
   return requester;
 }
 
 /** Resolves only eligible world characters on the authoritative client. */
-function heroPointActor(actorId) {
+function heroPointActor(actorId, requester) {
   const actor = game.actors.get(actorId);
   if (actor?.type !== "character" || !actor.hasPlayerOwner) {
     throw new Error("Choose at least one player character to update.");
+  }
+  if (!canManageHeroPoints(actor, requester)) {
+    const error = new Error("You can only change Hero Points for characters you own.");
+    error.code = "PF2E_ZONE_HERO_POINTS_PERMISSION";
+    throw error;
   }
   return actor;
 }
 
 /** Validates immutable request details before joining or creating a retry plan. */
-function normalizeHeroPointRequest(request) {
+function normalizeHeroPointRequest(request, requester) {
   validateHeroPointChange(request.amount, request.mode);
   if (typeof request.operationId !== "string" || !/^[a-zA-Z0-9_-]{12,64}$/.test(request.operationId)) {
     throw new Error("Hero Point operation ID is invalid.");
@@ -37,7 +42,7 @@ function normalizeHeroPointRequest(request) {
     throw new Error("Choose at least one player character to update.");
   }
   const actorIds = [...new Set(request.actorIds)];
-  actorIds.forEach(heroPointActor);
+  actorIds.forEach(id => heroPointActor(id, requester));
   return { ...request, actorIds };
 }
 
@@ -59,8 +64,8 @@ function hasHeroPointReceipt(actor, request, fingerprint) {
 
 /** Applies a frozen retry only while its original resource state and preceding module operation still match. */
 async function changeHeroPointActor(request, operation, entry) {
-  requireHeroPointGM(request.requesterUserId);
-  const actor = heroPointActor(entry.actorId);
+  const requester = requireHeroPointRequester(request.requesterUserId);
+  const actor = heroPointActor(entry.actorId, requester);
   if (entry.complete) return null;
   const state = heroPointState(actor);
   const priorOperation = JSON.stringify(readDocumentFlag(actor, MODULE_ID, RECEIPT_FLAG));
@@ -103,8 +108,8 @@ async function announceHeroPointChanges(changes, requesterUserId) {
     await ChatMessage.create({
       content: `<p><strong>Hero Points updated</strong></p><ul>${changes.map(({ name, before, after }) =>
         `<li>${escapeHtml(name)}: ${before} → ${after}</li>`).join("")}</ul>`,
-      user: requesterUserId,
-      whisper: [...game.users].filter((user) => user.isGM).map((user) => user.id)
+      author: requesterUserId,
+      whisper: [...new Set([...game.users].filter((user) => user.isGM || user.id === requesterUserId).map((user) => user.id))]
     });
     return [];
   } catch (error) {
@@ -118,6 +123,7 @@ async function applyHeroPointOperation(request, operation) {
   const changed = [];
   const failures = [];
   let conflict = false;
+  let permissionDenied = false;
   for (const entry of operation.plan) {
     try {
       const result = await serializeHeroPointActor(entry.actorId, () => changeHeroPointActor(request, operation, entry));
@@ -125,21 +131,27 @@ async function applyHeroPointOperation(request, operation) {
     } catch (error) {
       failures.push(`${entry.name ?? entry.actorId}: ${error?.message ?? error}`);
       if (error?.code === "PF2E_ZONE_HERO_POINTS_CONFLICT") conflict = true;
+      if (error?.code === "PF2E_ZONE_HERO_POINTS_PERMISSION") { permissionDenied = conflict = true; break; }
       // Stop after a handoff or permission change; the replacement GM must start a reviewed operation.
-      try { requireHeroPointGM(request.requesterUserId); } catch { conflict = true; break; }
+      try { requireHeroPointRequester(request.requesterUserId); } catch { conflict = true; break; }
     }
   }
   const warnings = await announceHeroPointChanges(changed, request.requesterUserId);
+  const requester = game.users.get(request.requesterUserId);
+  const visiblePlan = requester?.active
+    ? operation.plan.filter(entry => canManageHeroPoints(game.actors.get(entry.actorId), requester)) : [];
   const result = {
     action: "set-hero-points", ok: !failures.length, warnings,
-    plan: operation.plan.map(({ actorId, total }) => ({ actorId, total })),
-    changes: operation.plan.filter((entry) => entry.complete && entry.before !== entry.total)
+    plan: visiblePlan.map(({ actorId, total }) => ({ actorId, total })),
+    changes: visiblePlan.filter((entry) => entry.complete && entry.before !== entry.total)
       .map(({ actorId, name, before, total }) => ({ actorId, name, before, after: total }))
   };
   if (failures.length) Object.assign(result, {
-    error: conflict ? `Hero Points changed while this update was pending. Review the totals before applying again. ${failures.join("; ")}`
+    error: permissionDenied ? "Character access changed while this update was pending. Review your characters before applying again."
+      : conflict ? `Hero Points changed while this update was pending. Review the totals before applying again. ${failures.join("; ")}`
       : `Some Hero Points could not be updated. Retry to finish the same change. ${failures.join("; ")}`,
-    errorCode: conflict ? "PF2E_ZONE_HERO_POINTS_CONFLICT" : "PF2E_ZONE_HERO_POINTS_UPDATE_FAILED",
+    errorCode: permissionDenied ? "PF2E_ZONE_HERO_POINTS_PERMISSION"
+      : conflict ? "PF2E_ZONE_HERO_POINTS_CONFLICT" : "PF2E_ZONE_HERO_POINTS_UPDATE_FAILED",
     retryable: !conflict
   });
   if (result.ok || conflict) operation.result = result;
@@ -148,8 +160,8 @@ async function applyHeroPointOperation(request, operation) {
 
 /** Joins duplicate submissions and routes independent operations through authoritative per-Actor queues. */
 export async function executeHeroPointChange(rawRequest) {
-  requireHeroPointGM(rawRequest.requesterUserId);
-  const request = normalizeHeroPointRequest(rawRequest);
+  const requester = requireHeroPointRequester(rawRequest.requesterUserId);
+  const request = normalizeHeroPointRequest(rawRequest, requester);
   const now = Date.now();
   for (const [key, operation] of operations) {
     if (!operation.promise && now - operation.updatedAt > REQUEST_TTL_MS) operations.delete(key);
@@ -159,7 +171,7 @@ export async function executeHeroPointChange(rawRequest) {
   let operation = operations.get(key);
   if (operation && operation.fingerprint !== fingerprint) throw new Error("Hero Point operation ID was reused with different details.");
   if (!operation) {
-    if (request.retry || request.actorIds.some((id) => hasHeroPointReceipt(heroPointActor(id), request, fingerprint))) {
+    if (request.retry || request.actorIds.some((id) => hasHeroPointReceipt(heroPointActor(id, requester), request, fingerprint))) {
       throw new Error("The Hero Point retry plan is no longer available. Review the current totals and apply a new change.");
     }
     operation = { fingerprint, updatedAt: now, plan: request.actorIds.map((actorId) => ({ actorId, before: null, complete: false })) };

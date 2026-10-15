@@ -58,13 +58,15 @@ export class KnowledgeChatIndex {
     return typeof this.messages?.get === "function" ? this.messages.get(messageId) : this.candidates.get(messageId);
   }
 
-  /** Returns a still-authentic answer for exactly one attempt, preserving its private or public visibility. */
-  answer(questionMessageId, operationId, attemptId) {
+  /** Requires the reserved document ID when present, retaining indexed attempt recovery for legacy cards. */
+  answer(questionMessageId, operationId, attemptId, answerMessageId = null) {
     const key = this.attemptKey(questionMessageId, operationId, attemptId);
-    for (const id of [...(this.attempts.get(key) ?? [])]) {
+    const ids = answerMessageId ? [answerMessageId] : [...(this.attempts.get(key) ?? [])];
+    for (const id of ids) {
       const message = this.message(id);
       const marker = knowledgeAnswerMarker(message);
-      if (marker && this.attemptKey(marker.questionMessageId, marker.operationId, marker.attemptId) === key) return message;
+      if (message?.id === id && marker
+        && this.attemptKey(marker.questionMessageId, marker.operationId, marker.attemptId) === key) return message;
       if (message) this.update(message);
       else this.remove(id);
     }

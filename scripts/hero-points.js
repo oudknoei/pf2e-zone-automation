@@ -1,6 +1,6 @@
 import { escapeHtml as escapeHTML } from "./utils.js";
 import { clearHeroPointReminders, createHeroPointReminder, hasHeroPointReminders, reminderTimestamp } from "./hero-point-reminders.js";
-import { heroPointState, nextHeroPointTotal as nextTotal, validateHeroPointChange } from "./hero-points-rules.js";
+import { canManageHeroPoints, heroPointState, nextHeroPointTotal as nextTotal, validateHeroPointChange } from "./hero-points-rules.js";
 import { requestGMWorker } from "./transport.js";
 import { newOperationId } from "./utils.js";
 
@@ -14,10 +14,10 @@ const HERO_POINT_CHOICES = [
   { value: "set-3", label: "Set hero points to 3", mode: "set", amount: 3 }
 ];
 
-/** Lists player-owned characters, including characters who have no token on the viewed Scene. */
+/** Lists only characters the current user can manage, including owned characters without a token on this Scene. */
 function playerCharacters() {
   return [...(game.actors ?? [])]
-    .filter((actor) => actor.type === "character" && actor.hasPlayerOwner)
+    .filter((actor) => canManageHeroPoints(actor, game.user))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -64,7 +64,6 @@ async function requestHeroPointChanges(request) {
 
 /** Updates PF2e's actual Hero Point totals, keeping the existing API's additive default. */
 export async function setHeroPoints(amount, character, { mode = "add", operationId = newOperationId(), retry = false } = {}) {
-  if (!game.user.isGM) throw new Error("Only a GM can change Hero Points.");
   validateHeroPointChange(amount, mode);
   const actors = resolveCharacters(character);
   return requestHeroPointChanges({ actorIds: actors.map((actor) => actor.id), amount, mode, operationId, retry });
@@ -72,13 +71,11 @@ export async function setHeroPoints(amount, character, { mode = "add", operation
 
 /** Presents one guided screen with explicit recipients and a preview of their resulting totals. */
 export async function promptSetHeroPoints() {
-  if (!game.user.isGM) {
-    ui.notifications.error("Only a GM can change Hero Points.");
-    return null;
-  }
   const actors = playerCharacters();
   if (!actors.length) {
-    ui.notifications.error("No player characters found. Assign a player as an owner of a character, then try again.");
+    ui.notifications.error(game.user.isGM
+      ? "No player characters found. Assign a player as an owner of a character, then try again."
+      : "No characters you own found. Ask your GM to assign you as an owner of a character.");
     return null;
   }
   if (heroPointsDialog?.rendered) {
@@ -131,7 +128,7 @@ export async function promptSetHeroPoints() {
         <button type="button" data-hp-reminder>Create reminder</button>
         <button type="button" data-hp-clear-reminders hidden>Clear Reminders</button>
       </div>
-      <p class="pza-hp-help">Whisper only to you: it's time to award everyone 1 Hero Point. Uses the next occurrence of this time.</p>
+      <p class="pza-hp-help">Whisper only to you: it's time to award ${game.user.isGM ? "everyone" : "your characters"} 1 Hero Point. Uses the next occurrence of this time.</p>
       <p class="pza-hp-help">Keep Foundry open with a GM online. Missed reminders appear when a GM returns.</p>
       <p class="pza-hp-help" data-hp-reminder-status aria-live="polite"></p>
     </fieldset>
@@ -141,6 +138,7 @@ export async function promptSetHeroPoints() {
   let reminderCreating = false;
   let reminderClearing = false;
   let reminderHook = null;
+  const actorHooks = [];
   let pendingPlan = null;
   let pendingRequest = null;
   const dialog = new foundry.applications.api.DialogV2({
@@ -157,6 +155,12 @@ export async function promptSetHeroPoints() {
           const choice = HERO_POINT_CHOICES.find((entry) => entry.value === root.querySelector('[name="hero-change"]').value);
           const selected = [...root.querySelectorAll('[name="hero-character"]:checked')]
             .map((input) => actors.find((actor) => actor.id === input.value));
+          if (selected.some(actor => !canManageHeroPoints(actor, game.user))) {
+            pendingPlan = pendingRequest = null;
+            refreshPreview();
+            ui.notifications.error("You can only change Hero Points for characters you own.");
+            return;
+          }
           if (!selected.length || !choice) {
             ui.notifications.error("Select at least one character and choose a Hero Point change.");
             return;
@@ -203,6 +207,10 @@ export async function promptSetHeroPoints() {
     let changed = 0;
     for (const row of root.querySelectorAll("[data-hp-actor]")) {
       const actor = actors.find((entry) => entry.id === row.dataset.hpActor);
+      if (game.actors.get(actor?.id) !== actor || !canManageHeroPoints(actor, game.user)) {
+        row.remove();
+        continue;
+      }
       const checked = row.querySelector("input").checked;
       const current = heroPointState(actor).value;
       const planned = pendingPlan?.find((entry) => entry.actor === actor);
@@ -264,7 +272,7 @@ export async function promptSetHeroPoints() {
     }
   }
 
-  /** Clears the GM's pending reminders without applying points or closing the dialog. */
+  /** Clears the current user's pending reminders without applying points or closing the dialog. */
   async function clearReminders() {
     if (applying || reminderCreating || reminderClearing) return;
     const root = dialog.element.querySelector(".pza-hero-points");
@@ -290,7 +298,7 @@ export async function promptSetHeroPoints() {
     const buttons = [...dialog.element.querySelectorAll('button[data-action="apply"], button[data-action="cancel"]')];
     const footer = buttons[0]?.closest(".form-footer, .dialog-buttons, footer");
     root.querySelector(".pza-hp-actions").append(...(footer ? [footer] : buttons));
-    /** Starts a new operation when the GM deliberately changes the choice or recipients. */
+    /** Starts a new operation when the user deliberately changes the choice or recipients. */
     const editSelection = (event) => {
       if (!event || ["hero-change", "hero-character"].includes(event.target.name)) pendingPlan = pendingRequest = null;
       refreshPreview();
@@ -302,6 +310,9 @@ export async function promptSetHeroPoints() {
     reminderHook = Hooks.on("updateUser", (user) => {
       if (user.id === game.user.id && dialog.rendered) refreshPreview();
     });
+    for (const hook of ["updateActor", "deleteActor"]) {
+      actorHooks.push([hook, Hooks.on(hook, () => { if (dialog.rendered) refreshPreview(); })]);
+    }
     for (const button of root.querySelectorAll("[data-hp-select]")) {
       button.addEventListener("click", () => {
         for (const input of root.querySelectorAll('[name="hero-character"]')) input.checked = button.dataset.hpSelect === "all";
@@ -312,6 +323,7 @@ export async function promptSetHeroPoints() {
   }, { once: true });
   dialog.addEventListener("close", () => {
     if (reminderHook !== null) Hooks.off("updateUser", reminderHook);
+    for (const [hook, id] of actorHooks) Hooks.off(hook, id);
     if (heroPointsDialog === dialog) heroPointsDialog = null;
   }, { once: true });
   heroPointsDialog = dialog;
