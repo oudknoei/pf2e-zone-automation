@@ -45,7 +45,7 @@ function wallSegment(wall) {
 /** Identifies core walls that represent a closed physical barrier to movement. */
 export function isPhysicalBarrier(wall) {
   const document = wall?.document ?? wall;
-  const moveNone = globalThis.CONST?.WALL_SENSE_TYPES?.NONE ?? 0;
+  const moveNone = globalThis.CONST?.EDGE_SENSE_TYPES?.NONE ?? 0;
   if (document?.move === moveNone) return false;
 
   const doorNone = globalThis.CONST?.WALL_DOOR_TYPES?.NONE ?? 0;

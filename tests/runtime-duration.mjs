@@ -455,7 +455,7 @@ test("target eligibility respects closed walls by default and allows the zone ov
   const previousConst = globalThis.CONST;
   const originalResolveSource = runtime.resolveSource;
   globalThis.CONST = {
-    WALL_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
+    EDGE_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
     WALL_DOOR_TYPES: { NONE: 0, DOOR: 1 },
     WALL_DOOR_STATES: { CLOSED: 0, OPEN: 1 }
   };

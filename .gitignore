@@ -7,3 +7,4 @@ dist/
 .foundry-integration/
 test-results/
 playwright-report/
+.obsidian

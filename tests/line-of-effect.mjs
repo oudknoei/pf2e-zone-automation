@@ -3,7 +3,10 @@ import test from "node:test";
 import { hasLineOfEffect, isPhysicalBarrier, tokenCenter, zoneOrigin } from "../scripts/line-of-effect.js";
 
 globalThis.CONST = {
-  WALL_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
+  EDGE_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
+  get WALL_SENSE_TYPES() {
+    throw new Error("Deprecated WALL_SENSE_TYPES must not be accessed");
+  },
   WALL_DOOR_TYPES: { NONE: 0, DOOR: 1 },
   WALL_DOOR_STATES: { CLOSED: 0, OPEN: 1, LOCKED: 2 }
 };
