@@ -28,6 +28,28 @@ globalThis.game = {
 const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
 
+test("critical-success-only immunity requires a critical success on a save", () => {
+  const originalSetImmunity = runtime.setImmunity;
+  const token = { uuid: "Token.critical", actor: { uuid: "Actor.critical" } };
+  try {
+    for (const starts of [["critical-success-only"], ["success-or-better"]]) {
+      const block = { immunity: { starts } };
+      for (const outcome of ["criticalSuccess", "success", "failure", "criticalFailure", "noSave"]) {
+        for (const hadSave of [true, false]) {
+          let granted = false;
+          runtime.setImmunity = () => { granted = true; };
+          runtime.applyImmunityStarts({}, block, token, outcome, false, hadSave);
+          assert.equal(granted, hadSave && (outcome === "criticalSuccess"
+            || (starts[0] === "success-or-better" && outcome === "success")),
+          `${starts[0]}: ${outcome}, hadSave=${hadSave}`);
+        }
+      }
+    }
+  } finally {
+    runtime.setImmunity = originalSetImmunity;
+  }
+});
+
 /** Builds a live module Region whose flag writes use Foundry's replacement semantics. */
 function makeRegion(scene, id, payload) {
   let stored = structuredClone(payload);

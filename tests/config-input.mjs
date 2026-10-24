@@ -233,4 +233,8 @@ test("shared immunity groups are explicit and legacy immunity remains effect-blo
   assert.equal(normalized.effects[0].immunity.group, "stench:ghonhatine");
   validation = validateConfig(normalized);
   assert.deepEqual(validation.errors, []);
+  block.immunity.starts = ["critical-success-only"];
+  const criticalOnly = normalizeConfig(config);
+  assert.deepEqual(criticalOnly.effects[0].immunity.starts, ["critical-success-only"]);
+  assert.deepEqual(validateConfig(criticalOnly).errors, []);
 });

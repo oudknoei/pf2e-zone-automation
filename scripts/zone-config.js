@@ -291,7 +291,7 @@ function validateSuppliedChoices(cfg) {
     check(block?.immunity?.duration, ["none", "1-round", "1-minute", "10-minutes"], `${prefix} immunity duration`);
     check(block?.immunity?.scope, ["effect-block", "shared-group"], `${prefix} immunity scope`);
     for (const start of (Array.isArray(block?.immunity?.starts) ? block.immunity.starts : [])) {
-      check(start, ["after-save", "success-or-better", "failure-or-worse", "affected", "condition-recovery"], `${prefix} immunity start`);
+      check(start, ["after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"], `${prefix} immunity start`);
     }
     for (const save of (Array.isArray(block?.save?.choices) ? block.save.choices : [])) {
       check(save, ["fortitude", "reflex", "will"], `${prefix} allowed save`);
@@ -463,7 +463,7 @@ function normalizeConfig(input, { strict = false } = {}) {
           : "none",
         starts: Array.isArray(block?.immunity?.starts)
           ? [...new Set(block.immunity.starts.filter((x) => [
-              "after-save", "success-or-better", "failure-or-worse", "affected", "condition-recovery"
+              "after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"
             ].includes(x)))]
           : [],
         recoveryCondition: String(block?.immunity?.recoveryCondition ?? "sickened"),

@@ -375,6 +375,7 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
                 ${[
                   ["after-save", "After any save"],
                   ["success-or-better", "On success or better"],
+                  ["critical-success-only", "On critical success only"],
                   ["failure-or-worse", "On failure or worse"],
                   ["affected", "When actually affected"],
                   ["condition-recovery", "After recovering from condition"]

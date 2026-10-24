@@ -27,6 +27,7 @@ function viewModel() {
   state.effects[0].save.enabled = true;
   state.effects[0].save.dc.value = 17;
   state.effects[0].triggers.enter = true;
+  state.effects[0].immunity.starts = ["critical-success-only"];
   state.effects[0].outcomes.failure.conditions = [{ slug: "frightened", value: 2, removal: "on-exit", condition: "" }];
   return freeze({
     state: normalizeConfig(state),
@@ -70,6 +71,8 @@ test("editor rendering uses frozen snapshots without Foundry globals and preserv
     assert.match(root.querySelector(".zb-warning").textContent, /controlled token has changed/);
     assert.equal(root.querySelector(".zb-load-saved").textContent.trim(), "Open");
     assert.equal(root.querySelector('[data-field="immunity-group"]').placeholder, "e.g. stench");
+    assert.equal(root.querySelector('[data-immunity-start="critical-success-only"]').checked, true);
+    assert.match(root.querySelector('[data-immunity-start="critical-success-only"]').parentElement.textContent, /On critical success only/);
     assert.equal(root.querySelectorAll("script, style, [style]").length, 0);
     assert.equal(root.querySelectorAll("img").length, 1);
     assert.equal(root.querySelector("img").getAttribute("src"), "icons/token.webp");

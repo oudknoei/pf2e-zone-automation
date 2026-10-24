@@ -485,6 +485,7 @@ export function createZoneEffectService(AUTHORITY_LEASE) {
       let startNow = false;
       if (hadSave && starts.includes("after-save")) startNow = true;
       if (hadSave && starts.includes("success-or-better") && this.outcomeIsSuccessOrBetter(outcomeKey)) startNow = true;
+      if (hadSave && starts.includes("critical-success-only") && outcomeKey === "criticalSuccess") startNow = true;
       if (hadSave && starts.includes("failure-or-worse") && this.outcomeIsFailureOrWorse(outcomeKey)) startNow = true;
       if (starts.includes("affected") && affected) startNow = true;
       if (startNow) this.setImmunity(payload, token.uuid, block, token.actor?.uuid ?? null, region?.uuid ?? null);
