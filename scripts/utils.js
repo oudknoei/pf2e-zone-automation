@@ -50,11 +50,6 @@ export function newOperationId() {
   return globalThis.foundry?.utils?.randomID?.(20) ?? crypto.randomUUID();
 }
 
-/** Creates a valid Foundry document ID even when the native generator is unavailable. */
-export function newDocumentId() {
-  return globalThis.foundry?.utils?.randomID?.(16) ?? crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-}
-
 /** Reads flags from live Foundry documents or source-shaped data used during recovery. */
 export function readDocumentFlag(document, scope, key) {
   return document?.getFlag?.(scope, key) ?? document?.flags?.[scope]?.[key] ?? null;

@@ -8,7 +8,6 @@ export const WORKER_ACTION_POLICY = Object.freeze({
   move: actionPolicy("moveZone", "gm"),
   end: actionPolicy("endZone", "gm"),
   "cancel-pending-save": actionPolicy("cancelPendingSave", "active-gm"),
-  "ask-question": actionPolicy("askQuestion", "active-gm"),
   "set-hero-points": actionPolicy("setHeroPoints", "active-gm"),
   "create-hero-point-reminder": actionPolicy("createHeroPointReminder", "active-gm"),
   "clear-hero-point-reminders": actionPolicy("clearHeroPointReminders", "active-gm"),

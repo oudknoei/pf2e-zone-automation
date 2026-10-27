@@ -8,14 +8,6 @@ import { extractPack } from "@foundryvtt/foundryvtt-cli";
 const root = resolve(import.meta.dirname, "..");
 const expectedMacros = new Map([
   [
-    "pzaAskQuestion01",
-    {
-      name: "Ask a question about ...",
-      image: "modules/pf2e-zone-automation/assets/macros/ask-question.webp",
-      api: "openAskQuestion"
-    }
-  ],
-  [
     "pzaOpenBuilder01",
     {
       name: "Open PF2e Zone Builder",

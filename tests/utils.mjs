@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { cloneData, escapeHtml, isGMAuthoredMessage, localize, newDocumentId, newOperationId, randomId, readDocumentFlag, titleCase } from "../scripts/utils.js";
+import { cloneData, escapeHtml, isGMAuthoredMessage, localize, newOperationId, randomId, readDocumentFlag, titleCase } from "../scripts/utils.js";
 
 test("shared HTML escaping preserves names in text and attributes without creating markup", () => {
   const value = `<Hero & "friend" 'ally'>`;
@@ -47,13 +47,11 @@ test("shared identifiers preserve native lengths and the existing UUID fallbacks
   assert.equal(randomId(8).length, 8);
   assert.equal(randomId().length, 12);
   assert.equal(newOperationId().length, 20);
-  assert.equal(newDocumentId().length, 16);
-  assert.deepEqual(calls, [8, 12, 20, 16]);
+  assert.deepEqual(calls, [8, 12, 20]);
   delete globalThis.foundry;
   assert.equal(randomId(8).length, 8);
   assert.equal(randomId().length, 12);
   assert.match(newOperationId(), /^[a-f0-9-]{36}$/);
-  assert.match(newDocumentId(), /^[a-f0-9]{16}$/);
 });
 
 test("shared document flags support live documents, source data, and absent flags", () => {

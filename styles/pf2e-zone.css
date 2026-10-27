@@ -209,32 +209,6 @@ body.theme-dark .application:not(.theme-light) .pf2e-zone-builder,
   .pf2e-zone-builder .zb-bottom { align-items:stretch; flex-direction:column; }
   .pf2e-zone-builder .zb-bottom .right { flex-wrap:wrap; }
 }
-/* Keep the full GM prompt available without letting creature JSON stretch the chat sidebar. */
-.pza-knowledge-card pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 420px;
-  overflow-y: auto;
-  user-select: text;
-  font-size: 12px;
-}
-.pza-knowledge-dialog label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
-}
-.pza-knowledge-card [data-pza-knowledge-answer] {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: inherit;
-}
-
-.pza-knowledge-answer {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 /* Shared preset and existing-zone dialogs; formerly injected by the builder. */
 .pza-zone-json-dialog textarea { width:100%; font-family:monospace; }
 .pza-zone-json-dialog .zb-json { height:360px; max-height:45vh; white-space:pre; }

@@ -1,6 +1,5 @@
 import { zoneRuntimeEntrypoint } from "./runtime.js";
 import { executeShieldingTaunt } from "./shielding-taunt-worker.js";
-import { executeAskQuestion } from "./recall-knowledge-worker.js";
 import { executeHeroPointChange } from "./hero-points-worker.js";
 import { executeClearHeroPointReminders, executeCreateHeroPointReminder } from "./hero-point-reminder-worker.js";
 import { fixedAreaShape, moveAreaShapesToCenter } from "./area-shape.js";
@@ -226,8 +225,6 @@ export async function handleWorkerRequest(request) {
       moveZone,
       endZone,
       cancelPendingSave,
-      /** Preserves Recall Knowledge's operation-specific authorization and recovery. */
-      async askQuestion() { return succeed(await executeAskQuestion(request)); },
       /** Preserves Hero Point authorization, Actor queues, and retry plans. */
       async setHeroPoints() { return succeed(await executeHeroPointChange(request)); },
       /** Preserves the reminder worker's recipient isolation, reservations, and persistence. */

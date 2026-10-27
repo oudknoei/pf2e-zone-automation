@@ -23,6 +23,6 @@
 
   **Scope recommendation:** Start with passable, damaging walls—especially *Wall of Fire* and *Wall of Radiance*—using straight-line and ring footprints, crossing detection, and existing turn/save/damage/condition effects. Treat physical obstruction, cover/sight, difficult terrain, projectile interception, and destructible sections as explicit later integrations, not promises of a generic Wall shape. *Prismatic Wall*, *Chromatic Wall*, *Wall of Virtue*, and *Wall of Water* above are marked Legacy on Archives of Nethys and have no linked Remaster reprint there; this table retains their printed rules instead of inventing a replacement. In particular, do not map *Wall of Virtue*'s good/positive damage to new damage types without an approved rules decision.
 
-Feature designs are in [Shielding Taunt](docs/shielding-taunt.md), [Set Hero Points](docs/set-hero-points.md), [Ask a Question About](docs/ask-a-question-about.md), and [Zone Builder](docs/zone-builder.md).
+Feature designs are in [Shielding Taunt](docs/shielding-taunt.md), [Set Hero Points](docs/set-hero-points.md), [Zone Builder](docs/zone-builder.md), and [Session Notes and recap](docs/session-notes.md). The Session Notes design is organized as six prioritized features for iterative delivery.
 
 

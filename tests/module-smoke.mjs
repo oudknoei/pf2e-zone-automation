@@ -3,9 +3,6 @@ import { VERSION as RUNTIME_VERSION } from "../scripts/runtime-constants.js";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { DEFAULT_KNOWLEDGE_API_ENDPOINT, DEFAULT_KNOWLEDGE_MODEL, DEFAULT_KNOWLEDGE_REASONING, DEFAULT_KNOWLEDGE_OUTPUT,
-  KNOWLEDGE_API_ENDPOINT_SETTING, KNOWLEDGE_MODEL_SETTING, KNOWLEDGE_REASONING_SETTING, KNOWLEDGE_OUTPUT_SETTING,
-  KNOWLEDGE_REASONING_CHOICES } from "../scripts/recall-knowledge-ai-config.js";
 
 const root = resolve(import.meta.dirname, "..");
 const hooks = new Map();
@@ -13,19 +10,13 @@ globalThis.Hooks = {
   once(name, handler) { hooks.set(name, handler); },
   on(name, handler) { hooks.set(name, handler); }
 };
-class TestField {
-  constructor(options) { this.options = options; }
-  getInitialValue() { return this.options.initial ?? ""; }
-}
-globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } }, data: { fields: { StringField: TestField, NumberField: TestField } } };
+globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } } };
 const module = {};
 const settings = new Map();
-const menus = new Map();
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
   settings: {
     register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
-    registerMenu: (namespace, key, config) => menus.set(`${namespace}.${key}`, config),
     get: (namespace, key) => settings.get(`${namespace}.${key}`)?.type?.getInitialValue()
   },
   system: { id: "pf2e" },
@@ -66,11 +57,11 @@ test("manifest points to files that ship", () => {
 
 test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("init")();
+  assert.equal(typeof hooks.get("setup"), "function", "ABP must be installed before world actors are prepared");
+  assert.equal(settings.get("pf2e-zone-automation.abpSpellAttacks")?.default, false);
   assert.equal(typeof module.api.openBuilder, "function");
   assert.equal(typeof module.api.openShieldingTaunt, "function");
   assert.equal(typeof module.api.requestShieldingTaunt, "function");
-  assert.equal(typeof module.api.openAskQuestion, "function");
-  assert.equal(typeof module.api.requestAskQuestion, "function");
   assert.equal(typeof module.api.handleRegionEvent, "function");
   assert.equal(typeof module.api.setHeroPoints, "function");
   assert.equal(typeof module.api.promptSetHeroPoints, "function");
@@ -80,40 +71,6 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
-});
-
-test("Recall Knowledge has no configurable prompt field in world settings", () => {
-  assert.equal(settings.has("pf2e-zone-automation.recallKnowledgePrompt"), false);
-});
-
-test("AI settings expose model, reasoning dropdown, output allowance, and restricted key entry", () => {
-  const endpoint = settings.get(`pf2e-zone-automation.${KNOWLEDGE_API_ENDPOINT_SETTING}`);
-  const model = settings.get(`pf2e-zone-automation.${KNOWLEDGE_MODEL_SETTING}`);
-  const reasoning = settings.get(`pf2e-zone-automation.${KNOWLEDGE_REASONING_SETTING}`);
-  const output = settings.get(`pf2e-zone-automation.${KNOWLEDGE_OUTPUT_SETTING}`);
-  assert.equal(endpoint.default, DEFAULT_KNOWLEDGE_API_ENDPOINT);
-  assert.equal(endpoint.scope, "world");
-  assert.equal(endpoint.type.options.initial, DEFAULT_KNOWLEDGE_API_ENDPOINT);
-  assert.equal(model.default, DEFAULT_KNOWLEDGE_MODEL);
-  assert.equal(model.scope, "world");
-  assert.equal(model.type.options.initial, "gpt-6-luna");
-  assert.equal(reasoning.scope, "world");
-  assert.equal(reasoning.config, true);
-  assert.equal(reasoning.default, DEFAULT_KNOWLEDGE_REASONING);
-  assert.equal(reasoning.type.options.initial, "low");
-  assert.deepEqual(reasoning.choices, KNOWLEDGE_REASONING_CHOICES);
-  assert.deepEqual(Object.keys(reasoning.choices), ["none", "low", "medium", "high", "xhigh", "max"]);
-  assert.equal(output.scope, "world");
-  assert.equal(output.config, true);
-  assert.equal(output.default, DEFAULT_KNOWLEDGE_OUTPUT);
-  assert.equal(output.type.options.initial, 4000);
-  assert.equal(output.type.options.integer, true);
-  assert.equal(output.type.options.min, 16);
-  assert.equal(output.type.options.max, 128000);
-  assert.equal(menus.get("pf2e-zone-automation.recallKnowledgeAIConnection").restricted, true);
-  assert.deepEqual([...settings.keys()].filter((key) => /api.?key|token|credential/i.test(key)), []);
-  assert.equal(module.api.setKnowledgeApiKey, undefined);
-  assert.equal(module.api.queueKnowledgeAnswer, undefined);
 });
 
 test("a source owner can dismiss a zone regardless of its retired dismissal flag", async () => {

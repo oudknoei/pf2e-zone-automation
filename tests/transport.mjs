@@ -38,7 +38,7 @@ test("every shared worker action routes a secondary GM to the active GM using th
   const otherGM = { id: "policy-other-gm", name: "Other GM", isGM: true, active: true };
   users.set(otherGM.id, otherGM);
   const actions = ["library-list", "library-save", "library-delete", "cancel-pending-save",
-    "shielding-taunt", "ask-question", "set-hero-points", "create-hero-point-reminder", "clear-hero-point-reminders"];
+    "shielding-taunt", "set-hero-points", "create-hero-point-reminder", "clear-hero-point-reminders"];
   try {
     game.user = otherGM;
     for (const action of actions) {
@@ -169,31 +169,6 @@ test("a secondary GM routes shared-library requests to the active GM", async () 
       recipientUserId: otherGM.id, response: { ok: true, action: "library-list", records: [] }
     }, gm.id);
     assert.equal((await resultPromise).ok, true);
-  } finally {
-    users.delete(otherGM.id);
-    game.user = player;
-  }
-});
-
-test("a secondary GM routes Recall Knowledge questions to the authoritative GM", async () => {
-  const otherGM = { id: "other-gm", name: "Other GM", isGM: true, active: true };
-  users.set(otherGM.id, otherGM);
-  try {
-    game.user = otherGM;
-    const resultPromise = requestGMWorker({
-      protocol: 1, action: "ask-question", requesterUserId: otherGM.id,
-      sourceTokenUuid: "Scene.scene.Token.source", targetTokenUuid: "Scene.scene.Token.target",
-      question: "What is it?", loreSlug: null, operationId: "question00000001"
-    });
-    const request = sent.shift();
-    assert.equal(request.kind, "request");
-    assert.equal(request.gmId, gm.id);
-    assert.equal(request.request.action, "ask-question");
-    await listener({
-      kind: "response", id: request.id, gmId: gm.id,
-      recipientUserId: otherGM.id, response: { ok: true, action: "ask-question", messageId: "private-message" }
-    }, gm.id);
-    assert.deepEqual(await resultPromise, { ok: true, action: "ask-question", messageId: "private-message" });
   } finally {
     users.delete(otherGM.id);
     game.user = player;

@@ -79,7 +79,7 @@ for (const [name, change] of [
   ["missing Guardian Actor", (_card, _f, marker) => { delete marker.guardianActorUuid; }],
   ["missing target Actor", (_card, _f, marker) => { delete marker.targetActorUuid; }],
   ["missing result", (_card, _f, marker) => { delete marker.result; }],
-  ["wrong action", (_card, _f, marker) => { marker.result.action = "ask-question"; }],
+  ["wrong action", (_card, _f, marker) => { marker.result.action = "set-hero-points"; }],
   ["blank Guardian", (_card, _f, marker) => { marker.result.guardian = " "; }],
   ["missing target name", (_card, _f, marker) => { delete marker.result.target; }],
   ["nonnumeric distance", (_card, _f, marker) => { marker.result.distance = "5"; }],
