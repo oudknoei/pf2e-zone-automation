@@ -13,11 +13,27 @@ globalThis.Hooks = {
 globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } } };
 const module = {};
 const settings = new Map();
+const settingValues = new Map();
+const wrappers = new Map();
+globalThis.libWrapper = {
+  register(_namespace, target, wrapper) { wrappers.set(target, wrapper); }
+};
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
   settings: {
     register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
-    get: (namespace, key) => settings.get(`${namespace}.${key}`)?.type?.getInitialValue()
+    get: (namespace, key) => settingValues.get(`${namespace}.${key}`) ?? settings.get(`${namespace}.${key}`)?.default
+  },
+  pf2e: {
+    Modifier: class { constructor(data) { Object.assign(this, data); } },
+    settings: { variants: { abp: "ABPRulesAsWritten" } },
+    variantRules: {
+      AutomaticBonusProgression: {
+        concatModifiers() {},
+        isEnabled: (actor) => game.pf2e.settings.variants.abp !== "noABP" && !actor.flags.pf2e.disableABP,
+        getAttackPotency: (level) => level < 2 ? 0 : level < 10 ? 1 : level < 16 ? 2 : 3
+      }
+    }
   },
   system: { id: "pf2e" },
   user: { id: "gm", isGM: true }
@@ -57,7 +73,6 @@ test("manifest points to files that ship", () => {
 
 test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("init")();
-  assert.equal(typeof hooks.get("setup"), "function", "ABP must be installed before world actors are prepared");
   assert.equal(settings.get("pf2e-zone-automation.abpSpellAttacks")?.default, false);
   assert.equal(typeof module.api.openBuilder, "function");
   assert.equal(typeof module.api.openShieldingTaunt, "function");
@@ -71,6 +86,24 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
+});
+
+test("ABP spell attacks work on the first character preparation, before the setup hook", () => {
+  // Foundry v14 initializes world Documents between init and setup. Do not fire setup here.
+  const wrapper = wrappers.get("game.pf2e.variantRules.AutomaticBonusProgression.concatModifiers");
+  assert.equal(typeof wrapper, "function", "The ABP wrapper must already be installed by init");
+  settingValues.set("pf2e-zone-automation.abpSpellAttacks", true);
+  for (const mode of ["ABPRulesAsWritten", "ABPFundamentalPotency", "noABP"]) {
+    game.pf2e.settings.variants.abp = mode;
+    const actor = { type: "character", level: 10, flags: { pf2e: {} }, synthetics: { modifiers: {} } };
+    wrapper(() => {}, actor);
+    const bonuses = (actor.synthetics.modifiers["spell-attack-roll"] ?? []).map((factory) => factory());
+    assert.equal(18 + bonuses.reduce((total, modifier) => total + modifier.modifier, 0), mode === "noABP" ? 18 : 20,
+      `Initial preparation must apply spell attack potency only with ABP enabled (${mode})`);
+    assert.equal(actor.synthetics.modifiers["spell-dc"], undefined, "The spell DC must remain 28");
+  }
+  game.pf2e.settings.variants.abp = "ABPRulesAsWritten";
+  settingValues.clear();
 });
 
 test("a source owner can dismiss a zone regardless of its retired dismissal flag", async () => {

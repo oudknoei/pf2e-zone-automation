@@ -33,18 +33,19 @@ Hooks.once("init", () => {
     createHeroPointReminder
   };
   registerHeroPointReminderChat();
-});
 
-/** Installs the optional ABP extension before Foundry prepares world actors. */
-Hooks.once("setup", () => {
+  // World actors are prepared before setup in Foundry v14, so install this during init.
   if (game.system.id !== "pf2e") return;
   try {
     installABPSpellAttacks();
   } catch (error) {
     console.error("PF2e Zone ABP spell attack initialization failed", error);
-    if (game.settings.get(MODULE_ID, "abpSpellAttacks")) {
-      ui.notifications.warn("PF2e Zone: ABP attack potency for spell attacks is unavailable.");
-    }
+    /** Waits until settings and notifications are available before reporting an unavailable enabled option. */
+    Hooks.once("ready", () => {
+      if (game.settings.get(MODULE_ID, "abpSpellAttacks")) {
+        ui.notifications.warn("PF2e Zone: ABP attack potency for spell attacks is unavailable.");
+      }
+    });
   }
 });
 
