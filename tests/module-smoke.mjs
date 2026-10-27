@@ -22,6 +22,7 @@ globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
   settings: {
     register: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
+    registerMenu: (namespace, key, config) => settings.set(`${namespace}.${key}`, config),
     get: (namespace, key) => settingValues.get(`${namespace}.${key}`) ?? settings.get(`${namespace}.${key}`)?.default
   },
   pf2e: {
@@ -81,7 +82,12 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.setHeroPoints, "function");
   assert.equal(typeof module.api.promptSetHeroPoints, "function");
   assert.equal(typeof module.api.createHeroPointReminder, "function");
+  assert.equal(typeof module.api.openSessionNotes, "function");
+  assert.equal(typeof module.api.openQuickNote, "function");
+  assert.equal(settings.get("pf2e-zone-automation.sessionRecapPrompt").scope, "world");
+  assert.equal(settings.get("pf2e-zone-automation.sessionRecapPromptEditor").restricted, true);
   assert.equal(typeof hooks.get("renderChatMessageHTML"), "function", "Reminder buttons must be registered before chat history renders");
+  assert.equal(typeof hooks.get("renderChatLog"), "function", "Session Notes shortcuts must be registered before the chat sidebar renders");
   const controls = { tokens: { tools: { select: {} } } };
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);

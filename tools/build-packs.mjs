@@ -19,7 +19,7 @@ for (const file of readdirSync(macroSource, { recursive: true }).filter((name) =
   macroNames.add(macro.name);
 }
 
-for (const packName of ["zone-effects", "zone-macros"]) {
+for (const packName of ["zone-effects", "zone-macros", "zone-equipment"]) {
   const source = fileURLToPath(new URL(`../packs/src/${packName}/`, import.meta.url));
   const destination = fileURLToPath(new URL(`../packs/${packName}/`, import.meta.url));
   if (resolve(destination) !== resolve(join(moduleRoot, "packs", packName))) {

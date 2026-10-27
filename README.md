@@ -14,6 +14,8 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Create, dismiss, and manage zones as a player who owns the selected source Actor while a GM is online. No world macros are required.
 - Use **Set Hero Points** to give, spend, or set points and create personal reminders. Players manage only characters they own; GMs manage all player characters.
 - Optionally extend Automatic Bonus Progression's attack potency to spell attack rolls through a miscellaneous module setting.
+- Equip homebrew **Spell Potency Rings (+1, +2, +3)** from the supplied Equipment compendium for item bonuses to spell attack rolls, without investment.
+- Keep GM-only Session Notes in editable Journals, add Quick Notes with portrait-based name insertion, and copy notes with a shared read-aloud recap prompt.
 
 ## Requirements
 
@@ -37,11 +39,42 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 ## How To
 
+### Session Notes and Quick Note
+
+GMs can use the **Session Notes** and **Quick Note** buttons above the chat messages, including in a popped-out chat window, or the macros from the supplied compendium. Import the macros onto the hotbar as needed; both entry points call the installed module. An active GM must be online to save changes.
+
+1. Open **Session Notes**, enter a title, campaign Day and time of day, and optionally a session number and party. Choose **Start Session**. One session can be active or paused at a time.
+2. Run **Quick Note** during play. Enter inserts a newline. Click a visible Actor's portrait to append their name and return to typing; the list follows the current canvas viewport. Click **OK** to save and close, or **Cancel** to discard the draft.
+3. Use **Set Day/Time** to update the manually maintained campaign context. F1 does not advance Foundry's clock, record gameplay automatically, or infer elapsed activity time.
+4. **Pause Session** records a real-world break, and **Resume Session** continues the same session. Manual notes and Journal editing remain available during a break. Neither action changes the campaign clock.
+5. Use **Open Journal** or a page button to inspect or edit saved notes. **Refresh** reloads the dashboard's saved state. **End Session** records the ending Day/time and stops that session; **Add Addendum** deliberately adds a late note with a chosen occurrence Day/time.
+6. Set your shared **Recap Prompt** under **Configure Settings → PF2e Zone Automation → Recap Prompt** or use **Edit Recap Prompt**. **Copy Notes** combines that prompt with current Journal text for your preferred external LLM. Paste the result into the Journal's **Recap** page.
+
+Session Journals are created in the **Session Notes** folder and are private to GMs. **Marked player-safe** is a review marker and does not share a page. Copy Notes creates a GM package that can contain secrets; review it before giving it to players or an external service. A failed clipboard write opens a selectable copy window. Notes marked **Exclude from recap** and the finished Recap page are omitted.
+
+Unconfirmed Quick Note saves keep the original draft and disable editing so OK can retry exactly the same operation. Cancel can close that draft, but cannot undo a write already sent to Foundry; inspect the Journal before entering it again. Reload recovery covers saved session state and confirmed notes; an unsaved browser draft is not persisted across a tab reload.
+
+The iterative design and live verification checklist are in [Session Notes](docs/session-notes.md).
+
 ### Miscellaneous options
 
 Under **Settings → Configure Settings → PF2e Zone Automation → Miscellaneous**, the GM can enable **Apply ABP attack potency to spell attacks**. This optional house rule is off by default and requires the PF2e system's Automatic Bonus Progression variant to be enabled (either mode). Reload the world after changing the setting.
 
 Characters receive a potency bonus to spell attack rolls of **+1 at level 2**, **+2 at level 10**, and **+3 at level 16**. The bonus follows character level automatically, uses normal potency stacking, and respects a character's **Disable ABP** flag. It does not increase spell DCs, spell damage, weapon attacks, or impulse attack rolls, and does not apply to NPCs. Disabling ABP or this option removes the bonus after actor preparation; no permanent Effect Items are added to characters.
+
+### Spell Potency Rings
+
+The **PF2e Zone Equipment** compendium contains three homebrew **Spell Potency Rings**. Drag a ring onto a character's inventory and wear it; no investment or activation is required. While worn, it grants its listed item bonus to spell attack rolls. Multiple rings use normal item-bonus stacking, so only the highest applicable item bonus applies. Spell DCs, spell damage, weapon attacks, and impulse attacks are unchanged.
+
+| Item | Spell attack bonus | Level | Price |
+| --- | --- | --- | --- |
+| Spell Potency Ring (+1) | +1 item | 2 | 35 gp |
+| Spell Potency Ring (+2) | +2 item | 10 | 935 gp |
+| Spell Potency Ring (+3) | +3 item | 16 | 8,935 gp |
+
+Each ring matches the corresponding **weapon potency rune** in level and price, and links to that rune in its description. You can upgrade a ring with the higher version's formula by paying the price difference: **900 gp** from +1 to +2, or **8,000 gp** from +2 to +3. Crafting proficiency requirements also match the corresponding runes. The rings do not hold weapon property runes.
+
+PF2e suppresses equipment item bonuses while Automatic Bonus Progression applies to a character. In an ABP world, use the module's **Apply ABP attack potency to spell attacks** option above for the equivalent level-based bonus; the rings follow the system's normal ABP behavior.
 
 ### Open the builder
 

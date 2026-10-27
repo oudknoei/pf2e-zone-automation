@@ -1,6 +1,6 @@
 # Session Notes and recap design
 
-Status: proposed; not implemented. Design date: 2026-10-25.
+Status: F1 implemented locally on 2026-10-27; live Foundry/Forge verification pending. F2-F6 remain proposed. Design date: 2026-10-25.
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Automatic capture records what Foundry observed. Quick notes record the meaning 
 
 ## Product boundaries
 
-- Access comes through compendium macros that call code embedded in this module. Macros contain only availability checks and calls to the public API.
+- Access comes through compendium macros and GM-only chat-log shortcuts that call code embedded in this module. Macros contain only availability checks and calls to the public API.
 - Store sessions and events in ordinary world Journal Entries and pages. The GM must be able to inspect and edit them with Foundry's native Journal editor.
 - Keep visible event text authoritative for recap content. Native edits must survive subsequent capture, reloads, and exports.
 - Keep the reusable recap prompt in world-scoped module settings, editable by GMs. Session Journals hold notes and the finished recap; they do not hold an editable prompt page.
@@ -23,14 +23,14 @@ Automatic capture records what Foundry observed. Quick notes record the meaning 
 
 Implement in the order below. Each feature should leave a usable workflow and preserve the data created by earlier features. Priorities express build order within this design, not commitments to release dates.
 
-| Order | Priority | Feature | Usable result | Depends on |
-| --- | --- | --- | --- | --- |
-| F1 | P0 | Session lifecycle, editable Journal, and Quick Note | Run a session notebook and copy its notes for an external recap | None |
-| F2 | P0 | Campaign Day/time and activity time advances | Track the starting/ending Day and time, with quick advances for activities and travel | F1 |
-| F3 | P1 | Automatic combat, narrative chat, and Scene capture | Reduce manual recording while retaining honest observations | F1; F2 for clock context |
-| F4 | P1 | Closing review and complete recap package | Fill narrative gaps and export a reviewed, reusable LLM input | F1-F3 |
-| F5 | P2 | Detailed mechanical and reward evidence | Recover useful details without overwhelming the narrative timeline | F3-F4 |
-| F6 | P3 | Capture shortcuts, optional reminders, and player submissions | Improve convenience and share the note-taking work | F1-F5 as applicable |
+| Order | Priority | Status | Feature | Usable result | Depends on |
+| --- | --- | --- | --- | --- | --- |
+| F1 | P0 | Coded | Session lifecycle, editable Journal, and Quick Note | Run a session notebook and copy its notes for an external recap | None |
+| F2 | P0 | Proposed | Campaign Day/time and activity time advances | Track the starting/ending Day and time, with quick advances for activities and travel | F1 |
+| F3 | P1 | Proposed | Automatic combat, narrative chat, and Scene capture | Reduce manual recording while retaining honest observations | F1; F2 for clock context |
+| F4 | P1 | Proposed | Closing review and complete recap package | Fill narrative gaps and export a reviewed, reusable LLM input | F1-F3 |
+| F5 | P2 | Proposed | Detailed mechanical and reward evidence | Recover useful details without overwhelming the narrative timeline | F3-F4 |
+| F6 | P3 | Proposed | Capture shortcuts, optional reminders, and player submissions | Improve convenience and share the note-taking work | F1-F5 as applicable |
 
 F1 includes a basic copy workflow so recap generation is possible before the more guided F4 export exists. Persistence, permissions, duplicate protection, and honest failure indicators belong in the feature that needs them; they are not postponed to a later hardening release.
 
@@ -43,6 +43,8 @@ Provide two macros:
 - **Session Notes** opens or focuses a compact, nonblocking dashboard.
 - **Quick Note** opens or focuses a small note dialog with the text field ready for typing.
 
+Also provide GM-only **Session Notes** and **Quick Note** buttons in a compact row above the chat messages. Use the same public entry points as the macros. Re-rendering the chat must not duplicate buttons or listeners, and both docked and popped-out chat should work. Keep the controls outside the message list and leave the chat draft, roll mode, and composer untouched. Remove the controls when GM access is lost and recheck permissions when clicked.
+
 The dashboard supports **Start Session**, **Pause Session**, **Resume Session**, **End Session**, opening the backing Journal, and browsing previous sessions. Allow one active session per world. Starting a session collects a title and optional session number and party selection, creates its Journal, and records real-world start time. Capture the campaign Day number and time of day, entered for an existing campaign and subsequently carried forward from the last saved values. Do not require a campaign start date. F1 allows the GM to maintain these values manually; F2 adds clock synchronization and activity advances. Repeated submissions reuse the same start operation rather than creating duplicate sessions.
 
 Persist lifecycle state. A reload resumes the saved session rather than starting another one. Distinguish active, paused, and ended sessions. An ended session remains editable, but background capture does not append to it. Starting a new session leaves previous sessions intact. A deliberate addendum can be added to an ended session with its original timestamp and later entry time distinguished.
@@ -52,6 +54,8 @@ Quick Note requires only text. **Enter inserts a newline** in the note area; cli
 Suggested note types: **Note**, **Discovery**, **Decision**, **NPC**, **Objective**, and **Memorable Moment**. Defaults are **Note** and **GM only**. Use an editable location label because the active Scene may not represent the party's actual location.
 
 Keep the dialog's text until persistence is confirmed. Cancel makes no changes and returns to play. If no session is active, show a direct path to start one and preserve any draft note. Reopening a macro focuses its existing window instead of stacking dialogs.
+
+F1 implementation: OK closes Quick Note after a confirmed save. An unconfirmed request retains its immutable original draft, disables field editing, and allows OK to retry the same operation. Cancel cannot retract an already dispatched write; review the Journal before manually re-entering that note. Unsaved drafts are retained in the open dialog, not persisted across a tab reload. Manual notes remain available while the session is paused.
 
 ### Visible Actor names
 
@@ -79,6 +83,8 @@ Each session contains:
 Use one page per manual note or saved automatic event. F3 may use an encounter page as the parent summary for related observations. F5 stores high-volume detail with that encounter rather than creating a page for every roll. Keep the dashboard's combined timeline convenient even when the native Journal has many pages.
 
 Event page text is the editable narrative source. Store machine metadata and original observations separately in flags. Never regenerate an edited event page from its original automatic payload. Native text edits change what is exported. Native deletion removes an event from the recap and must not cause the collector to recreate it; retain a small capture receipt separately to prevent replay.
+
+F1 keeps an initial editable Overview and adds current lifecycle/Day/time status to the native Journal view as a separate display banner. Lifecycle actions do not rewrite Overview prose or any event page. The dashboard and Copy Notes also read current metadata. Use Refresh on the dashboard to see changes made elsewhere. Copy Notes is a GM package; the player-safe checkbox is a review marker, not a player export or permission change.
 
 Provide **Copy Notes** with the current saved prompt from module settings, Overview, chronological event text, and Review Notes. Respect exclusion and visibility selections. Allow pasting the resulting recap into the Recap page with the native editor.
 
@@ -114,6 +120,7 @@ If a gap is minor, write around it without inventing a bridge. If a contradictio
 - Actors on Screen contains only Actors with currently visible tokens intersecting the viewport, requires no selection, and deduplicates multiple linked tokens for one Actor.
 - Clicking or keyboard-activating a portrait appends the name at the end even when the caret is in the middle or text is selected, preserves the draft and line breaks, and returns focus and the caret to the end without saving. There is no separate Add Name button; fallback portraits and accessible labels preserve the same behavior.
 - Panning, changing Scenes, moving/hiding tokens, and renaming Actors refresh the list without disturbing typing. An empty list or unavailable canvas does not prevent note taking.
+- The GM's chat log has Session Notes and Quick Note shortcuts that focus the same dialogs as the macros, survive chat re-renders without duplication, and leave the chat draft untouched. Players do not receive these controls.
 - GM-only Journal contents and dashboard actions are unavailable to players.
 - The GM can save a custom Recap Prompt in module settings; Copy Notes uses it after reload and from another GM account. No prompt page is created in the session Journal.
 - Reset to Default restores the supplied spoken-recap prompt; an upgrade does not replace saved custom text.
@@ -303,20 +310,22 @@ The export's prompt snapshot is historical provenance stored with its package, n
 
 ## Proposed module integration
 
-These entry points and files are design targets, not existing APIs:
+F1 entry points and implementation files are listed below; later clock/capture/export targets remain proposed:
 
 | Surface | Proposed responsibility |
 | --- | --- |
 | `module.api.openSessionNotes()` | Open/focus the dashboard |
 | `module.api.openQuickNote()` | Open/focus the note dialog |
-| `module.api.promptAdvanceSessionTime()` | Open/focus the clock action |
+| `module.api.promptAdvanceSessionTime()` (F2, proposed) | Open/focus the clock action |
 | `scripts/session-notes.js` | Dashboard and quick-note workflows |
+| `scripts/session-notes-chat.js` | GM-only chat-log shortcuts using the existing module entry points |
 | `scripts/session-notes-settings.js` | World-scoped Recap Prompt setting, GM editor, and bundled spoken-recap default |
 | `scripts/session-notes-repository.js` | Session Journals, event pages, receipts, and migrations |
-| `scripts/session-notes-worker.js` | Authorized mutations, serialization, and retry handling |
-| `scripts/session-notes-clock.js` | Campaign Day/time anchors, activity intervals, clock observations, and explained advances |
-| `scripts/session-notes-capture.js` | Recorder authority, collector lifecycle, deduplication, and gaps |
-| `scripts/session-notes-export.js` | Review selections, prompt assembly, audience filtering, and export snapshots |
+| `scripts/session-notes-data.js` | F1 validation, Day/time formatting, current viewport Actors, literal text, and Copy Notes |
+| `scripts/session-notes-repository.js` | F1 authorized mutations, metadata receipts, deterministic document IDs, serialization, and retry handling |
+| `scripts/session-notes-clock.js` (F2, proposed) | Campaign Day/time anchors, activity intervals, clock observations, and explained advances |
+| `scripts/session-notes-capture.js` (F3, proposed) | Recorder authority, collector lifecycle, deduplication, and gaps |
+| `scripts/session-notes-export.js` (F4, proposed) | Review selections, audience filtering, and versioned export snapshots |
 | `packs/src/zone-macros/` | Thin macro entry points added with each feature |
 | `scripts/main.js`, transport, worker dispatch, and module stylesheet | Registration and integration with existing module conventions |
 
@@ -327,6 +336,20 @@ Reuse the module's macro/API and authenticated worker conventions, but keep sess
 For each feature, validate its persistence, permissions, duplicate handling, and user workflow before moving to the next one. Automated checks should cover meaningful failures such as lost acknowledgments, stale native edits, duplicate tabs, capture gaps, and export leaks. Rebuild and inspect compiled macro packs when adding macros, following the repository's release checks.
 
 Also verify in a real Foundry v14/PF2e world: macro focus behavior, native Journal editing, Day/time use without calendar setup, ten-minute activity blocks, simultaneous activity handling, midnight rollover, clock changes from existing integrations, a multiplayer session, GM handoff, reload recovery, and player-safe export. Unit tests alone do not establish live Foundry or Forge behavior. Mark the implementation status and remaining live checks in this document as features ship.
+
+### F1 implementation boundaries
+
+The active GM handles mutations through authenticated transport. Within that GM process, operations are serialized. A Web Locks lock, when available, additionally coordinates tabs on the same browser origin. Deterministic successor Journal IDs and note page IDs prevent duplicate creation across delayed retries, and persisted receipts identify matching writes after an acknowledgment is lost. Lifecycle revisions reject stale baselines. These are not server transactions or compare-and-swap locks against native metadata edits or the same GM account used on different devices; live multiplayer/handoff verification remains required. Native page prose is never part of a lifecycle metadata write.
+
+F1 tests cover private storage, duplicate/concurrent starts and notes, repository reloads, lost create acknowledgments, failed completion receipts, native edits/deletion, manual Day/time, stale revisions, breaks and addenda, authorization changes, current-text export, portrait visibility/insertion, newline-only Enter behavior, draft retention, prompt settings, dashboard actions, and compiled macro entry points. Test results and any remaining live checks are recorded with the implementation delivery.
+
+Local verification on 2026-10-27: all 396 tests pass, including 27 Session Notes tests; ESLint, JavaScript syntax checks, and `git diff --check` pass. Rebuilt and verified the compiled macro pack: five unique macros, including exactly one Session Notes and one Quick Note, with stable IDs and private default ownership for the new macros. The release packager produced a valid local `dist/module.zip` using the unchanged development manifest version, v0.1.68. No release was published.
+
+Chat shortcuts added on 2026-10-27: Session Notes and Quick Note now also open through GM-only buttons above the chat messages. All 403 tests pass, including six shortcut tests for placement outside message history, unchanged chat drafts, duplicate registration/renders, independent docked/popout controls, permission changes, rapid clicks, and launch failures. ESLint, syntax, and whitespace checks pass. Actual Foundry chat placement remains a live verification item.
+
+The pack tests now explicitly open the copied LevelDB before reading records and use the writable, ignored workspace test-results directory. This exposes database errors directly and avoids the sandboxed Windows temporary-directory rename failure that previously appeared as an iterator error.
+
+Live Foundry/Forge, multiplayer handoff, actual viewport visibility, and native Journal layout remain unverified. The separate headless browser fixture preview could not launch in this environment; no visual verification is claimed. The DOM tests exercise the dialog behavior with a simulated Foundry API.
 
 ## Reference points
 

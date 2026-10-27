@@ -6,6 +6,9 @@ import { installZoneOutlines } from "./zone-outline.js";
 import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
 import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
 import { installABPSpellAttacks, registerMiscSettings } from "./misc-settings.js";
+import { openSessionNotes, openQuickNote, registerSessionNotesHooks } from "./session-notes.js";
+import { registerSessionNotesSettings } from "./session-notes-settings.js";
+import { registerSessionNotesChat } from "./session-notes-chat.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -13,6 +16,7 @@ const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
 /** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
   registerMiscSettings();
+  registerSessionNotesSettings();
   game.settings.register(MODULE_ID, SHARED_IMMUNITIES_SETTING, {
     name: "Shared temporary immunities",
     hint: "Internal PF2e Zone Automation state for temporary immunity groups.",
@@ -30,9 +34,12 @@ Hooks.once("init", () => {
     handleRegionEvent: zoneRuntimeEntrypoint,
     setHeroPoints,
     promptSetHeroPoints,
-    createHeroPointReminder
+    createHeroPointReminder,
+    openSessionNotes,
+    openQuickNote
   };
   registerHeroPointReminderChat();
+  registerSessionNotesChat();
 
   // World actors are prepared before setup in Foundry v14, so install this during init.
   if (game.system.id !== "pf2e") return;
@@ -74,6 +81,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") return;
   registerHeroPointReminders();
+  registerSessionNotesHooks();
   try {
     installZoneOutlines();
   } catch (error) {

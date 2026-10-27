@@ -4,6 +4,7 @@ function actionPolicy(handler, authority) {
 }
 
 export const WORKER_ACTION_POLICY = Object.freeze({
+  "session-notes": actionPolicy("sessionNotes", "active-gm"),
   create: actionPolicy("createZone", "gm"),
   move: actionPolicy("moveZone", "gm"),
   end: actionPolicy("endZone", "gm"),

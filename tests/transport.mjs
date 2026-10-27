@@ -38,7 +38,7 @@ test("every shared worker action routes a secondary GM to the active GM using th
   const otherGM = { id: "policy-other-gm", name: "Other GM", isGM: true, active: true };
   users.set(otherGM.id, otherGM);
   const actions = ["library-list", "library-save", "library-delete", "cancel-pending-save",
-    "shielding-taunt", "set-hero-points", "create-hero-point-reminder", "clear-hero-point-reminders"];
+    "shielding-taunt", "set-hero-points", "create-hero-point-reminder", "clear-hero-point-reminders", "session-notes"];
   try {
     game.user = otherGM;
     for (const action of actions) {

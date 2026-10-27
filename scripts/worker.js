@@ -9,6 +9,7 @@ import { oncePerOperation } from "./request-cache.js";
 import { createPresetRepository } from "./preset-repository.js";
 import { getWorkerRequester, assertSourcePermission } from "./worker-permissions.js";
 import { getWorkerActionPolicy } from "./worker-action-policy.js";
+import { executeSessionNotes } from "./session-notes-repository.js";
 /* GM-only document operations and authorization for module socket requests. */
 
 const creationRequests = new Map();
@@ -217,6 +218,8 @@ export async function handleWorkerRequest(request) {
     const policy = getWorkerActionPolicy(request.action);
     if (!policy) return fail(`Unsupported worker action '${request.action}'.`);
     const handlers = {
+      /** Keeps Session Notes writes on the elected GM with GM-only requester authorization. */
+      async sessionNotes() { return succeed(await executeSessionNotes(request)); },
       /** Freezes creation details before joining retries or awaiting document lookup. */
       createZone() {
         request = clone(request);

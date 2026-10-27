@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { cpSync, readFileSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { cpSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
-import { extractPack } from "@foundryvtt/foundryvtt-cli";
+import { compiledPackRecords } from "./compiled-pack-records.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const expected = new Map([
@@ -18,15 +17,13 @@ test("compiled Effect pack contains three top-level Items with bundled WebP imag
   assert.equal(pack.type, "Item");
   assert.equal(pack.system, "pf2e");
 
-  const scratch = mkdtempSync(join(tmpdir(), "pf2e-zone-pack-"));
+  const scratchRoot = join(root, "test-results");
+  mkdirSync(scratchRoot, { recursive: true });
+  const scratch = mkdtempSync(join(scratchRoot, "pf2e-zone-pack-"));
   try {
     const packCopy = join(scratch, "pack");
-    const destination = join(scratch, "extracted");
     cpSync(join(root, pack.path), packCopy, { recursive: true });
-    await extractPack(packCopy, destination);
-    const records = readdirSync(destination)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => JSON.parse(readFileSync(join(destination, name), "utf8")));
+    const records = await compiledPackRecords(packCopy);
     assert.equal(records.length, expected.size);
     const sourceItems = new Map(
       readdirSync(join(root, "packs", "src", "zone-effects")).filter((name) => name.endsWith(".json")).map((name) => {
@@ -48,7 +45,7 @@ test("compiled Effect pack contains three top-level Items with bundled WebP imag
       assert.equal(data.subarray(8, 12).toString("ascii"), "WEBP");
     }
   } finally {
-    assert.ok(scratch.startsWith(tmpdir()));
+    assert.ok(scratch.startsWith(`${scratchRoot}${sep}`));
     rmSync(scratch, { recursive: true, force: true });
   }
 });
