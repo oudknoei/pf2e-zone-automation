@@ -2,11 +2,25 @@ import { escapeHtml, readDocumentFlag } from "./utils.js";
 
 export const SESSION_MODULE = "pf2e-zone-automation";
 export const SESSION_FLAG = "sessionNotes";
+export const SESSION_ENABLED_SETTING = "sessionNotesEnabled";
+export const SESSION_ENABLED_HOOK = "pf2eZoneSessionNotesEnabled";
 export const NOTE_TYPES = ["Note", "Discovery", "Decision", "NPC", "Objective", "Memorable Moment"];
 
 /** Rejects direct player access as well as hidden or disabled dialog controls. */
 export function requireSessionGM() {
   if (!game.user?.isGM) throw new Error("Only a GM can manage Session Notes.");
+}
+
+/** Defaults the entire feature off, including before its world setting is available. */
+export function sessionNotesEnabled() {
+  try { return game.settings?.get?.(SESSION_MODULE, SESSION_ENABLED_SETTING) === true; }
+  catch { return false; }
+}
+
+/** Gates runtime entry points while leaving module configuration and saved Journals intact. */
+export function requireSessionNotes() {
+  requireSessionGM();
+  if (!sessionNotesEnabled()) throw new Error("Enable Session Notes in Configure Settings → PF2e Zone Automation first.");
 }
 
 /** Reads versioned session metadata without depending on document names. */
@@ -17,7 +31,7 @@ export function sessionData(journal) {
 
 /** Lists sessions in creation order, leaving manually edited page content untouched. */
 export function sessionJournals() {
-  requireSessionGM();
+  requireSessionNotes();
   return [...(game.journal?.contents ?? game.journal?.values?.() ?? [])]
     .filter(journal => sessionData(journal))
     .sort((a, b) => sessionData(a).generation - sessionData(b).generation);
@@ -112,7 +126,7 @@ export function journalPageText(page) {
 
 /** Exports current page text rather than stale automatic payloads or the finished recap itself. */
 export function sessionNotesPackage(journal, prompt) {
-  requireSessionGM();
+  requireSessionNotes();
   if (!sessionData(journal)) throw new Error("The Session Notes Journal was not found.");
   const pages = [...journal.pages].filter(page =>
     readDocumentFlag(page, SESSION_MODULE, SESSION_FLAG)?.role !== "recap")

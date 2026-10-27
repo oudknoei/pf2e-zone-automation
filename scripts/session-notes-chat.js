@@ -1,3 +1,5 @@
+import { sessionNotesEnabled, SESSION_ENABLED_HOOK } from "./session-notes-data.js";
+
 const MODULE_ID = "pf2e-zone-automation";
 const roots = new Map();
 const anchors = new Map();
@@ -35,7 +37,7 @@ function mountShortcuts(anchor) {
     anchors.delete(other);
   }
   let toolbar = anchors.get(anchor);
-  if (!game.user?.isGM || game.system.id !== "pf2e") {
+  if (!game.user?.isGM || game.system.id !== "pf2e" || !sessionNotesEnabled()) {
     toolbar?.remove();
     anchors.delete(anchor);
     return;
@@ -62,7 +64,7 @@ function mountShortcuts(anchor) {
     button.addEventListener("click", async event => {
       event.preventDefault();
       event.stopPropagation();
-      if (button.disabled || !game.user?.isGM || game.system.id !== "pf2e") return;
+      if (button.disabled || !game.user?.isGM || game.system.id !== "pf2e" || !sessionNotesEnabled()) return;
       button.disabled = true;
       try {
         const module = game.modules.get(MODULE_ID);
@@ -124,7 +126,8 @@ export function registerSessionNotesChat() {
       roots.delete(application);
       pruneAnchors();
     })],
-    ["updateUser", Hooks.on("updateUser", refreshSessionNotesChat)]
+    ["updateUser", Hooks.on("updateUser", refreshSessionNotesChat)],
+    [SESSION_ENABLED_HOOK, Hooks.on(SESSION_ENABLED_HOOK, refreshSessionNotesChat)]
   ];
   /** Removes only this feature's listeners and controls when its registration is released. */
   cleanup = () => {

@@ -13,6 +13,7 @@ globalThis.Hooks = {
 const calls = [];
 const errors = [];
 const module = { active: true, api: {} };
+let enabled = true;
 globalThis.ui = { notifications: { error: message => errors.push(message) } };
 
 function emit(name, ...args) {
@@ -22,7 +23,9 @@ function reset() {
   registerSessionNotesChat()();
   document.body.replaceChildren(); calls.length = errors.length = 0;
   globalThis.game = { user: { id: "gm", isGM: true }, system: { id: "pf2e" },
+    settings: { get: (_scope, key) => key === "sessionNotesEnabled" ? enabled : undefined },
     modules: { get: id => id === "pf2e-zone-automation" ? module : null } };
+  enabled = true;
   module.active = true;
   module.api = {
     async openSessionNotes() { calls.push("session"); },
@@ -60,7 +63,7 @@ test("chat shortcuts stay above the composer outside message history and leave t
 test("registration and repeated renders neither duplicate controls nor multiply click handlers", async () => {
   reset(); const stop = registerSessionNotesChat();
   try {
-    assert.equal(registerSessionNotesChat(), stop); assert.equal(hooks.size, 4);
+    assert.equal(registerSessionNotesChat(), stop); assert.equal(hooks.size, 5);
     const { root, application } = chat();
     const original = button(root, "openQuickNote");
     for (let i = 0; i < 12; i++) emit("renderChatLog", application, root);
@@ -189,5 +192,20 @@ test("a form-only fallback is replaced by the controls anchor without duplicatin
     assert.equal(host.querySelectorAll("nav").length, 1);
     assert.equal(host.querySelector("nav").nextElementSibling, controls);
     assert.equal(form.querySelector("textarea").value, "Draft");
+  } finally { stop(); }
+});
+
+test("the feature switch hides controls while off and restores them live without allowing retained clicks", async () => {
+  reset(); enabled = false;
+  const stop = registerSessionNotesChat();
+  try {
+    const { root } = chat(); assert.equal(root.querySelector("nav"), null);
+    enabled = true; emit("pf2eZoneSessionNotesEnabled", true);
+    const oldButton = button(root, "openQuickNote"); assert.ok(oldButton);
+    enabled = false; emit("pf2eZoneSessionNotesEnabled", false); oldButton.click();
+    await Promise.resolve(); assert.equal(root.querySelector("nav"), null); assert.deepEqual(calls, []);
+    enabled = true; emit("pf2eZoneSessionNotesEnabled", true);
+    assert.equal(root.querySelectorAll("nav").length, 1);
+    assert.equal(root.querySelector("textarea").value, "An unfinished message");
   } finally { stop(); }
 });

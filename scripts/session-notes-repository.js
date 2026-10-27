@@ -1,7 +1,7 @@
 import { canonicalJson, cloneData, escapeHtml, readDocumentFlag } from "./utils.js";
 import { getWorkerRequester } from "./worker-permissions.js";
 import { SESSION_MODULE, SESSION_FLAG, NOTE_TYPES, campaignTime, campaignLabel, noteHtml,
-  sessionData, sessionJournals, sessionDocumentId } from "./session-notes-data.js";
+  sessionData, sessionJournals, sessionDocumentId, requireSessionNotes } from "./session-notes-data.js";
 
 let tail = Promise.resolve();
 
@@ -11,6 +11,7 @@ function authority(request, workerId) {
   if (!requester.isGM || !game.user?.isGM || game.user.id !== workerId || game.users.activeGM?.id !== workerId) {
     throw new Error("Only a GM can manage Session Notes through the active GM.");
   }
+  requireSessionNotes();
   return requester;
 }
 
@@ -99,10 +100,13 @@ async function startSession(request, workerId, requester, key, fingerprint) {
   if ((predecessor?.id ?? null) !== (request.predecessorId ?? null)) {
     throw new Error("The session history changed. Refresh Session Notes before starting another.");
   }
-  const title = String(request.title ?? "").trim();
-  if (!title || title.length > 200) throw new Error("Enter a session title of 1–200 characters.");
+  const enteredTitle = String(request.title ?? "").trim();
+  if (enteredTitle.length > 200) throw new Error("Session title must be at most 200 characters.");
   const number = String(request.number ?? "").trim();
   if (number.length > 30) throw new Error("Session number is too long.");
+  if (!enteredTitle && !number) throw new Error("Enter a session title or a session number.");
+  const title = enteredTitle || `Session ${number}`;
+  const name = number && title !== `Session ${number}` ? `Session ${number} — ${title}` : title;
   const current = campaignTime(request.day, request.time);
   const party = [...new Set(request.partyIds ?? [])].map(actorId => {
     const actor = game.actors.get(actorId);
@@ -117,7 +121,7 @@ async function startSession(request, workerId, requester, key, fingerprint) {
   const folder = await ensureFolder(request, workerId);
   authority(request, workerId);
   await confirmedWrite(() => CONFIG.JournalEntry.documentClass.create({
-    _id: id, name: `${number ? `Session ${number} — ` : ""}${title}`, folder: folder.id,
+    _id: id, name, folder: folder.id,
     ownership: { default: 0 }, pages: initialPages(data),
     flags: { [SESSION_MODULE]: { [SESSION_FLAG]: data } }
   }, { keepId: true }), () => {

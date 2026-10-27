@@ -1,8 +1,8 @@
 import { escapeHtml as esc, newOperationId, readDocumentFlag } from "./utils.js";
 import { requestGMWorker } from "./transport.js";
-import { SESSION_MODULE, SESSION_FLAG, NOTE_TYPES, requireSessionGM, sessionJournals, sessionData,
+import { SESSION_MODULE, SESSION_FLAG, SESSION_ENABLED_HOOK, NOTE_TYPES, requireSessionNotes, sessionNotesEnabled, sessionJournals, sessionData,
   campaignLabel, campaignTime, noteContext, visibleNoteActors, appendActorName, sessionNotesPackage } from "./session-notes-data.js";
-import { openRecapPrompt, recapPrompt } from "./session-notes-settings.js";
+import { recapPrompt } from "./session-notes-settings.js";
 
 let dashboard = null;
 let quickNote = null;
@@ -23,7 +23,7 @@ function selectedJournal(id) {
 
 /** Sends GM-only mutations with immutable operation IDs retained by their dialog until confirmed. */
 export async function requestSessionNotes(details) {
-  requireSessionGM();
+  requireSessionNotes();
   const response = await requestGMWorker({ protocol: 1, action: "session-notes", requesterUserId: game.user.id, ...details });
   if (!response?.ok) throw new Error(response?.error ?? "Session Notes could not be saved.");
   return response;
@@ -31,7 +31,7 @@ export async function requestSessionNotes(details) {
 
 /** Opens the actual Journal editor for a session or one of its pages. */
 function openJournal(journal, pageId) {
-  requireSessionGM();
+  requireSessionNotes();
   if (!journal) throw new Error("No session is selected.");
   journal.sheet.render(true, pageId ? { pageId } : {});
 }
@@ -43,10 +43,13 @@ async function copyNotes(journal) {
     await navigator.clipboard.writeText(text);
     ui.notifications.info("Session notes copied. This GM package may contain secrets.");
   } catch {
+    requireSessionNotes();
     const dialog = new foundry.applications.api.DialogV2({ window: { title: "Copy Session Notes — GM only" },
       position: { width: 760 }, content: content(`<p>Select and copy this text. Review secrets before sharing.</p>
         <textarea readonly name="copy-notes" rows="20">${esc(text)}</textarea>`),
       buttons: [{ action: "close", label: "Close" }] });
+    const enabledHook = Hooks.on(SESSION_ENABLED_HOOK, () => { if (!sessionNotesEnabled()) void dialog.close(); });
+    dialog.addEventListener("close", () => { Hooks.off(SESSION_ENABLED_HOOK, enabledHook); }, { once: true });
     dialog.addEventListener("render", () => {
       const field = dialog.element.querySelector("textarea");
       field.focus(); field.select();
@@ -70,7 +73,7 @@ function dashboardHtml(journal) {
       <span>${esc(campaignLabel(data.campaign))} · Real play time: ${Math.floor(minutes / 60)}h ${minutes % 60}m</span>
       <span>Start: ${esc(campaignLabel(data.startCampaign))}${data.endCampaign ? ` · End: ${esc(campaignLabel(data.endCampaign))}` : ""}</span>`
       : "Start a session to keep notes in a private Journal."}</section>
-    <p class="pza-session-muted">F1: manual notes and Day/time. Gameplay events are not recorded automatically.</p>
+    <p class="pza-session-muted">Manual notes and Day/time. Gameplay events are not recorded automatically.</p>
     <div class="pza-session-clock"><label>Day <input name="day" type="number" min="0" step="1" value="${current.day}"></label>
       <label>Time of day <input name="time" type="time" value="${esc(current.time)}" required></label>
       ${data?.state !== "ended" && data ? '<button type="button" data-session-action="clock">Set Day/Time</button>' : ""}</div>
@@ -79,8 +82,7 @@ function dashboardHtml(journal) {
         <button type="button" data-session-action="note">${data.state === "ended" ? "Add Addendum" : "Quick Note"}</button>
         ${data.state !== "ended" ? `<button type="button" data-session-action="${data.state === "active" ? "pause" : "resume"}">${data.state === "active" ? "Pause Session" : "Resume Session"}</button>
           <button type="button" data-session-action="end">End Session</button>` : ""}` : ""}
-      <button type="button" data-session-action="prompt">Edit Recap Prompt</button>
-      <button type="button" data-session-action="refresh">Refresh</button>
+      <button type="button" data-session-action="refresh" title="Reload saved session details and Journal pages. Unsaved form fields will be reset.">Refresh</button>
     </div>
     ${data ? `<div class="pza-session-pages">${[...journal.pages].sort((a, b) => a.sort - b.sort).map(page => {
       const info = readDocumentFlag(page, SESSION_MODULE, SESSION_FLAG);
@@ -88,9 +90,10 @@ function dashboardHtml(journal) {
     }).join("")}</div>` : ""}
     <details ${!data ? "open" : ""}><summary>Start a new session</summary>
       <p class="pza-session-muted">End the current session before starting another. The Day/time above is manual and carries forward.</p>
-      <label>Title <input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
+      <p class="pza-session-muted">Enter a title or session number, or both. A blank title uses Session X, where X is the session number.</p>
+      <label>Title (optional) <input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
       <label>Session number (optional) <input name="number" type="text" maxlength="30"></label>
-      <fieldset><legend>Party (optional)</legend><div class="pza-session-party">${party.map(actor =>
+      <fieldset><legend>Party (optional)</legend><button type="button" data-session-action="select-party">Select All</button><p class="pza-session-muted">Select the characters taking part. Their names are included in the Journal overview and recap notes.</p><div class="pza-session-party">${party.map(actor =>
         `<label><input name="party" value="${esc(actor.id)}" type="checkbox" ${data?.party.some(member => member.id === actor.id) ? "checked" : ""}> ${esc(actor.name)}</label>`).join("")}</div></fieldset>
       <button type="button" data-session-action="start" ${journals.some(entry => sessionData(entry).state !== "ended") ? "disabled" : ""}>Start Session</button>
     </details>
@@ -99,7 +102,7 @@ function dashboardHtml(journal) {
 
 /** Opens a single compact management window with private Journals as its saved source. */
 export async function openSessionNotes() {
-  requireSessionGM();
+  requireSessionNotes();
   if (dashboard) { dashboard.bringToFront(); return dashboard; }
   let journal = selectedJournal();
   let pending = null;
@@ -107,32 +110,44 @@ export async function openSessionNotes() {
   const dialog = new foundry.applications.api.DialogV2({ window: { title: "Session Notes" },
     position: { width: 740 }, content: content(dashboardHtml(journal)), form: { closeOnSubmit: false },
     buttons: [{ action: "close", label: "Close", callback: async () => { await dialog.close(); } }] });
-  const permissionHook = Hooks.on("updateUser", () => { if (!game.user?.isGM) void dialog.close(); });
+  const permissionHook = Hooks.on("updateUser", () => { if (!game.user?.isGM || !sessionNotesEnabled()) void dialog.close(); });
+  const enabledHook = Hooks.on(SESSION_ENABLED_HOOK, () => { if (!sessionNotesEnabled()) void dialog.close(); });
   /** Refreshes only this management view after a confirmed save or deliberate navigation. */
   function refresh(id = journal?.id) {
     journal = selectedJournal(id);
     dialog.element.querySelector(".pza-session-notes").innerHTML = dashboardHtml(journal);
   }
   dialog.addEventListener("render", () => {
+    if (!sessionNotesEnabled()) { void dialog.close(); return; }
     const root = dialog.element.querySelector(".pza-session-notes");
     root.addEventListener("change", event => {
       if (event.target.name === "session") { pending = null; refresh(event.target.value); }
     });
-    root.addEventListener("input", () => { if (!busy) pending = null; });
+    root.addEventListener("input", event => {
+      if (!busy) pending = null;
+      if (event.target.name === "number") {
+        const number = event.target.value.trim();
+        root.querySelector("[name=title]").placeholder = number ? `Session ${number}` : "The Old Mill";
+      }
+    });
     root.addEventListener("click", async event => {
       const button = event.target.closest("button");
       if (!button || busy) return;
       const action = button.dataset.sessionAction;
       const status = root.querySelector("[data-session-status]");
       try {
-        requireSessionGM();
+        requireSessionNotes();
         if (button.dataset.sessionPage) return openJournal(journal, button.dataset.sessionPage);
         if (!action) return;
         if (action === "journal") return openJournal(journal);
         if (action === "copy") return await copyNotes(journal);
-        if (action === "prompt") return await openRecapPrompt();
         if (action === "note") return await openQuickNote({ journalId: journal.id, addendum: sessionData(journal).state === "ended" });
         if (action === "refresh") { pending = null; return refresh(); }
+        if (action === "select-party") {
+          pending = null;
+          for (const checkbox of root.querySelectorAll('[name="party"]')) checkbox.checked = true;
+          return;
+        }
         if (pending && pending.command !== action) throw new Error("Retry or refresh the pending action before starting a different one.");
         if (!pending) {
           pending = { command: action, operationId: newOperationId(), journalId: journal?.id,
@@ -158,12 +173,13 @@ export async function openSessionNotes() {
         busy = false;
         for (const control of root.querySelectorAll("button, input, select")) control.disabled = false;
         const start = root.querySelector('[data-session-action="start"]');
-        if (start) start.disabled = sessionJournals().some(entry => sessionData(entry).state !== "ended");
+        if (start) start.disabled = !sessionNotesEnabled() || sessionJournals().some(entry => sessionData(entry).state !== "ended");
       }
     });
   }, { once: true });
   dialog.addEventListener("close", () => {
     Hooks.off("updateUser", permissionHook);
+    Hooks.off(SESSION_ENABLED_HOOK, enabledHook);
     if (dashboard === dialog) dashboard = null;
   }, { once: true });
   dashboard = dialog;
@@ -233,7 +249,7 @@ function renderActorButtons(root) {
 
 /** Opens one draft, attaches viewport listeners, and closes only after a confirmed Journal save. */
 export async function openQuickNote({ journalId, addendum = false } = {}) {
-  requireSessionGM();
+  requireSessionNotes();
   if (quickNote) { quickNote.bringToFront(); quickNote.element?.querySelector("[name=note]")?.focus(); return quickNote; }
   const active = sessionJournals().find(journal => sessionData(journal).state !== "ended");
   let journal = journalId ? selectedJournal(journalId) : active;
@@ -250,7 +266,7 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
         const root = dialog.element.querySelector(".pza-session-notes");
         const status = root.querySelector("[data-note-status]");
         try {
-          requireSessionGM();
+          requireSessionNotes();
           if (!journal) throw new Error("Start a session first. Your note is still here.");
           if (!pending && !root.querySelector("[name=note]").value.trim()) throw new Error("Enter a note before saving.");
           if (!pending && root.querySelector("[name=note]").value.length > 50000) throw new Error("Notes must contain at most 50,000 characters.");
@@ -276,11 +292,11 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
         } finally {
           saving = false;
           // An uncertain request is immutable: don't discard edited text by retrying an older payload.
-          for (const control of dialog.element.querySelectorAll("input, select, textarea")) control.disabled = Boolean(pending);
+          for (const control of dialog.element?.querySelectorAll("input, select, textarea") ?? []) control.disabled = Boolean(pending);
           const area = root.querySelector("[name=note]");
           area.disabled = false;
           area.readOnly = Boolean(pending);
-          for (const control of dialog.element.querySelectorAll("button")) control.disabled = Boolean(pending && control.closest("[data-note-actors]"));
+          for (const control of dialog.element?.querySelectorAll("button") ?? []) control.disabled = Boolean(pending && control.closest("[data-note-actors]"));
           button.disabled = false;
         }
       } },
@@ -302,7 +318,7 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
     });
     /** Refreshes the Actor panel without rebuilding or refocusing the note area. */
     const refresh = () => {
-      if (!game.user?.isGM) { void dialog.close(); return; }
+      if (!game.user?.isGM || !sessionNotesEnabled()) { void closeDialog(); return; }
       renderActorButtons(root);
       if (!journal) {
         journal = sessionJournals().find(entry => sessionData(entry).state !== "ended") ?? null;
@@ -313,7 +329,7 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
       }
     };
     for (const name of ["canvasPan", "canvasReady", "canvasTearDown", "createToken", "updateToken", "deleteToken", "refreshToken",
-      "updateActor", "deleteActor", "updateUser", "createJournalEntry"]) hooks.push([name, Hooks.on(name, refresh)]);
+      "updateActor", "deleteActor", "updateUser", "createJournalEntry", SESSION_ENABLED_HOOK]) hooks.push([name, Hooks.on(name, refresh)]);
     root.querySelector("[data-note-start]")?.addEventListener("click", () => { void openSessionNotes(); });
     refresh();
     area.focus();
@@ -331,7 +347,7 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
 export function registerSessionNotesHooks() {
   Hooks.on("deleteJournalEntryPage", page => {
     const metadata = readDocumentFlag(page, SESSION_MODULE, SESSION_FLAG);
-    if (!game.user?.isGM || game.users.activeGM?.id !== game.user.id || metadata?.role !== "event" || !sessionData(page.parent)) return;
+    if (!sessionNotesEnabled() || !game.user?.isGM || game.users.activeGM?.id !== game.user.id || metadata?.role !== "event" || !sessionData(page.parent)) return;
     void requestSessionNotes({ command: "forget-note", operationId: newOperationId(), journalId: page.parent.id,
       receiptKey: metadata.key, pageId: page.id }).catch(() => {
       ui.notifications.warn("The note was deleted, but its deletion receipt could not be saved. Do not retry an unconfirmed save for that note until the Journal has been reviewed.");
@@ -342,10 +358,15 @@ export function registerSessionNotesHooks() {
     const root = html?.[0] ?? html;
     if (!data || !game.user?.isGM || !root?.querySelector) return;
     root.querySelector("[data-session-journal-status]")?.remove();
+    if (!sessionNotesEnabled()) return;
     const panel = document.createElement("aside");
     panel.dataset.sessionJournalStatus = "";
     panel.className = "pza-session-summary";
     panel.textContent = `${data.state === "ended" ? "Session ended" : data.state === "paused" ? "Session paused" : "Session active"} · Start: ${campaignLabel(data.startCampaign)} · ${data.endCampaign ? "End" : "Current"}: ${campaignLabel(data.endCampaign ?? data.campaign)}`;
     (root.querySelector(".journal-entry-content") ?? root).prepend(panel);
+  });
+  Hooks.on(SESSION_ENABLED_HOOK, () => {
+    if (sessionNotesEnabled()) return;
+    for (const panel of globalThis.document?.querySelectorAll("[data-session-journal-status]") ?? []) panel.remove();
   });
 }

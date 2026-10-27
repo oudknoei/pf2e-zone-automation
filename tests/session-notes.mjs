@@ -79,6 +79,7 @@ class TestDialog extends dom.window.EventTarget {
   }
 }
 globalThis.Hooks = {
+  callAll: emit,
   on(hook, fn) { const key = Symbol(hook); callbacks.set(key, { hook, fn }); return key; },
   off(_hook, key) { callbacks.delete(key); }
 };
@@ -135,13 +136,18 @@ async function reset() {
       register(scope, key, config) { registrations.set(`${scope}.${key}`, config); },
       registerMenu(scope, key, config) { menus.set(`${scope}.${key}`, config); },
       get(scope, key) { return values.get(`${scope}.${key}`) ?? registrations.get(`${scope}.${key}`)?.default; },
-      async set(scope, key, value) { if (!game.user.isGM) throw new Error("No permission"); values.set(`${scope}.${key}`, value); }
+      async set(scope, key, value) {
+        if (!game.user.isGM) throw new Error("No permission");
+        values.set(`${scope}.${key}`, value);
+        registrations.get(`${scope}.${key}`)?.onChange?.(value);
+      }
     }
   };
   game.users.activeGM = gm;
   globalThis.canvas = { ready: false, tokens: { controlled: [], placeables: [] } };
   navigator.clipboard.text = "";
   registerSessionNotesSettings();
+  await game.settings.set(M, "sessionNotesEnabled", true);
 }
 function operation(command, details = {}) {
   return { protocol: 1, action: "session-notes", requesterUserId: "gm", command,
@@ -202,6 +208,24 @@ test("a lost Journal creation acknowledgment recovers the exact session with its
 test("an empty campaign Day is rejected rather than silently becoming Day 0", async () => {
   await reset();
   await assert.rejects(start({ day: "" }), /Enter the campaign Day/);
+  assert.equal(game.journal.size, 0); assert.equal(game.folders.size, 0);
+});
+
+for (const example of [
+  { label: "number only", title: "  ", number: " 25 ", expectedTitle: "Session 25", expectedName: "Session 25" },
+  { label: "title only", title: " The Old Mill ", number: "", expectedTitle: "The Old Mill", expectedName: "The Old Mill" },
+  { label: "title and number", title: "The Old Mill", number: "25", expectedTitle: "The Old Mill", expectedName: "Session 25 — The Old Mill" }
+]) test(`session naming accepts ${example.label} and preserves the result on retry`, async () => {
+  await reset(); const { journal, request } = await start({ title: example.title, number: example.number });
+  assert.equal(sessionData(journal).title, example.expectedTitle);
+  assert.equal(journal.name, example.expectedName);
+  assert.match([...journal.pages][0].text.content, new RegExp(example.expectedTitle));
+  await executeSessionNotes(request); assert.equal(game.journal.size, 1); assert.equal(journal.name, example.expectedName);
+});
+
+test("starting without either a title or number creates no Journal or folder", async () => {
+  await reset();
+  await assert.rejects(start({ title: "  ", number: "  " }), /Enter a session title or a session number/);
   assert.equal(game.journal.size, 0); assert.equal(game.folders.size, 0);
 });
 
@@ -458,6 +482,57 @@ test("the dashboard starts a session, changes manual Day/time, opens native page
   await dialog.submit("close"); assert.equal(dialog.rendered, false);
 });
 
+test("the dashboard starts a numbered session without a title and includes the selected Party in recap notes", async () => {
+  await reset(); const dialog = await openSessionNotes();
+  assert.equal(dialog.element.querySelector('[data-session-action="prompt"]'), null);
+  field(dialog, "number").value = "30";
+  field(dialog, "number").dispatchEvent(new Event("input", { bubbles: true }));
+  assert.equal(field(dialog, "title").placeholder, "Session 30");
+  assert.equal(field(dialog, "title").value, "");
+  field(dialog, "party").checked = true;
+  dialog.element.querySelector('[data-session-action="start"]').click();
+  await waitUntil(() => /Saved\./.test(dialog.element.querySelector("[data-session-status]").textContent));
+  const journal = [...game.journal][0];
+  assert.equal(journal.name, "Session 30"); assert.equal(sessionData(journal).title, "Session 30");
+  assert.match(sessionNotesPackage(journal, "Prompt"), /Party: Mira/);
+  await dialog.close();
+});
+
+test("Refresh updates saved Journal page links without writing and resets unsaved dashboard fields", async () => {
+  await reset(); const { journal } = await start(); const dialog = await openSessionNotes();
+  field(dialog, "title").value = "Unsaved next-session title";
+  const page = [...journal.pages][0]; page.name = "Overview edited outside the dashboard";
+  assert.doesNotMatch(dialog.element.textContent, /Overview edited outside/);
+  const before = writes.length;
+  const refresh = dialog.element.querySelector('[data-session-action="refresh"]');
+  assert.match(refresh.title, /Unsaved form fields will be reset/);
+  refresh.click();
+  assert.match(dialog.element.textContent, /Overview edited outside/);
+  assert.equal(field(dialog, "title").value, "");
+  assert.equal(writes.length, before); assert.equal(game.journal.size, 1);
+  await dialog.close();
+});
+
+test("Party Select All checks every listed character without saving until Start Session", async () => {
+  await reset();
+  game.actors.set("orin", { id: "orin", uuid: "Actor.orin", name: "Orin", type: "character" });
+  const dialog = await openSessionNotes(); field(dialog, "number").value = "31";
+  const selectAll = dialog.element.querySelector('[data-session-action="select-party"]');
+  assert.equal(selectAll.textContent, "Select All"); assert.equal(selectAll.type, "button");
+  selectAll.click();
+  assert.equal([...dialog.element.querySelectorAll('[name="party"]')].filter(input => input.checked).length, 2);
+  assert.equal(game.journal.size, 0); assert.equal(writes.length, 0);
+  assert.equal(dialog.rendered, true); assert.equal(field(dialog, "number").value, "31");
+  dialog.element.querySelector('[name="party"][value="orin"]').checked = false;
+  selectAll.click(); assert.equal(dialog.element.querySelector('[name="party"][value="orin"]').checked, true);
+  dialog.element.querySelector('[data-session-action="start"]').click();
+  await waitUntil(() => /Saved\./.test(dialog.element.querySelector("[data-session-status]").textContent));
+  const journal = [...game.journal][0];
+  assert.deepEqual(sessionData(journal).party.map(actor => actor.id), ["mira", "orin"]);
+  assert.match(sessionNotesPackage(journal, "Prompt"), /Party: Mira, Orin/);
+  await dialog.close();
+});
+
 test("player access is rejected before dashboards, settings editors, or draft text are built", async () => {
   await reset(); game.user = game.users.get("player");
   await assert.rejects(openSessionNotes(), /Only a GM/);
@@ -478,4 +553,65 @@ test("permission loss closes open private dashboards, prompt editors and Quick N
   game.user.isGM = false; emit("updateUser", game.user);
   await waitUntil(() => !dashboard.rendered && !noteDialog.rendered && !editor.rendered);
   assert.equal(callbacks.size, 0);
+});
+
+test("Session Notes defaults off and denies runtime APIs and worker writes until explicitly enabled", async () => {
+  await reset(); values.delete(`${M}.sessionNotesEnabled`);
+  const config = registrations.get(`${M}.sessionNotesEnabled`);
+  assert.equal(config.default, false); assert.equal(config.scope, "world"); assert.equal(config.config, true);
+  assert.equal(config.restricted, true);
+  await assert.rejects(openSessionNotes(), /Enable Session Notes/);
+  await assert.rejects(openQuickNote(), /Enable Session Notes/);
+  await assert.rejects(async () => executeSessionNotes(operation("start", { title: "Blocked", day: 1, time: "09:00" })), /Enable Session Notes/);
+  assert.equal(game.journal.size, 0); assert.equal(game.folders.size, 0); assert.equal(dialogs.length, 0);
+  await game.settings.set(M, "sessionNotesEnabled", true);
+  const { journal } = await start(); assert.ok(journal);
+});
+
+test("disabling closes runtime windows while preserving saved Journals, session state, text, and custom prompts", async () => {
+  await reset(); const { journal } = await start();
+  const request = note(journal); await executeSessionNotes(request);
+  await game.settings.set(M, "sessionRecapPrompt", "My custom recap voice.");
+  const savedState = structuredClone(sessionData(journal));
+  const savedText = [...journal.pages].map(page => page.text.content);
+  const dashboard = await openSessionNotes(); const quick = await openQuickNote();
+  field(quick, "note").value = "Unsaved draft";
+  await game.settings.set(M, "sessionNotesEnabled", false);
+  await waitUntil(() => !dashboard.rendered && !quick.rendered);
+  assert.equal(callbacks.size, 0);
+  assert.deepEqual(sessionData(journal), savedState);
+  assert.deepEqual([...journal.pages].map(page => page.text.content), savedText);
+  assert.equal(game.settings.get(M, "sessionRecapPrompt"), "My custom recap voice.");
+  assert.throws(() => sessionNotesPackage(journal, ""), /Enable Session Notes/);
+  await assert.rejects(async () => executeSessionNotes(request), /Enable Session Notes/, "Even completed retries must respect the switch");
+  await game.settings.set(M, "sessionNotesEnabled", true);
+  assert.equal(sessionJournals()[0], journal);
+  const reopened = await openSessionNotes(); assert.match(reopened.element.textContent, /The Old Mill/);
+  await reopened.close();
+});
+
+test("turning the switch off after a mutation is queued prevents that mutation from writing", async () => {
+  await reset(); const { journal } = await start(); const before = writes.length;
+  const pending = executeSessionNotes(note(journal));
+  await game.settings.set(M, "sessionNotesEnabled", false);
+  await assert.rejects(pending, /Enable Session Notes/);
+  assert.equal(writes.length, before); assert.equal(events(journal).length, 0);
+});
+
+test("disabled feature hooks neither decorate Journals nor persist deletion receipts", async () => {
+  await reset(); registerSessionNotesHooks();
+  try {
+    const { journal } = await start(); await executeSessionNotes(note(journal));
+    const page = events(journal)[0]; const before = writes.length;
+    const root = document.createElement("section"); document.body.append(root);
+    emit("renderJournalEntrySheet", { document: journal }, root);
+    assert.ok(root.querySelector("[data-session-journal-status]"));
+    await game.settings.set(M, "sessionNotesEnabled", false);
+    assert.equal(root.querySelector("[data-session-journal-status]"), null);
+    emit("renderJournalEntrySheet", { document: journal }, root);
+    emit("deleteJournalEntryPage", page);
+    await Promise.resolve(); assert.equal(writes.length, before);
+    assert.equal(root.querySelector("[data-session-journal-status]"), null);
+    root.remove();
+  } finally { callbacks.clear(); }
 });

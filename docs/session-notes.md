@@ -10,6 +10,7 @@ Automatic capture records what Foundry observed. Quick notes record the meaning 
 
 ## Product boundaries
 
+- The entire Session Notes runtime is opt-in through the GM-only, world-scoped **Enable Session Notes** setting, default **off**. Disabling removes its shortcuts, closes runtime windows, blocks macros/API entry points and new worker writes, and stops its Journal decorations/deletion bookkeeping. Saved Journals, session state, and the settings-owned recap prompt remain intact. Prompt configuration remains available while the runtime feature is off.
 - Access comes through compendium macros and GM-only chat-log shortcuts that call code embedded in this module. Macros contain only availability checks and calls to the public API.
 - Store sessions and events in ordinary world Journal Entries and pages. The GM must be able to inspect and edit them with Foundry's native Journal editor.
 - Keep visible event text authoritative for recap content. Native edits must survive subsequent capture, reloads, and exports.
@@ -38,6 +39,8 @@ F1 includes a basic copy workflow so recap generation is possible before the mor
 
 ### Scope
 
+First enable **Configure Settings → PF2e Zone Automation → Enable Session Notes**. This checkbox applies immediately, without a reload. It does not start, end, pause, or otherwise rewrite a saved session. Disabling closes unsaved runtime drafts without saving them; document writes already dispatched to Foundry may still complete, so inspect the Journal if a save was pending.
+
 Provide two macros:
 
 - **Session Notes** opens or focuses a compact, nonblocking dashboard.
@@ -45,7 +48,7 @@ Provide two macros:
 
 Also provide GM-only **Session Notes** and **Quick Note** buttons in a compact row immediately above the chat input controls (the globe/whisper icon row). Use the same public entry points as the macros. Re-rendering the chat must not duplicate buttons or listeners, and both docked and popped-out chat should work. Follow Foundry's separately rendered/re-parented input through `renderChatInput`, not only `renderChatLog`, and recover an already-rendered composer at startup. Keep the controls outside the scrolling message list and leave the chat draft, roll mode, and rich-text editor untouched. Remove the controls when GM access is lost and recheck permissions when clicked.
 
-The dashboard supports **Start Session**, **Pause Session**, **Resume Session**, **End Session**, opening the backing Journal, and browsing previous sessions. Allow one active session per world. Starting a session collects a title and optional session number and party selection, creates its Journal, and records real-world start time. Capture the campaign Day number and time of day, entered for an existing campaign and subsequently carried forward from the last saved values. Do not require a campaign start date. F1 allows the GM to maintain these values manually; F2 adds clock synchronization and activity advances. Repeated submissions reuse the same start operation rather than creating duplicate sessions.
+The dashboard supports **Start Session**, **Pause Session**, **Resume Session**, **End Session**, opening the backing Journal, and browsing previous sessions. Allow one active session per world. Starting a session requires a title or a session number; either may be omitted, and both may be supplied. A blank title becomes **Session X**, where X is the trimmed session number. With a custom title and number, name the Journal **Session X — Title**; a generated title produces **Session X** only once. Optional Party selection records the participating characters for the Journal Overview and recap notes; in F1 it does not filter the portrait list or track character actions. Create the Journal and record real-world start time. Capture the campaign Day number and time of day, entered for an existing campaign and subsequently carried forward from the last saved values. Do not require a campaign start date. F1 allows the GM to maintain these values manually; F2 adds clock synchronization and activity advances. Repeated submissions reuse the same start operation rather than creating duplicate sessions.
 
 Persist lifecycle state. A reload resumes the saved session rather than starting another one. Distinguish active, paused, and ended sessions. An ended session remains editable, but background capture does not append to it. Starting a new session leaves previous sessions intact. A deliberate addendum can be added to an ended session with its original timestamp and later entry time distinguished.
 
@@ -84,7 +87,7 @@ Use one page per manual note or saved automatic event. F3 may use an encounter p
 
 Event page text is the editable narrative source. Store machine metadata and original observations separately in flags. Never regenerate an edited event page from its original automatic payload. Native text edits change what is exported. Native deletion removes an event from the recap and must not cause the collector to recreate it; retain a small capture receipt separately to prevent replay.
 
-F1 keeps an initial editable Overview and adds current lifecycle/Day/time status to the native Journal view as a separate display banner. Lifecycle actions do not rewrite Overview prose or any event page. The dashboard and Copy Notes also read current metadata. Use Refresh on the dashboard to see changes made elsewhere. Copy Notes is a GM package; the player-safe checkbox is a review marker, not a player export or permission change.
+F1 keeps an initial editable Overview and adds current lifecycle/Day/time status to the native Journal view as a separate display banner. Lifecycle actions do not rewrite Overview prose or any event page. The dashboard and Copy Notes also read current metadata. Refresh re-reads saved session details and Journal page links, including changes made in a native editor or by another GM; it resets unsaved dashboard form fields and makes no document changes. Copy Notes is a GM package; the player-safe checkbox is a review marker, not a player export or permission change.
 
 Provide **Copy Notes** with the current saved prompt from module settings, Overview, chronological event text, and Review Notes. Respect exclusion and visibility selections. Allow pasting the resulting recap into the Recap page with the native editor.
 
@@ -92,7 +95,7 @@ Provide **Copy Notes** with the current saved prompt from module settings, Overv
 
 Add a GM-only **Recap Prompt** editor under **Configure Settings → PF2e Zone Automation**. Persist the prompt as a world-scoped string, proposed key `sessionRecapPrompt`, so all GMs in the campaign use the same saved instructions. Provide a multiline editor, **Save**, and **Reset to Default**, seeded with the default prompt below. Saving a blank prompt should show a validation error and retain the existing value.
 
-This setting ships with F1 because Copy Notes already needs a prompt. Add an **Edit Recap Prompt** shortcut from the dashboard and, in F4, from export preview. Both open the same setting rather than creating session-specific copies or overrides. Preview shows the saved prompt that will be included in the package. Saving a setting change affects subsequent packages, including packages newly prepared for older sessions; it does not rewrite a previously frozen export or a finished recap. Module upgrades preserve custom prompt text.
+This setting ships with F1 because Copy Notes already needs a prompt. Edit it through module Settings; the session dashboard and future export preview do not duplicate this editor shortcut. Preview shows the saved prompt that will be included in the package. Saving a setting change affects subsequent packages, including packages newly prepared for older sessions; it does not rewrite a previously frozen export or a finished recap. Module upgrades preserve custom prompt text.
 
 ### Default recap prompt
 
@@ -112,6 +115,10 @@ If a gap is minor, write around it without inventing a bridge. If a contradictio
 
 ### Acceptance criteria
 
+- New and existing worlds without an explicit activation setting start with the runtime off. Off hides chat buttons, rejects macro/runtime API and worker operations (including completed retries), suppresses Journal decorations/deletion writes, and creates no new Journals or folders.
+- Title-only, number-only, and title-plus-number starts work; an empty title and number are rejected before creating a Journal or folder. A generated Session X title is not prefixed a second time, including on retries.
+- Party provides a **Select All** button that checks every listed character. The selection remains editable and is saved only when starting the session.
+- Enabling/disabling updates connected clients without a reload. Disabling closes runtime windows and prevents queued operations from starting writes; re-enabling reuses the original saved Journals and prompt without changing session state.
 - Start a session, save several notes, reload, and continue the same session without losing or duplicating records.
 - Edit an event in the native Journal editor; its edited text appears in Copy Notes and survives a later note save.
 - Delete an event; subsequent reconciliation does not resurrect it.
@@ -298,6 +305,7 @@ Version persisted records from F1 onward. Proposed metadata:
 
 | Record | Fields |
 | --- | --- |
+| World setting | `sessionNotesEnabled`: GM-editable Boolean, default false; controls the whole runtime feature |
 | World setting | `sessionRecapPrompt`: shared, GM-editable prompt text with a bundled default; no editable per-session prompt page |
 | Session | Stable ID, schema version, title/number, lifecycle state, party IDs and names, Journal UUID, real and world start/end, starting/ending campaign Day and time of day, Day/time anchor and revision, break intervals, recorder checkpoints |
 | Event | Stable ID, session ID, capture sequence, recorded time, occurrence world time where available, campaign Day and time-of-day snapshot, anchor revision, activity start/end and duration when applicable, kind, author, location snapshot, related UUIDs and captured labels, encounter ID, provenance, original observation, importance, exclusion, player-review status |
@@ -348,6 +356,10 @@ Local verification on 2026-10-27: all 396 tests pass, including 27 Session Notes
 Chat shortcuts added on 2026-10-27: Session Notes and Quick Note now also open through GM-only buttons above the chat messages. All 403 tests pass, including six shortcut tests for placement outside message history, unchanged chat drafts, duplicate registration/renders, independent docked/popout controls, permission changes, rapid clicks, and launch failures. ESLint, syntax, and whitespace checks pass. Actual Foundry chat placement remains a live verification item.
 
 Placement revised on 2026-10-27 after the user's screenshots: anchor the buttons immediately above the composer controls, outside scrolling history, and follow `renderChatInput` adoption events. Startup also recovers an already-rendered composer. Added regression cases for a separate rich-text composer, moving the canonical input into and out of a popout (including during close), startup recovery, and form-only fallback deduplication. All 407 tests pass, including ten chat-shortcut tests, with ESLint, syntax, and whitespace checks passing. A local v0.1.69 package includes this change; live placement confirmation is still pending.
+
+Activation switch added on 2026-10-27: **Enable Session Notes** is a GM-editable world setting that defaults off and updates runtime controls immediately. Runtime APIs, worker authority checks, native Journal hooks, and chat entry points all respect it. Disabling closes runtime windows and preserves saved Journals, session state, and prompt configuration. All 412 tests pass, including five new switch regressions for default-off behavior, live toolbar changes, saved-content preservation, queued-write rejection, and disabled native hooks. ESLint and syntax checks pass; live Foundry verification remains pending.
+
+Dashboard cleanup on 2026-10-27: removed the redundant prompt-editor shortcut, explained Refresh and Party in the UI, and made title/number alternatives with a Session X default title. All 418 tests pass, including naming/retry, number-only dashboard creation, Party export, and read-only Refresh regressions. ESLint, syntax, and whitespace checks pass; live UI verification remains pending.
 
 The pack tests now explicitly open the copied LevelDB before reading records and use the writable, ignored workspace test-results directory. This exposes database errors directly and avoids the sandboxed Windows temporary-directory rename failure that previously appeared as an iterator error.
 

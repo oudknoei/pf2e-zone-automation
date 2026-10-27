@@ -41,14 +41,16 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 ### Session Notes and Quick Note
 
+Session Notes is **off by default**. A GM enables it under **Configure Settings → PF2e Zone Automation → Enable Session Notes**. The world setting takes effect immediately for connected clients. Turning it off removes the chat shortcuts, closes the session windows, and blocks the macros, runtime API calls, and new worker writes. Existing Journals, saved session state, and the recap prompt are retained. The prompt remains configurable while the runtime feature is off.
+
 GMs can use the **Session Notes** and **Quick Note** buttons immediately above the chat input controls (the globe/whisper icon row), including in a popped-out chat window, or the macros from the supplied compendium. The shortcuts follow the message editor rather than scrolling with message history. Import the macros onto the hotbar as needed; both entry points call the installed module. An active GM must be online to save changes.
 
-1. Open **Session Notes**, enter a title, campaign Day and time of day, and optionally a session number and party. Choose **Start Session**. One session can be active or paused at a time.
+1. Open **Session Notes**, enter a title or session number (or both), campaign Day and time of day, and optionally select the participating characters under **Party**. **Select All** checks every listed character. A blank title becomes **Session X**, using the session number. Choose **Start Session**. One session can be active or paused at a time. Party names are included in the Journal overview and recap notes.
 2. Run **Quick Note** during play. Enter inserts a newline. Click a visible Actor's portrait to append their name and return to typing; the list follows the current canvas viewport. Click **OK** to save and close, or **Cancel** to discard the draft.
 3. Use **Set Day/Time** to update the manually maintained campaign context. F1 does not advance Foundry's clock, record gameplay automatically, or infer elapsed activity time.
 4. **Pause Session** records a real-world break, and **Resume Session** continues the same session. Manual notes and Journal editing remain available during a break. Neither action changes the campaign clock.
-5. Use **Open Journal** or a page button to inspect or edit saved notes. **Refresh** reloads the dashboard's saved state. **End Session** records the ending Day/time and stops that session; **Add Addendum** deliberately adds a late note with a chosen occurrence Day/time.
-6. Set your shared **Recap Prompt** under **Configure Settings → PF2e Zone Automation → Recap Prompt** or use **Edit Recap Prompt**. **Copy Notes** combines that prompt with current Journal text for your preferred external LLM. Paste the result into the Journal's **Recap** page.
+5. Use **Open Journal** or a page button to inspect or edit saved notes. **Refresh** reloads saved session details and Journal page links, including changes made in the native editor or by another GM; it resets unsaved form fields. **End Session** records the ending Day/time and stops that session; **Add Addendum** deliberately adds a late note with a chosen occurrence Day/time.
+6. Set your shared **Recap Prompt** under **Configure Settings → PF2e Zone Automation → Recap Prompt**. **Copy Notes** combines that prompt with current Journal text for your preferred external LLM. Paste the result into the Journal's **Recap** page.
 
 Session Journals are created in the **Session Notes** folder and are private to GMs. **Marked player-safe** is a review marker and does not share a page. Copy Notes creates a GM package that can contain secrets; review it before giving it to players or an external service. A failed clipboard write opens a selectable copy window. Notes marked **Exclude from recap** and the finished Recap page are omitted.
 

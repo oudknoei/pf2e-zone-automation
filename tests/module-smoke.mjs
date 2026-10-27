@@ -85,6 +85,11 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.openSessionNotes, "function");
   assert.equal(typeof module.api.openQuickNote, "function");
   assert.equal(settings.get("pf2e-zone-automation.sessionRecapPrompt").scope, "world");
+  const sessionSetting = settings.get("pf2e-zone-automation.sessionNotesEnabled");
+  assert.equal(sessionSetting.default, false);
+  assert.equal(sessionSetting.scope, "world");
+  assert.equal(sessionSetting.config, true);
+  assert.equal(sessionSetting.restricted, true);
   assert.equal(settings.get("pf2e-zone-automation.sessionRecapPromptEditor").restricted, true);
   assert.equal(typeof hooks.get("renderChatMessageHTML"), "function", "Reminder buttons must be registered before chat history renders");
   assert.equal(typeof hooks.get("renderChatLog"), "function", "Session Notes shortcuts must be registered before the chat sidebar renders");

@@ -1,5 +1,5 @@
 import { escapeHtml } from "./utils.js";
-import { SESSION_MODULE, requireSessionGM } from "./session-notes-data.js";
+import { SESSION_MODULE, SESSION_ENABLED_SETTING, SESSION_ENABLED_HOOK, requireSessionGM } from "./session-notes-data.js";
 
 export const DEFAULT_RECAP_PROMPT = `Write a recap of the supplied Pathfinder campaign session that the GM can read aloud at the beginning of the next game. Help the players remember what mattered and settle back into the story.
 
@@ -37,6 +37,12 @@ export async function openRecapPrompt() {
 
 /** Registers the world prompt and restricted multiline editor without changing existing custom text. */
 export function registerSessionNotesSettings() {
+  game.settings.register(SESSION_MODULE, SESSION_ENABLED_SETTING, {
+    name: "Enable Session Notes",
+    hint: "Enable GM session notebooks, Quick Note, and chat shortcuts. Turning this off closes Session Notes windows; saved Journals and the recap prompt are kept.",
+    scope: "world", config: true, restricted: true, type: Boolean, default: false,
+    onChange: enabled => Hooks.callAll(SESSION_ENABLED_HOOK, enabled)
+  });
   game.settings.register(SESSION_MODULE, "sessionRecapPrompt", {
     name: "Recap Prompt", scope: "world", config: false, restricted: true,
     type: String, default: DEFAULT_RECAP_PROMPT
