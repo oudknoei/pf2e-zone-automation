@@ -8,7 +8,7 @@ import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPoi
 import { installABPSpellAttacks, registerMiscSettings } from "./misc-settings.js";
 import { openSessionNotes, openQuickNote, registerSessionNotesHooks } from "./session-notes.js";
 import { registerSessionNotesSettings } from "./session-notes-settings.js";
-import { registerSessionNotesChat } from "./session-notes-chat.js";
+import { registerSessionNotesChat, refreshSessionNotesChat } from "./session-notes-chat.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -82,6 +82,7 @@ Hooks.once("ready", () => {
   if (game.system.id !== "pf2e") return;
   registerHeroPointReminders();
   registerSessionNotesHooks();
+  refreshSessionNotesChat();
   try {
     installZoneOutlines();
   } catch (error) {

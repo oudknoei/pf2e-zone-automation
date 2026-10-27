@@ -41,7 +41,7 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 ### Session Notes and Quick Note
 
-GMs can use the **Session Notes** and **Quick Note** buttons above the chat messages, including in a popped-out chat window, or the macros from the supplied compendium. Import the macros onto the hotbar as needed; both entry points call the installed module. An active GM must be online to save changes.
+GMs can use the **Session Notes** and **Quick Note** buttons immediately above the chat input controls (the globe/whisper icon row), including in a popped-out chat window, or the macros from the supplied compendium. The shortcuts follow the message editor rather than scrolling with message history. Import the macros onto the hotbar as needed; both entry points call the installed module. An active GM must be online to save changes.
 
 1. Open **Session Notes**, enter a title, campaign Day and time of day, and optionally a session number and party. Choose **Start Session**. One session can be active or paused at a time.
 2. Run **Quick Note** during play. Enter inserts a newline. Click a visible Actor's portrait to append their name and return to typing; the list follows the current canvas viewport. Click **OK** to save and close, or **Cancel** to discard the draft.
