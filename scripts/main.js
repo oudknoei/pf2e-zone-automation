@@ -7,7 +7,7 @@ import { promptSetHeroPoints, setHeroPoints } from "./hero-points.js";
 import { createHeroPointReminder, registerHeroPointReminderChat, registerHeroPointReminders } from "./hero-point-reminders.js";
 import { installABPSpellAttacks, registerMiscSettings } from "./misc-settings.js";
 import { openSessionNotes, openQuickNote, registerSessionNotesHooks } from "./session-notes.js";
-import { registerSessionNotesSettings } from "./session-notes-settings.js";
+import { registerSessionNotesSettings, registerSessionNotesSettingsUI } from "./session-notes-settings.js";
 import { registerSessionNotesChat, refreshSessionNotesChat } from "./session-notes-chat.js";
 
 const MODULE_ID = "pf2e-zone-automation";
@@ -15,8 +15,9 @@ const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
 
 /** Exposes stable module entry points during initialization so compendium macros always call the installed implementation. */
 Hooks.once("init", () => {
-  registerMiscSettings();
   registerSessionNotesSettings();
+  registerSessionNotesSettingsUI();
+  registerMiscSettings();
   game.settings.register(MODULE_ID, SHARED_IMMUNITIES_SETTING, {
     name: "Shared temporary immunities",
     hint: "Internal PF2e Zone Automation state for temporary immunity groups.",

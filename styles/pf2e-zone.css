@@ -238,6 +238,8 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
 .application.theme-dark .pza-session-notes { --sn-bg:#292b30; --sn-field:#33363d; --sn-text:#f0ede6; --sn-muted:#bdb8b0; --sn-border:#686b72; --sn-focus:#e3b16b; color-scheme:dark; }
 .pza-session-notes * { box-sizing:border-box; }
 .pza-session-notes label { display:flex; gap:6px; align-items:center; margin:6px 0; }
+.pza-session-notes .pza-session-form-row { display:grid; grid-template-columns:9rem minmax(0,1fr); gap:10px; }
+.pza-session-form-row > :is(input,select) { width:100%; }
 .pza-session-notes :is(input,select,textarea,button) { color:var(--sn-text); background:var(--sn-field); border:1px solid var(--sn-border); border-radius:4px; }
 .pza-session-notes :is(input[type=text],select,textarea) { min-width:0; }
 .pza-session-notes :is(input,select,textarea,button):focus-visible { outline:2px solid var(--sn-focus); outline-offset:2px; }
@@ -248,6 +250,12 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
 .pza-session-muted,.pza-session-notes small { color:var(--sn-muted); font-size:.88em; }
 .pza-session-clock,.pza-session-toolbar,.pza-session-fields { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:10px 0; }
 .pza-session-clock input[type=number] { width:85px; }
+.pza-session-clock label { flex:0 0 auto; white-space:nowrap; }
+.pza-session-clock input[type=time] { width:140px; }
+.pza-session-notes .pza-session-party-section { margin:12px 0; padding:8px 12px; }
+.pza-session-party-heading { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
+.pza-session-party-heading p { flex:1; margin:0; }
+.pza-session-party-heading button { flex:0 0 auto; width:auto; white-space:nowrap; }
 .pza-session-party { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); max-height:150px; overflow:auto; }
 .pza-session-pages { max-height:230px; overflow:auto; margin:10px 0; }
 .pza-session-pages button { display:block; width:100%; text-align:left; margin:3px 0; overflow-wrap:anywhere; }
@@ -269,3 +277,10 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
 .pza-session-chat-buttons { display:flex; flex:0 0 auto; gap:4px; flex-wrap:wrap; margin:0; padding:0; }
 .pza-session-chat-buttons button { display:flex; align-items:center; justify-content:center; gap:4px; flex:1 1 110px; box-sizing:border-box; min-width:0; height:26px; min-height:26px; margin:0; padding:2px 6px; font-size:12px; line-height:1; white-space:nowrap; }
 .pza-session-chat-buttons button:disabled { opacity:.55; }
+
+#client-settings .form-group.pza-session-prompt-setting[hidden],
+.form-group.pza-session-prompt-setting[hidden] { display:none; }
+#client-settings .form-group.pza-abp-spell-attacks-setting > label,
+.form-group.pza-abp-spell-attacks-setting > label { flex:1 1 auto; white-space:nowrap; }
+#client-settings .form-group.pza-abp-spell-attacks-setting > .form-fields,
+.form-group.pza-abp-spell-attacks-setting > .form-fields { flex:0 0 auto; margin-left:auto; }

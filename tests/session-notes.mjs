@@ -120,7 +120,7 @@ const M = "pf2e-zone-automation";
 const { executeSessionNotes } = await import("../scripts/session-notes-repository.js");
 const { sessionData, sessionJournals, sessionNotesPackage, visibleNoteActors, appendActorName } = await import("../scripts/session-notes-data.js");
 const { openSessionNotes, openQuickNote, registerSessionNotesHooks } = await import("../scripts/session-notes.js");
-const { registerSessionNotesSettings, DEFAULT_RECAP_PROMPT, openRecapPrompt } = await import("../scripts/session-notes-settings.js");
+const { registerSessionNotesSettings, registerSessionNotesSettingsUI, DEFAULT_RECAP_PROMPT, openRecapPrompt } = await import("../scripts/session-notes-settings.js");
 
 async function reset() {
   for (const dialog of dialogs) if (dialog.rendered) await dialog.close();
@@ -465,6 +465,51 @@ test("prompt settings are world-scoped, shared, editable, resettable, and separa
   await editor.submit("cancel"); assert.equal(editor.rendered, false); assert.equal(game.journal.size, 0);
 });
 
+test("native Settings puts activation first and exposes the recap menu only after activation is saved", async () => {
+  await reset(); await game.settings.set(M, "sessionNotesEnabled", false);
+  const root = document.createElement("form");
+  root.innerHTML = `<div class="form-group" id="other-setting"><input name="other-module.setting"></div>
+    <div class="form-group" id="prompt-setting"><label>Recap Prompt</label><button type="button" data-key="${M}.sessionRecapPromptEditor">Edit Recap Prompt</button></div>
+    <div class="form-group" id="abp-setting"><label>Apply ABP attack potency to spell attacks</label><div class="form-fields"><input type="checkbox" name="${M}.abpSpellAttacks" checked></div></div>
+    <div class="form-group" id="enable-setting"><label>Enable Session Notes</label><div class="form-fields"><input type="checkbox" name="${M}.sessionNotesEnabled"></div></div>`;
+  document.body.append(root);
+  const application = {}; const stop = registerSessionNotesSettingsUI();
+  try {
+    const toggle = root.querySelector(`#enable-setting input`);
+    const abp = root.querySelector(`#abp-setting input`);
+    const row = root.querySelector("#prompt-setting"); const button = row.querySelector("button");
+    emit("renderSettingsConfig", application, root);
+    assert.deepEqual([...root.children].map(row => row.id), ["other-setting", "enable-setting", "prompt-setting", "abp-setting"]);
+    assert.equal(row.hidden, true); assert.equal(button.disabled, true);
+    toggle.checked = true; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    assert.equal(row.hidden, true, "An unsaved check does not bypass the disabled feature");
+    await game.settings.set(M, "sessionNotesEnabled", true);
+    assert.equal(row.hidden, false); assert.equal(button.disabled, false);
+    emit("renderSettingsConfig", application, root);
+    assert.equal(root.querySelectorAll("#enable-setting").length, 1);
+    assert.equal(root.querySelector(`#abp-setting input`), abp); assert.equal(abp.checked, true);
+    toggle.checked = false; toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    assert.equal(row.hidden, true); assert.equal(button.disabled, true);
+    emit("closeSettingsConfig", application);
+  } finally { stop(); root.remove(); }
+});
+
+test("disabling Session Notes closes the recap editor and blocks opening, saving, and resetting through retained references", async () => {
+  await reset(); await game.settings.set(M, "sessionRecapPrompt", "Keep this saved prompt.");
+  const editor = await openRecapPrompt(); field(editor, "recap-prompt").value = "Unsaved replacement";
+  const Editor = menus.get(`${M}.sessionRecapPromptEditor`).type;
+  await game.settings.set(M, "sessionNotesEnabled", false);
+  await waitUntil(() => !editor.rendered);
+  await assert.rejects(openRecapPrompt(), /Enable Session Notes/);
+  assert.throws(() => new Editor(), /Enable Session Notes/);
+  await editor.submit("save"); await editor.submit("reset");
+  assert.equal(game.settings.get(M, "sessionRecapPrompt"), "Keep this saved prompt.");
+  assert.equal(callbacks.size, 0);
+  await game.settings.set(M, "sessionNotesEnabled", true);
+  const reopened = await openRecapPrompt(); assert.equal(field(reopened, "recap-prompt").value, "Keep this saved prompt.");
+  await reopened.close();
+});
+
 test("the dashboard starts a session, changes manual Day/time, opens native pages, and copies current text", async () => {
   await reset(); const dialog = await openSessionNotes();
   field(dialog, "title").value = "Dashboard session"; field(dialog, "number").value = "25";
@@ -498,19 +543,24 @@ test("the dashboard starts a numbered session without a title and includes the s
   await dialog.close();
 });
 
-test("Refresh updates saved Journal page links without writing and resets unsaved dashboard fields", async () => {
+test("closing and reopening reloads saved Journal links and Day/time without writing and discards unsaved fields", async () => {
   await reset(); const { journal } = await start(); const dialog = await openSessionNotes();
   field(dialog, "title").value = "Unsaved next-session title";
   const page = [...journal.pages][0]; page.name = "Overview edited outside the dashboard";
   assert.doesNotMatch(dialog.element.textContent, /Overview edited outside/);
   const before = writes.length;
-  const refresh = dialog.element.querySelector('[data-session-action="refresh"]');
-  assert.match(refresh.title, /Unsaved form fields will be reset/);
-  refresh.click();
-  assert.match(dialog.element.textContent, /Overview edited outside/);
-  assert.equal(field(dialog, "title").value, "");
-  assert.equal(writes.length, before); assert.equal(game.journal.size, 1);
+  assert.equal(dialog.element.querySelector('[data-session-action="refresh"]'), null);
+  field(dialog, "day").value = "999";
+  field(dialog, "time").value = "23:59";
   await dialog.close();
+  const reopened = await openSessionNotes();
+  assert.notEqual(reopened, dialog);
+  assert.match(reopened.element.textContent, /Overview edited outside/);
+  assert.equal(field(reopened, "title").value, "");
+  assert.equal(Number(field(reopened, "day").value), sessionData(journal).campaign.day);
+  assert.equal(field(reopened, "time").value, sessionData(journal).campaign.time);
+  assert.equal(writes.length, before); assert.equal(game.journal.size, 1);
+  await reopened.close();
 });
 
 test("Party Select All checks every listed character without saving until Start Session", async () => {

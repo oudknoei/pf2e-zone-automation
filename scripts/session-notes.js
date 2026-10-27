@@ -66,7 +66,7 @@ function dashboardHtml(journal) {
   const party = [...(game.actors?.contents ?? game.actors?.values?.() ?? [])].filter(actor => actor.type === "character");
   const breaks = (data?.breaks ?? []).reduce((sum, interval) => sum + (interval.end ?? Date.now()) - interval.start, 0);
   const minutes = data ? Math.max(0, Math.floor(((data.endedAt ?? Date.now()) - data.startedAt - breaks) / 60000)) : 0;
-  return `<label>Session <select name="session">${!journals.length ? '<option value="">No sessions yet</option>' : journals.map(entry =>
+  return `<label class="pza-session-form-row"><span>Session</span><select name="session">${!journals.length ? '<option value="">No sessions yet</option>' : journals.map(entry =>
     `<option value="${esc(entry.id)}" ${entry.id === journal?.id ? "selected" : ""}>${esc(entry.name)} (${esc(sessionData(entry).state)})</option>`).join("")}</select></label>
     <section class="pza-session-summary">${data ? `<strong>${esc(journal.name)}</strong>
       <span>${esc(data.state === "active" ? "Session active" : data.state === "paused" ? "Session paused" : "Session ended")}</span>
@@ -77,13 +77,12 @@ function dashboardHtml(journal) {
     <div class="pza-session-clock"><label>Day <input name="day" type="number" min="0" step="1" value="${current.day}"></label>
       <label>Time of day <input name="time" type="time" value="${esc(current.time)}" required></label>
       ${data?.state !== "ended" && data ? '<button type="button" data-session-action="clock">Set Day/Time</button>' : ""}</div>
-    <div class="pza-session-toolbar">
-      ${data ? `<button type="button" data-session-action="journal">Open Journal</button><button type="button" data-session-action="copy">Copy Notes</button>
+    ${data ? `<div class="pza-session-toolbar">
+      <button type="button" data-session-action="journal">Open Journal</button><button type="button" data-session-action="copy">Copy Notes</button>
         <button type="button" data-session-action="note">${data.state === "ended" ? "Add Addendum" : "Quick Note"}</button>
         ${data.state !== "ended" ? `<button type="button" data-session-action="${data.state === "active" ? "pause" : "resume"}">${data.state === "active" ? "Pause Session" : "Resume Session"}</button>
-          <button type="button" data-session-action="end">End Session</button>` : ""}` : ""}
-      <button type="button" data-session-action="refresh" title="Reload saved session details and Journal pages. Unsaved form fields will be reset.">Refresh</button>
-    </div>
+          <button type="button" data-session-action="end">End Session</button>` : ""}
+    </div>` : ""}
     ${data ? `<div class="pza-session-pages">${[...journal.pages].sort((a, b) => a.sort - b.sort).map(page => {
       const info = readDocumentFlag(page, SESSION_MODULE, SESSION_FLAG);
       return `<button type="button" data-session-page="${esc(page.id)}">${esc(page.name)}${info?.campaign ? ` · ${esc(campaignLabel(info.campaign))}` : ""}</button>`;
@@ -91,9 +90,9 @@ function dashboardHtml(journal) {
     <details ${!data ? "open" : ""}><summary>Start a new session</summary>
       <p class="pza-session-muted">End the current session before starting another. The Day/time above is manual and carries forward.</p>
       <p class="pza-session-muted">Enter a title or session number, or both. A blank title uses Session X, where X is the session number.</p>
-      <label>Title (optional) <input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
-      <label>Session number (optional) <input name="number" type="text" maxlength="30"></label>
-      <fieldset><legend>Party (optional)</legend><button type="button" data-session-action="select-party">Select All</button><p class="pza-session-muted">Select the characters taking part. Their names are included in the Journal overview and recap notes.</p><div class="pza-session-party">${party.map(actor =>
+      <label class="pza-session-form-row"><span>Title</span><input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
+      <label class="pza-session-form-row"><span>Session number</span><input name="number" type="text" maxlength="30"></label>
+      <fieldset class="pza-session-party-section"><legend>Party</legend><div class="pza-session-party-heading"><p class="pza-session-muted">Select the characters taking part to include their names in the Journal overview and recap notes.</p><button type="button" data-session-action="select-party">Select All</button></div><div class="pza-session-party">${party.map(actor =>
         `<label><input name="party" value="${esc(actor.id)}" type="checkbox" ${data?.party.some(member => member.id === actor.id) ? "checked" : ""}> ${esc(actor.name)}</label>`).join("")}</div></fieldset>
       <button type="button" data-session-action="start" ${journals.some(entry => sessionData(entry).state !== "ended") ? "disabled" : ""}>Start Session</button>
     </details>
@@ -142,13 +141,12 @@ export async function openSessionNotes() {
         if (action === "journal") return openJournal(journal);
         if (action === "copy") return await copyNotes(journal);
         if (action === "note") return await openQuickNote({ journalId: journal.id, addendum: sessionData(journal).state === "ended" });
-        if (action === "refresh") { pending = null; return refresh(); }
         if (action === "select-party") {
           pending = null;
           for (const checkbox of root.querySelectorAll('[name="party"]')) checkbox.checked = true;
           return;
         }
-        if (pending && pending.command !== action) throw new Error("Retry or refresh the pending action before starting a different one.");
+        if (pending && pending.command !== action) throw new Error("Retry the pending action or close and reopen Session Notes before starting a different one.");
         if (!pending) {
           pending = { command: action, operationId: newOperationId(), journalId: journal?.id,
             revision: sessionData(journal)?.revision };
@@ -168,7 +166,7 @@ export async function openSessionNotes() {
         pending = null;
         refresh(result.journalId);
         root.querySelector("[data-session-status]").textContent = "Saved.";
-      } catch (error) { status.textContent = `${error.message} Your draft has been kept. Retry the same action or choose Refresh to review saved state.`; }
+      } catch (error) { status.textContent = `${error.message} Your draft has been kept. Retry the same action, or close and reopen Session Notes to discard the draft and review saved state.`; }
       finally {
         busy = false;
         for (const control of root.querySelectorAll("button, input, select")) control.disabled = false;

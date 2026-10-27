@@ -17,9 +17,11 @@ export function registerMiscSettings() {
 
 /** Groups the module's miscellaneous options in Foundry's ordinary settings window. */
 function addMiscSettingsHeading(_application, html) {
-  const root = html?.[0] ?? html;
+  const root = html?.querySelector ? html : html?.[0];
   const row = root?.querySelector(`input[name="${MODULE_ID}.${ABP_SPELL_ATTACKS_SETTING}"]`)?.closest(".form-group");
-  if (!row || root.querySelector(".pza-misc-settings-heading")) return;
+  if (!row) return;
+  row.classList.add("pza-abp-spell-attacks-setting");
+  if (root.querySelector(".pza-misc-settings-heading")) return;
   const heading = row.ownerDocument.createElement("h3");
   heading.className = "pza-misc-settings-heading";
   heading.textContent = "Miscellaneous";

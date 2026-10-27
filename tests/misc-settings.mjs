@@ -97,8 +97,8 @@ test("miscellaneous heading appears only above this setting and survives repeate
     <div class="form-group" id="abp"><input name="${MODULE_ID}.abpSpellAttacks"></div>
   </form>`).window;
   const render = hooks.get("renderSettingsConfig");
-  render({}, document.body);
-  render({}, document.body);
+  render({}, document.querySelector("form"));
+  render({}, document.querySelector("form"));
   assert.equal(document.querySelectorAll(".pza-misc-settings-heading").length, 1);
   assert.equal(document.querySelector("#abp").previousElementSibling.textContent, "Miscellaneous");
   document.querySelector("#abp").remove();
