@@ -6,6 +6,7 @@ import { recapPrompt } from "./session-notes-settings.js";
 
 let dashboard = null;
 let quickNote = null;
+let campaignClock = null;
 
 /** Builds an attribute-free wrapper because DialogV2 clones its content into a form. */
 function content(html) {
@@ -14,11 +15,11 @@ function content(html) {
   return wrapper;
 }
 
-/** Finds the current session or an intentionally selected historical session. */
+/** Finds the current session, or an explicit Journal requested by the note API. */
 function selectedJournal(id) {
   const journals = sessionJournals();
   if (id) return journals.find(journal => journal.id === id) ?? null;
-  return journals.find(journal => sessionData(journal).state !== "ended") ?? journals.at(-1) ?? null;
+  return journals.find(journal => sessionData(journal).state !== "ended") ?? null;
 }
 
 /** Sends GM-only mutations with immutable operation IDs retained by their dialog until confirmed. */
@@ -27,13 +28,6 @@ export async function requestSessionNotes(details) {
   const response = await requestGMWorker({ protocol: 1, action: "session-notes", requesterUserId: game.user.id, ...details });
   if (!response?.ok) throw new Error(response?.error ?? "Session Notes could not be saved.");
   return response;
-}
-
-/** Opens the actual Journal editor for a session or one of its pages. */
-function openJournal(journal, pageId) {
-  requireSessionNotes();
-  if (!journal) throw new Error("No session is selected.");
-  journal.sheet.render(true, pageId ? { pageId } : {});
 }
 
 /** Uses a real dialog as a clipboard fallback without exposing private text to players or chat. */
@@ -58,44 +52,79 @@ async function copyNotes(journal) {
   }
 }
 
-/** Renders metadata, manual clock fields, and native page links without regenerating stored prose. */
+/** Keeps manual clock edits in the Journal while retaining an uncertain save for an exact retry. */
+async function openCampaignClock(journal) {
+  requireSessionNotes();
+  if (campaignClock) { campaignClock.bringToFront(); return campaignClock; }
+  const data = sessionData(journal);
+  if (!data || data.state === "ended") throw new Error("Only an active or paused session's clock can be changed.");
+  let pending = null;
+  let saving = false;
+  const dialog = new foundry.applications.api.DialogV2({ window: { title: "Set Day/Time" }, position: { width: 420 },
+    form: { closeOnSubmit: false }, content: content(`<p>${esc(journal.name)}</p>
+      <label class="pza-session-form-row"><span>Day</span><input name="day" type="number" min="0" step="1" value="${data.campaign.day}" required></label>
+      <label class="pza-session-form-row"><span>Time of day</span><input name="time" type="time" value="${esc(data.campaign.time)}" required></label>
+      <p data-clock-status role="status"></p>`), buttons: [
+      { action: "save", label: "Save", callback: async () => {
+        if (saving) return;
+        const root = dialog.element;
+        try {
+          requireSessionNotes();
+          if (!pending) {
+            const value = campaignTime(root.querySelector("[name=day]").value, root.querySelector("[name=time]").value);
+            pending = { command: "clock", operationId: newOperationId(), journalId: journal.id, revision: data.revision, ...value };
+          }
+          saving = true;
+          for (const control of root.querySelectorAll("input, button")) control.disabled = true;
+          await requestSessionNotes(pending);
+          saving = false;
+          await dialog.close();
+        } catch (error) {
+          root.querySelector("[data-clock-status]").textContent = `${error.message} Changes not confirmed. Save retries the same values; close and reopen to review saved time.`;
+        } finally {
+          saving = false;
+          for (const control of root.querySelectorAll("input")) control.disabled = Boolean(pending);
+          for (const control of root.querySelectorAll("button")) control.disabled = false;
+        }
+      } },
+      { action: "cancel", label: "Cancel", callback: async () => { await dialog.close(); } }
+    ] });
+  const closeDialog = dialog.close.bind(dialog);
+  /** Prevents a second clock draft while the first save is still in flight. */
+  dialog.close = async (...args) => saving ? dialog : closeDialog(...args);
+  const hooks = ["updateUser", SESSION_ENABLED_HOOK].map(name => [name, Hooks.on(name, () => {
+    if (!game.user?.isGM || !sessionNotesEnabled()) void closeDialog();
+  })]);
+  dialog.addEventListener("close", () => {
+    for (const [name, hook] of hooks) Hooks.off(name, hook);
+    if (campaignClock === dialog) campaignClock = null;
+  }, { once: true });
+  campaignClock = dialog;
+  await dialog.render({ force: true });
+  return dialog;
+}
+
+/** Shows setup only before starting, or the current session's applicable lifecycle actions. */
 function dashboardHtml(journal) {
   const journals = sessionJournals();
   const data = sessionData(journal);
-  const current = data?.campaign ?? { day: 1, time: "09:00" };
+  if (data) return `<section class="pza-session-summary"><strong>${esc(journal.name)}</strong>
+    <span>${data.state === "paused" ? "Session paused" : "Session active"}</span></section>
+    <div class="pza-session-toolbar">
+      <button type="button" data-session-action="${data.state === "paused" ? "resume" : "pause"}">${data.state === "paused" ? "Continue" : "Pause"}</button>
+      <button type="button" data-session-action="end">End Session</button>
+    </div><p data-session-status role="status"></p>`;
+  const previous = sessionData(journals.at(-1));
+  const current = previous?.campaign ?? { day: 1, time: "09:00" };
   const party = [...(game.actors?.contents ?? game.actors?.values?.() ?? [])].filter(actor => actor.type === "character");
-  const breaks = (data?.breaks ?? []).reduce((sum, interval) => sum + (interval.end ?? Date.now()) - interval.start, 0);
-  const minutes = data ? Math.max(0, Math.floor(((data.endedAt ?? Date.now()) - data.startedAt - breaks) / 60000)) : 0;
-  return `<label class="pza-session-form-row"><span>Session</span><select name="session">${!journals.length ? '<option value="">No sessions yet</option>' : journals.map(entry =>
-    `<option value="${esc(entry.id)}" ${entry.id === journal?.id ? "selected" : ""}>${esc(entry.name)} (${esc(sessionData(entry).state)})</option>`).join("")}</select></label>
-    <section class="pza-session-summary">${data ? `<strong>${esc(journal.name)}</strong>
-      <span>${esc(data.state === "active" ? "Session active" : data.state === "paused" ? "Session paused" : "Session ended")}</span>
-      <span>${esc(campaignLabel(data.campaign))} · Real play time: ${Math.floor(minutes / 60)}h ${minutes % 60}m</span>
-      <span>Start: ${esc(campaignLabel(data.startCampaign))}${data.endCampaign ? ` · End: ${esc(campaignLabel(data.endCampaign))}` : ""}</span>`
-      : "Start a session to keep notes in a private Journal."}</section>
-    <p class="pza-session-muted">Manual notes and Day/time. Gameplay events are not recorded automatically.</p>
-    <div class="pza-session-clock"><label>Day <input name="day" type="number" min="0" step="1" value="${current.day}"></label>
-      <label>Time of day <input name="time" type="time" value="${esc(current.time)}" required></label>
-      ${data?.state !== "ended" && data ? '<button type="button" data-session-action="clock">Set Day/Time</button>' : ""}</div>
-    ${data ? `<div class="pza-session-toolbar">
-      <button type="button" data-session-action="journal">Open Journal</button><button type="button" data-session-action="copy">Copy Notes</button>
-        <button type="button" data-session-action="note">${data.state === "ended" ? "Add Addendum" : "Quick Note"}</button>
-        ${data.state !== "ended" ? `<button type="button" data-session-action="${data.state === "active" ? "pause" : "resume"}">${data.state === "active" ? "Pause Session" : "Resume Session"}</button>
-          <button type="button" data-session-action="end">End Session</button>` : ""}
-    </div>` : ""}
-    ${data ? `<div class="pza-session-pages">${[...journal.pages].sort((a, b) => a.sort - b.sort).map(page => {
-      const info = readDocumentFlag(page, SESSION_MODULE, SESSION_FLAG);
-      return `<button type="button" data-session-page="${esc(page.id)}">${esc(page.name)}${info?.campaign ? ` · ${esc(campaignLabel(info.campaign))}` : ""}</button>`;
-    }).join("")}</div>` : ""}
-    <details ${!data ? "open" : ""}><summary>Start a new session</summary>
-      <p class="pza-session-muted">End the current session before starting another. The Day/time above is manual and carries forward.</p>
-      <p class="pza-session-muted">Enter a title or session number, or both. A blank title uses Session X, where X is the session number.</p>
-      <label class="pza-session-form-row"><span>Title</span><input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
+  return `<p class="pza-session-muted">Enter a name or session number, or both. A blank name uses Session X.</p>
+      <label class="pza-session-form-row"><span>Name</span><input name="title" type="text" maxlength="200" placeholder="The Old Mill"></label>
       <label class="pza-session-form-row"><span>Session number</span><input name="number" type="text" maxlength="30"></label>
+      <label class="pza-session-form-row"><span>Day</span><input name="day" type="number" min="0" step="1" value="${current.day}" required></label>
+      <label class="pza-session-form-row"><span>Time of day</span><input name="time" type="time" value="${esc(current.time)}" required></label>
       <fieldset class="pza-session-party-section"><legend>Party</legend><div class="pza-session-party-heading"><p class="pza-session-muted">Select the characters taking part to include their names in the Journal overview and recap notes.</p><button type="button" data-session-action="select-party">Select All</button></div><div class="pza-session-party">${party.map(actor =>
-        `<label><input name="party" value="${esc(actor.id)}" type="checkbox" ${data?.party.some(member => member.id === actor.id) ? "checked" : ""}> ${esc(actor.name)}</label>`).join("")}</div></fieldset>
-      <button type="button" data-session-action="start" ${journals.some(entry => sessionData(entry).state !== "ended") ? "disabled" : ""}>Start Session</button>
-    </details>
+        `<label><input name="party" value="${esc(actor.id)}" type="checkbox" ${previous?.party.some(member => member.id === actor.id) ? "checked" : ""}> ${esc(actor.name)}</label>`).join("")}</div></fieldset>
+      <button type="button" data-session-action="start">Start Session</button>
     <p data-session-status role="status"></p>`;
 }
 
@@ -107,21 +136,26 @@ export async function openSessionNotes() {
   let pending = null;
   let busy = false;
   const dialog = new foundry.applications.api.DialogV2({ window: { title: "Session Notes" },
-    position: { width: 740 }, content: content(dashboardHtml(journal)), form: { closeOnSubmit: false },
+    position: { width: 620 }, content: content(dashboardHtml(journal)), form: { closeOnSubmit: false },
     buttons: [{ action: "close", label: "Close", callback: async () => { await dialog.close(); } }] });
   const permissionHook = Hooks.on("updateUser", () => { if (!game.user?.isGM || !sessionNotesEnabled()) void dialog.close(); });
   const enabledHook = Hooks.on(SESSION_ENABLED_HOOK, () => { if (!sessionNotesEnabled()) void dialog.close(); });
-  /** Refreshes only this management view after a confirmed save or deliberate navigation. */
-  function refresh(id = journal?.id) {
-    journal = selectedJournal(id);
+  let displayedState = JSON.stringify([journal?.id, journal?.name, sessionData(journal)?.state]);
+  /** Rechecks the live session after a confirmed lifecycle change, including ending the last one. */
+  function refresh() {
+    journal = selectedJournal();
     dialog.element.querySelector(".pza-session-notes").innerHTML = dashboardHtml(journal);
+    dialog.element.style.height = "auto";
+    displayedState = JSON.stringify([journal?.id, journal?.name, sessionData(journal)?.state]);
   }
+  const sessionHooks = ["createJournalEntry", "updateJournalEntry", "deleteJournalEntry"].map(name => [name, Hooks.on(name, () => {
+    if (busy || pending || !game.user?.isGM || !sessionNotesEnabled()) return;
+    const current = selectedJournal();
+    if (displayedState !== JSON.stringify([current?.id, current?.name, sessionData(current)?.state])) refresh();
+  })]);
   dialog.addEventListener("render", () => {
     if (!sessionNotesEnabled()) { void dialog.close(); return; }
     const root = dialog.element.querySelector(".pza-session-notes");
-    root.addEventListener("change", event => {
-      if (event.target.name === "session") { pending = null; refresh(event.target.value); }
-    });
     root.addEventListener("input", event => {
       if (!busy) pending = null;
       if (event.target.name === "number") {
@@ -136,11 +170,7 @@ export async function openSessionNotes() {
       const status = root.querySelector("[data-session-status]");
       try {
         requireSessionNotes();
-        if (button.dataset.sessionPage) return openJournal(journal, button.dataset.sessionPage);
         if (!action) return;
-        if (action === "journal") return openJournal(journal);
-        if (action === "copy") return await copyNotes(journal);
-        if (action === "note") return await openQuickNote({ journalId: journal.id, addendum: sessionData(journal).state === "ended" });
         if (action === "select-party") {
           pending = null;
           for (const checkbox of root.querySelectorAll('[name="party"]')) checkbox.checked = true;
@@ -150,11 +180,9 @@ export async function openSessionNotes() {
         if (!pending) {
           pending = { command: action, operationId: newOperationId(), journalId: journal?.id,
             revision: sessionData(journal)?.revision };
-          if (action === "clock" || action === "start") Object.assign(pending, {
-            day: root.querySelector("[name=day]").value, time: root.querySelector("[name=time]").value
-          });
           if (action === "start") Object.assign(pending, {
             title: root.querySelector("[name=title]").value, number: root.querySelector("[name=number]").value,
+            day: root.querySelector("[name=day]").value, time: root.querySelector("[name=time]").value,
             partyIds: [...root.querySelectorAll("[name=party]:checked")].map(input => input.value),
             predecessorId: sessionJournals().at(-1)?.id ?? null
           });
@@ -162,9 +190,9 @@ export async function openSessionNotes() {
         busy = true;
         for (const control of root.querySelectorAll("button, input, select")) control.disabled = true;
         status.textContent = "Saving…";
-        const result = await requestSessionNotes(pending);
+        await requestSessionNotes(pending);
         pending = null;
-        refresh(result.journalId);
+        refresh();
         root.querySelector("[data-session-status]").textContent = "Saved.";
       } catch (error) { status.textContent = `${error.message} Your draft has been kept. Retry the same action, or close and reopen Session Notes to discard the draft and review saved state.`; }
       finally {
@@ -178,6 +206,7 @@ export async function openSessionNotes() {
   dialog.addEventListener("close", () => {
     Hooks.off("updateUser", permissionHook);
     Hooks.off(SESSION_ENABLED_HOOK, enabledHook);
+    for (const [name, hook] of sessionHooks) Hooks.off(name, hook);
     if (dashboard === dialog) dashboard = null;
   }, { once: true });
   dashboard = dialog;
@@ -353,14 +382,27 @@ export function registerSessionNotesHooks() {
   });
   Hooks.on("renderJournalEntrySheet", (application, html) => {
     const data = sessionData(application.document);
-    const root = html?.[0] ?? html;
+    const root = html?.querySelector ? html : html?.[0];
     if (!data || !game.user?.isGM || !root?.querySelector) return;
     root.querySelector("[data-session-journal-status]")?.remove();
     if (!sessionNotesEnabled()) return;
     const panel = document.createElement("aside");
     panel.dataset.sessionJournalStatus = "";
     panel.className = "pza-session-summary";
-    panel.textContent = `${data.state === "ended" ? "Session ended" : data.state === "paused" ? "Session paused" : "Session active"} · Start: ${campaignLabel(data.startCampaign)} · ${data.endCampaign ? "End" : "Current"}: ${campaignLabel(data.endCampaign ?? data.campaign)}`;
+    panel.innerHTML = `<span>${data.state === "ended" ? "Session ended" : data.state === "paused" ? "Session paused" : "Session active"} · Start: ${esc(campaignLabel(data.startCampaign))} · ${data.endCampaign ? "End" : "Current"}: ${esc(campaignLabel(data.endCampaign ?? data.campaign))}</span>
+      <div class="pza-session-toolbar"><button type="button" data-session-journal-action="copy">Copy Notes</button>
+      ${data.state === "ended" ? '<button type="button" data-session-journal-action="addendum">Add Addendum</button>'
+        : '<button type="button" data-session-journal-action="clock">Set Day/Time</button>'}</div>`;
+    panel.addEventListener("click", async event => {
+      const action = event.target.closest("[data-session-journal-action]")?.dataset.sessionJournalAction;
+      if (!action) return;
+      try {
+        requireSessionNotes();
+        if (action === "copy") await copyNotes(application.document);
+        if (action === "clock") await openCampaignClock(application.document);
+        if (action === "addendum") await openQuickNote({ journalId: application.document.id, addendum: true });
+      } catch (error) { ui.notifications.error(error.message); }
+    });
     (root.querySelector(".journal-entry-content") ?? root).prepend(panel);
   });
   Hooks.on(SESSION_ENABLED_HOOK, () => {

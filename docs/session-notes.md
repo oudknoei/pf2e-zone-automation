@@ -48,7 +48,17 @@ Provide two macros:
 
 Also provide GM-only **Session Notes** and **Quick Note** buttons in a compact row immediately above the chat input controls (the globe/whisper icon row). Use the same public entry points as the macros. Re-rendering the chat must not duplicate buttons or listeners, and both docked and popped-out chat should work. Follow Foundry's separately rendered/re-parented input through `renderChatInput`, not only `renderChatLog`, and recover an already-rendered composer at startup. Keep the controls outside the scrolling message list and leave the chat draft, roll mode, and rich-text editor untouched. Remove the controls when GM access is lost and recheck permissions when clicked.
 
-The dashboard supports **Start Session**, **Pause Session**, **Resume Session**, **End Session**, opening the backing Journal, and browsing previous sessions. Allow one active session per world. Starting a session requires a title or a session number; either may be omitted, and both may be supplied. A blank title becomes **Session X**, where X is the trimmed session number. With a custom title and number, name the Journal **Session X — Title**; a generated title produces **Session X** only once. Optional Party selection records the participating characters for the Journal Overview and recap notes; in F1 it does not filter the portrait list or track character actions. Create the Journal and record real-world start time. Capture the campaign Day number and time of day, entered for an existing campaign and subsequently carried forward from the last saved values. Do not require a campaign start date. F1 allows the GM to maintain these values manually; F2 adds clock synchronization and activity advances. Repeated submissions reuse the same start operation rather than creating duplicate sessions.
+The Session Notes dialog manages only the current session. Show only controls relevant to its saved state:
+
+| State | Visible content |
+| --- | --- |
+| No active or paused session | Name, session number, campaign Day and time of day, Party selection with Select All, and **Start Session** |
+| Active | Session name/number, active status, **Pause**, and **End Session** |
+| Paused | Session name/number, paused status, **Continue**, and **End Session** |
+
+Keep the ordinary Close control in each state. Do not show a session selector, historical pages, export controls, setup fields during play, or a start form inside a collapsed section. Browse and edit past sessions through Foundry's Journal directory. Changes to lifecycle state from another GM update the open dialog; unrelated Journal edits do not erase a setup draft. After End Session, return to setup and carry forward the latest saved Day/time and Party selection.
+
+Allow one active or paused session per world. Starting a session requires a name or a session number; either may be omitted, and both may be supplied. A blank name becomes **Session X**, where X is the trimmed session number. With a custom name and number, name the Journal **Session X — Name**; a generated name produces **Session X** only once. Optional Party selection records the participating characters for the Journal Overview and recap notes; in F1 it does not filter the portrait list or track character actions. Create the Journal and record real-world start time. Capture the campaign Day number and time of day, entered for an existing campaign and subsequently carried forward from the last saved values. Do not require a campaign start date. F1 allows the GM to maintain these values manually through **Set Day/Time** in the session Journal; F2 adds clock synchronization and activity advances. Repeated submissions reuse the same start operation rather than creating duplicate sessions.
 
 Persist lifecycle state. A reload resumes the saved session rather than starting another one. Distinguish active, paused, and ended sessions. An ended session remains editable, but background capture does not append to it. Starting a new session leaves previous sessions intact. A deliberate addendum can be added to an ended session with its original timestamp and later entry time distinguished.
 
@@ -79,15 +89,15 @@ Each session contains:
 | Page | Purpose |
 | --- | --- |
 | Overview | Title, participants, lifecycle state, real start/end times, campaign starting/ending Day and time of day, capture status, and links |
-| Event pages | Notes and automatic observations in capture order, grouped in the dashboard |
+| Event pages | Notes and automatic observations in capture order, browsed in the native Journal |
 | Review Notes | Corrections, missing context, and unresolved questions |
 | Recap | A place to paste and edit the finished recap |
 
-Use one page per manual note or saved automatic event. F3 may use an encounter page as the parent summary for related observations. F5 stores high-volume detail with that encounter rather than creating a page for every roll. Keep the dashboard's combined timeline convenient even when the native Journal has many pages.
+Use one page per manual note or saved automatic event. F3 may use an encounter page as the parent summary for related observations. F5 stores high-volume detail with that encounter rather than creating a page for every roll. Keep event pages ordered for convenient browsing in the Journal.
 
 Event page text is the editable narrative source. Store machine metadata and original observations separately in flags. Never regenerate an edited event page from its original automatic payload. Native text edits change what is exported. Native deletion removes an event from the recap and must not cause the collector to recreate it; retain a small capture receipt separately to prevent replay.
 
-F1 keeps an initial editable Overview and adds current lifecycle/Day/time status to the native Journal view as a separate display banner. Lifecycle actions do not rewrite Overview prose or any event page. The dashboard and Copy Notes also read current metadata. Close and reopen the dashboard to reload saved session details and Journal page links, including changes made in a native editor or by another GM; this discards unsaved dashboard form fields and makes no document changes. There is no separate Refresh button. Copy Notes is a GM package; the player-safe checkbox is a review marker, not a player export or permission change.
+F1 keeps an initial editable Overview and adds current lifecycle/Day/time status to the native Journal view as a separate display banner. Lifecycle actions do not rewrite Overview prose or any event page. The session dialog and Copy Notes also read current metadata. Closing and reopening the session dialog discards unsaved setup fields and makes no document changes. There is no separate Refresh button. The Journal banner offers **Copy Notes** for every session, **Set Day/Time** for an active or paused session, and **Add Addendum** for an ended session. Clock edits open a small Day/time form with Save and Cancel; uncertain saves retain the same operation for retry. Copy Notes is a GM package; the player-safe checkbox is a review marker, not a player export or permission change.
 
 Provide **Copy Notes** with the current saved prompt from module settings, Overview, chronological event text, and Review Notes. Respect exclusion and visibility selections. Allow pasting the resulting recap into the Recap page with the native editor.
 
@@ -118,6 +128,8 @@ If a gap is minor, write around it without inventing a bridge. If a contradictio
 - New and existing worlds without an explicit activation setting start with the runtime off. Off hides chat buttons, rejects macro/runtime API and worker operations (including completed retries), suppresses Journal decorations/deletion writes, and creates no new Journals or folders.
 - Title-only, number-only, and title-plus-number starts work; an empty title and number are rejected before creating a Journal or folder. A generated Session X title is not prefixed a second time, including on retries.
 - Party provides a **Select All** button that checks every listed character. The selection remains editable and is saved only when starting the session.
+- With only ended sessions, the dialog shows new-session setup and no history selector. Active sessions show only name/number, status, Pause and End Session; paused sessions substitute Continue for Pause. Ending from either state returns to setup without changing previous Journals.
+- The Journal provides working Copy Notes, manual clock editing for active/paused sessions, and deliberate addenda for ended sessions. Disabling Session Notes closes the clock editor and blocks saves through retained controls.
 - Enabling/disabling updates connected clients without a reload. Disabling closes runtime windows and prevents queued operations from starting writes; re-enabling reuses the original saved Journals and prompt without changing session state.
 - Start a session, save several notes, reload, and continue the same session without losing or duplicating records.
 - Edit an event in the native Journal editor; its edited text appears in Copy Notes and survives a later note save.
@@ -362,6 +374,8 @@ Activation switch added on 2026-10-27: **Enable Session Notes** is a GM-editable
 Dashboard cleanup on 2026-10-27: removed the redundant prompt-editor shortcut, explained Refresh and Party in the UI, and made title/number alternatives with a Session X default title. All 418 tests pass, including naming/retry, number-only dashboard creation, Party export, and read-only Refresh regressions. ESLint, syntax, and whitespace checks pass; live UI verification remains pending.
 
 Further dashboard cleanup on 2026-10-27: removed Refresh in favor of closing and reopening, removed redundant optional labels, aligned the Session/Title/Session number controls, kept Day/time labels on one line, and made Select All compact. The reopening regression confirms saved page links and Day/time reload without writes and unsaved fields are discarded. All 421 tests, ESLint, syntax, and whitespace checks pass; live Foundry appearance remains unverified.
+
+State-specific session dialog on 2026-10-28: setup appears only without an active or paused session; running sessions show Pause/End Session and paused sessions show Continue/End Session. Historical browsing stays in the native Journal. Copy Notes, Set Day/Time, and Add Addendum now live in the Journal status panel. All 425 tests pass, including full lifecycle transitions, ending while paused, carry-forward setup, external GM state changes, preserved setup drafts, Journal controls, clock retries, and activation guards. ESLint, syntax, and whitespace checks pass; live Foundry appearance remains unverified.
 
 The pack tests now explicitly open the copied LevelDB before reading records and use the writable, ignored workspace test-results directory. This exposes database errors directly and avoids the sandboxed Windows temporary-directory rename failure that previously appeared as an iterator error.
 

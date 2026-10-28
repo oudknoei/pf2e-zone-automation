@@ -307,6 +307,65 @@ test("the native Journal status banner shows current Day/time without touching O
   } finally { callbacks.clear(); }
 });
 
+test("Journal controls copy current notes and edit the clock with validation, exact retries, and activation guards", async () => {
+  await reset(); registerSessionNotesHooks();
+  try {
+    const { journal } = await start(); const overview = [...journal.pages][0];
+    overview.text.content = "<p>My edited session overview.</p>";
+    const root = document.createElement("form"); root.innerHTML = '<article class="journal-entry-content"></article>';
+    emit("renderJournalEntrySheet", { document: journal }, root);
+    root.querySelector('[data-session-journal-action="copy"]').click();
+    await waitUntil(() => navigator.clipboard.text.includes("My edited session overview."));
+    assert.ok(navigator.clipboard.text.includes(DEFAULT_RECAP_PROMPT));
+    assert.equal(root.querySelector('[data-session-journal-action="addendum"]'), null);
+    const clockButton = root.querySelector('[data-session-journal-action="clock"]');
+    clockButton.click(); await waitUntil(() => dialogs.some(dialog => dialog.options.window.title === "Set Day/Time"));
+    const clock = dialogs.at(-1);
+    clockButton.click(); assert.equal(dialogs.at(-1), clock); assert.equal(clock.focused, true);
+    field(clock, "day").value = ""; await clock.submit("save");
+    assert.match(clock.element.textContent, /Enter the campaign Day number/);
+    assert.equal(field(clock, "day").disabled, false);
+    field(clock, "day").value = "43"; field(clock, "time").value = "08:00";
+    failCompletion = true; await clock.submit("save");
+    assert.equal(clock.rendered, true); assert.equal(field(clock, "day").disabled, true);
+    assert.equal(sessionData(journal).campaign.day, 42);
+    const failedWrite = writes.at(-1).change;
+    await clock.submit("save"); assert.equal(clock.rendered, false);
+    assert.deepEqual(writes.at(-1).change, failedWrite);
+    assert.equal(sessionData(journal).campaign.day, 43); assert.equal(sessionData(journal).campaign.time, "08:00");
+    assert.equal(overview.text.content, "<p>My edited session overview.</p>");
+    clockButton.click(); const reopened = dialogs.at(-1);
+    await game.settings.set(M, "sessionNotesEnabled", false);
+    await waitUntil(() => !reopened.rendered);
+    const before = writes.length; await reopened.submit("save");
+    assert.equal(writes.length, before);
+    clockButton.click(); await waitUntil(() => notices.some(notice => /Enable Session Notes/.test(notice.message)));
+    assert.equal(dialogs.at(-1), reopened);
+  } finally { callbacks.clear(); }
+});
+
+test("an ended Journal offers Copy Notes and Add Addendum while leaving the current session alone", async () => {
+  await reset(); registerSessionNotesHooks();
+  try {
+    const { journal } = await start(); await executeSessionNotes(lifecycle(journal, "end"));
+    const { journal: current } = await start({ number: "25" });
+    const currentData = structuredClone(sessionData(current));
+    const root = document.createElement("section");
+    emit("renderJournalEntrySheet", { document: journal }, root);
+    assert.equal(root.querySelector('[data-session-journal-action="clock"]'), null);
+    assert.ok(root.querySelector('[data-session-journal-action="copy"]'));
+    root.querySelector('[data-session-journal-action="addendum"]').click();
+    await waitUntil(() => dialogs.some(dialog => dialog.rendered && dialog.options.window.title === "Quick Note — Addendum"));
+    const addendum = dialogs.at(-1); field(addendum, "note").value = "A late detail from the old session.";
+    await addendum.submit("ok");
+    assert.equal(events(journal).length, 1); assert.equal(events(current).length, 0);
+    assert.deepEqual(sessionData(current), currentData);
+    await executeSessionNotes(lifecycle(current, "end"));
+    const dashboard = await openSessionNotes(); assert.ok(field(dashboard, "title"));
+    await dashboard.close();
+  } finally { callbacks.clear(); }
+});
+
 test("pause/resume persists breaks, permits manual notes during breaks, and never rewrites native text", async () => {
   await reset(); const { journal } = await start();
   const overview = [...journal.pages][0]; overview.text.content = "<p>My campaign overview.</p>";
@@ -510,19 +569,37 @@ test("disabling Session Notes closes the recap editor and blocks opening, saving
   await reopened.close();
 });
 
-test("the dashboard starts a session, changes manual Day/time, opens native pages, and copies current text", async () => {
+test("the dashboard shows only setup, active actions, or paused actions as the session progresses", async () => {
   await reset(); const dialog = await openSessionNotes();
+  assert.equal(field(dialog, "session"), null);
+  assert.equal(dialog.element.querySelector("details"), null);
+  assert.equal(dialog.element.querySelector('[data-session-action="pause"]'), null);
+  assert.equal(dialog.element.querySelector('[data-session-action="end"]'), null);
   field(dialog, "title").value = "Dashboard session"; field(dialog, "number").value = "25";
   field(dialog, "day").value = "43"; field(dialog, "time").value = "08:00";
   dialog.element.querySelector('[data-session-action="start"]').click();
   await waitUntil(() => /Saved\./.test(dialog.element.querySelector("[data-session-status]").textContent));
   const journal = [...game.journal][0]; assert.equal(sessionData(journal).campaign.day, 43);
-  field(dialog, "time").value = "09:00"; field(dialog, "time").dispatchEvent(new Event("input", { bubbles: true }));
-  dialog.element.querySelector('[data-session-action="clock"]').click();
-  await waitUntil(() => sessionData(journal).campaign.time === "09:00");
-  await waitUntil(() => !field(dialog, "time").disabled);
-  dialog.element.querySelector('[data-session-action="copy"]').click(); await waitUntil(() => navigator.clipboard.text.includes("Day 43, 9:00 AM"));
-  dialog.element.querySelector('[data-session-page]').click(); assert.equal(journal.opened[0], true);
+  assert.match(dialog.element.textContent, /Session 25 — Dashboard session/);
+  assert.deepEqual([...dialog.element.querySelectorAll('[data-session-action]')].map(button => button.textContent), ["Pause", "End Session"]);
+  assert.equal(dialog.element.querySelector("input, select, fieldset, details, [data-session-page]"), null);
+  dialog.element.querySelector('[data-session-action="pause"]').click();
+  await waitUntil(() => Boolean(dialog.element.querySelector('[data-session-action="resume"]')));
+  assert.equal(sessionData(journal).state, "paused");
+  assert.deepEqual([...dialog.element.querySelectorAll('[data-session-action]')].map(button => button.textContent), ["Continue", "End Session"]);
+  assert.equal(dialog.element.querySelector("input, select, fieldset, details"), null);
+  dialog.element.querySelector('[data-session-action="resume"]').click();
+  await waitUntil(() => Boolean(dialog.element.querySelector('[data-session-action="pause"]')));
+  assert.equal(sessionData(journal).state, "active");
+  assert.equal(sessionData(journal).campaign.time, "08:00");
+  dialog.element.querySelector('[data-session-action="end"]').click();
+  await waitUntil(() => Boolean(field(dialog, "title")));
+  assert.equal(sessionData(journal).state, "ended");
+  assert.equal(field(dialog, "title").value, "");
+  assert.equal(field(dialog, "day").value, "43");
+  assert.equal(field(dialog, "time").value, "08:00");
+  assert.equal(field(dialog, "session"), null);
+  assert.doesNotMatch(dialog.element.textContent, /Dashboard session/);
   assert.equal(await openSessionNotes(), dialog);
   await dialog.submit("close"); assert.equal(dialog.rendered, false);
 });
@@ -543,8 +620,9 @@ test("the dashboard starts a numbered session without a title and includes the s
   await dialog.close();
 });
 
-test("closing and reopening reloads saved Journal links and Day/time without writing and discards unsaved fields", async () => {
+test("with only past sessions, reopening shows blank setup with the latest saved clock and discards unsaved fields", async () => {
   await reset(); const { journal } = await start(); const dialog = await openSessionNotes();
+  await executeSessionNotes(lifecycle(journal, "end"));
   field(dialog, "title").value = "Unsaved next-session title";
   const page = [...journal.pages][0]; page.name = "Overview edited outside the dashboard";
   assert.doesNotMatch(dialog.element.textContent, /Overview edited outside/);
@@ -555,12 +633,48 @@ test("closing and reopening reloads saved Journal links and Day/time without wri
   await dialog.close();
   const reopened = await openSessionNotes();
   assert.notEqual(reopened, dialog);
-  assert.match(reopened.element.textContent, /Overview edited outside/);
+  assert.doesNotMatch(reopened.element.textContent, /Overview edited outside|The Old Mill/);
+  assert.equal(field(reopened, "session"), null);
   assert.equal(field(reopened, "title").value, "");
   assert.equal(Number(field(reopened, "day").value), sessionData(journal).campaign.day);
   assert.equal(field(reopened, "time").value, sessionData(journal).campaign.time);
   assert.equal(writes.length, before); assert.equal(game.journal.size, 1);
   await reopened.close();
+});
+
+test("an already paused session opens with Continue and can end directly without altering past sessions", async () => {
+  await reset(); const { journal: past } = await start();
+  await executeSessionNotes(lifecycle(past, "end"));
+  const pastData = structuredClone(sessionData(past));
+  const { journal } = await start({ number: "25", title: "Current adventure" });
+  await executeSessionNotes(lifecycle(journal, "pause"));
+  const dialog = await openSessionNotes();
+  assert.match(dialog.element.textContent, /Session 25 — Current adventure/);
+  assert.doesNotMatch(dialog.element.textContent, /The Old Mill/);
+  assert.deepEqual([...dialog.element.querySelectorAll('[data-session-action]')].map(button => button.textContent), ["Continue", "End Session"]);
+  dialog.element.querySelector('[data-session-action="end"]').click();
+  await waitUntil(() => Boolean(field(dialog, "title")));
+  assert.equal(sessionData(journal).state, "ended");
+  assert.ok(sessionData(journal).breaks.at(-1).end);
+  assert.deepEqual(sessionData(past), pastData);
+  assert.equal(game.journal.size, 2);
+  await dialog.close();
+});
+
+test("external lifecycle changes update the dashboard while unrelated Journal changes preserve setup drafts", async () => {
+  await reset(); const { journal: past } = await start();
+  await executeSessionNotes(lifecycle(past, "end"));
+  const dialog = await openSessionNotes(); field(dialog, "title").value = "My next session";
+  await past.update({ name: "Renamed past session" });
+  assert.equal(field(dialog, "title").value, "My next session");
+  const { journal } = await start({ number: "25", title: "Another GM started this" });
+  assert.equal(field(dialog, "title"), null);
+  assert.match(dialog.element.textContent, /Another GM started this/);
+  await executeSessionNotes(lifecycle(journal, "pause"));
+  assert.equal(dialog.element.querySelector('[data-session-action="resume"]').textContent, "Continue");
+  await executeSessionNotes(lifecycle(journal, "end"));
+  assert.ok(field(dialog, "title"));
+  await dialog.close(); assert.equal(callbacks.size, 0);
 });
 
 test("Party Select All checks every listed character without saving until Start Session", async () => {
