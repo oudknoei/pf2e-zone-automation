@@ -30,28 +30,52 @@ const expectedMacros = new Map([
       api: "promptSetHeroPoints"
     }
   ],
-  ["pzaSessionNote01", { name: "Session Notes", image: "icons/svg/book.svg", api: "openSessionNotes", ownership: 0 }],
-  ["pzaQuickNote0001", { name: "Quick Note", image: "icons/svg/scroll.svg", api: "openQuickNote", ownership: 0 }]
+  ["pzaSessionNote01", {
+    name: "Session Notes",
+    image: "icons/svg/book.svg",
+    api: "openSessionNotes",
+    ownership: 0
+  }],
+  ["pzaQuickNote0001", {
+    name: "Quick Note",
+    image: "icons/svg/scroll.svg",
+    api: "openQuickNote",
+    ownership: 0
+  }],
+  ["pzaAdvanceTime01", {
+    name: "Advance Time",
+    image: "icons/svg/clockwork.svg",
+    api: "promptAdvanceSessionTime",
+    ownership: 0
+  }]
 ]);
 
 test("compiled Macro pack provides the module hotbar macros", async () => {
   const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
   const pack = manifest.packs.find(({ name }) => name === "zone-macros");
+
   assert.equal(pack.type, "Macro");
 
   const scratchRoot = join(root, "test-results");
+
   mkdirSync(scratchRoot, { recursive: true });
+
   const scratch = mkdtempSync(join(scratchRoot, "pf2e-zone-macro-pack-"));
+
   try {
     const packCopy = join(scratch, "pack");
+
     cpSync(join(root, pack.path), packCopy, { recursive: true });
+
     const records = await compiledPackRecords(packCopy);
+
     assert.equal(records.length, expectedMacros.size);
     assert.equal(new Set(records.map((macro) => macro.name)).size, records.length, "Macro names must be unique");
     assert.equal(records.filter((macro) => macro.name === "Set Hero Points").length, 1);
 
     for (const macro of records) {
       const expected = expectedMacros.get(macro._id);
+
       assert.ok(expected, `Unexpected macro ${macro._id}`);
       assert.match(macro._id, /^[A-Za-z0-9]{16}$/, "Foundry document IDs must have 16 characters");
       assert.equal(macro.name, expected.name);
@@ -64,8 +88,10 @@ test("compiled Macro pack provides the module hotbar macros", async () => {
 
     for (const { image } of expectedMacros.values()) {
       if (!image.startsWith("modules/pf2e-zone-automation/")) continue;
+
       const imagePath = image.replace("modules/pf2e-zone-automation/", "");
       const imageData = readFileSync(join(root, imagePath));
+
       assert.equal(imageData.subarray(0, 4).toString("ascii"), "RIFF");
       assert.equal(imageData.subarray(8, 12).toString("ascii"), "WEBP");
     }

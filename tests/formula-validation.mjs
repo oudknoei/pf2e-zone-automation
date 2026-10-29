@@ -5,9 +5,11 @@ import { pf2eFormulaError } from "../scripts/formula-validation.js";
 
 test("damage and healing formulas are checked in their runtime PF2e wrappers", () => {
   const checked = [];
+
   class DamageRoll {
     static validate(formula) {
       checked.push(formula);
+
       return !formula.includes("2d6+");
     }
   }

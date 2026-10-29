@@ -11,6 +11,7 @@ let listening = false;
 export function registerZoneSocket() {
   if (listening) return;
   if (!game.socket) throw new Error("Foundry's game socket is unavailable.");
+
   game.socket.on(CHANNEL, onSocketMessage);
   listening = true;
 }
@@ -18,6 +19,7 @@ export function registerZoneSocket() {
 /** Gives callers a bounded request-response path instead of leaving player actions pending indefinitely. */
 export async function requestGMWorker(request) {
   const gm = game.users.activeGM;
+
   // Shared state mutations must reach one authoritative GM so retries cannot race across clients.
   if (canExecuteWorkerLocally(request?.action, game.user, gm)) {
     return handleWorkerRequest(request);
@@ -29,16 +31,26 @@ export async function requestGMWorker(request) {
   }
 
   const id = newOperationId();
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pending.delete(id);
+
       const error = new Error("The GM did not respond to the PF2e Zone request in time.");
+
       error.code = "PF2E_ZONE_REQUEST_TIMEOUT";
       reject(error);
     }, RESPONSE_TIMEOUT_MS);
+
     pending.set(id, { resolve, gmId: gm.id, timeout });
+
     try {
-      game.socket.emit(CHANNEL, { kind: "request", id, gmId: gm.id, request });
+      game.socket.emit(CHANNEL, {
+        kind: "request",
+        id,
+        gmId: gm.id,
+        request
+      });
     } catch (error) {
       clearTimeout(timeout);
       pending.delete(id);
@@ -53,11 +65,15 @@ async function onSocketMessage(message, senderUserId) {
 
   if (message.kind === "response") {
     if (message.recipientUserId !== game.user.id) return;
+
     const entry = pending.get(message.id);
+
     if (!entry || senderUserId !== entry.gmId || message.gmId !== entry.gmId) return;
+
     clearTimeout(entry.timeout);
     pending.delete(message.id);
     entry.resolve(message.response);
+
     return;
   }
 
@@ -67,8 +83,10 @@ async function onSocketMessage(message, senderUserId) {
   // Foundry's relay supplies the authenticated sender as the second argument.
   // A user id inside the message is never sufficient to authorize a GM action.
   if (typeof senderUserId !== "string" || !game.users.get(senderUserId)?.active) return;
+
   const request = message.request;
   let response;
+
   try {
     response = request?.requesterUserId === senderUserId
       ? await handleWorkerRequest(request)
@@ -77,6 +95,7 @@ async function onSocketMessage(message, senderUserId) {
     console.error("PF2e Zone GM request failed", error);
     response = { ok: false, error: String(error?.message ?? error) };
   }
+
   game.socket.emit(CHANNEL, {
     kind: "response",
     id: message.id,

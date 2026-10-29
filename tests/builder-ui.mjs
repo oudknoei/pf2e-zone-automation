@@ -39,11 +39,19 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-action="move"/);
   assert.match(builder, /canMove = canEnd && cfg\.mode === "area" && !cleanupPending/);
   assert.match(builder, /callGMWorker\("move"/);
-  assert.match(builder, /button\.dataset\.action === "move"[\s\S]*await dlg\.close\(\);\s*await editor\.dialog\.close\(\);/);
+  assert.match(
+    builder,
+    /button\.dataset\.action === "move"[\s\S]*await dlg\.close\(\);\s*await editor\.dialog\.close\(\);/
+  );
+
   assert.match(builder, /data-field="immunity-group"[^>]*placeholder="e\.g\. stench"/);
   assert.doesNotMatch(builder, /placeholder="e\.g\. stench:ghonhatine"/);
   assert.match(builder, /const savedPresetId = operation\.preset\?\.id \?\? null/);
-  assert.match(builder, /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/);
+  assert.match(
+    builder,
+    /loadedPreset = savedPresetFromZone\(savedPreset \? clone\(savedPreset\) : null, payload\.state\)/
+  );
+
   assert.match(builder, /class="zb-load-saved"[^\n]*Open<\/button>/);
   assert.match(builder, /class="zb-clear"/);
   assert.match(builder, /Zone configuration cleared/);
@@ -67,9 +75,11 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /data-trait-use-trait/);
   assert.match(builder, /WATCHED_TRAITS/);
   assert.doesNotMatch(builder, /trait: "vitality"/);
+
   const zoneStart = builder.indexOf("<h3>Zone</h3>");
   const zoneEnd = builder.indexOf("</section>", zoneStart);
   const zoneMarkup = builder.slice(zoneStart, zoneEnd);
+
   assert.ok(zoneMarkup.indexOf('data-zone="visibility"') < zoneMarkup.indexOf('data-zone="duration-type"'));
   assert.ok(zoneMarkup.indexOf('data-zone="duration-type"') < zoneMarkup.indexOf('data-zone="affects-allies"'));
   assert.match(zoneMarkup, /data-zone="affects-allies"/);
@@ -86,7 +96,7 @@ test("builder uses plain-language triggers and summarizes collapsed Effect Block
   assert.match(builder, /zoneTypeChoice\(state\)/);
   assert.match(builder, /\.\.\.zoneTypeFields\(field\(root, '\[data-zone="mode"\]'\)\.value\)/);
   assert.doesNotMatch(builder, /<h3>Duration<\/h3>/);
-  assert.match(styles, /\.zb-source img \{ width:36px; height:36px;/);
+  assert.match(styles, /\.zb-source img\s*\{\s*width:\s*36px;\s*height:\s*36px;/);
 });
 
 test("builder imports the runtime used during startup and zone management", () => {
@@ -107,7 +117,11 @@ test("builder accepts persistent Item drops and shows resolved effect details", 
 test("builder validates current size and duration input before applying legacy defaults", () => {
   assert.match(config, /radius: editableZoneSize\(cfg\.radius, base\.radius\)/);
   assert.match(config, /sideLength: editableZoneSize\(cfg\.sideLength, base\.sideLength\)/);
-  assert.match(config, /rounds: cfg\.duration\?\.type === "1-round"[\s\S]*editableDurationRounds\(cfg\.duration\?\.rounds, base\.duration\.rounds\)/);
+  assert.match(
+    config,
+    /rounds: cfg\.duration\?\.type === "1-round"[\s\S]*editableDurationRounds\(cfg\.duration\?\.rounds, base\.duration\.rounds\)/
+  );
+
   assert.match(builder, /radius: editableZoneSize\(field\(root, '\[data-zone="radius"\]'\)\.value\)/);
   assert.match(builder, /sideLength: editableZoneSize\(field\(root, '\[data-zone="side-length"\]'\)\.value\)/);
   assert.match(config, /!Number\.isFinite\(cfg\.radius\)/);

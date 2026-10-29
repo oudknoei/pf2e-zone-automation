@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 let nextId = 0;
+
 globalThis.Hooks = { on: () => 1, off: () => {} };
 globalThis.document = { addEventListener: () => {}, removeEventListener: () => {} };
 globalThis.foundry = {
@@ -11,11 +12,14 @@ globalThis.foundry = {
     setProperty: (object, path, value) => {
       const keys = path.split(".");
       let current = object;
+
       for (const key of keys.slice(0, -1)) current = current[key] ??= {};
+
       current[keys.at(-1)] = value;
     }
   }
 };
+
 globalThis._replace = (payload) => payload;
 globalThis.game = {
   actors: { contents: [] },
@@ -31,22 +35,32 @@ const runtime = await zoneRuntimeEntrypoint();
 
 test("legacy continuous-plus-save blocks leave the repeat limit for Entry saves", async () => {
   const block = {
-    id: "legacy", name: "Legacy combined block", repeat: "once-per-round",
+    id: "legacy",
+    name: "Legacy combined block",
+    repeat: "once-per-round",
     triggers: { continuous: true, enter: true },
-    save: { enabled: true }, chatAlert: { enabled: false }
+    save: { enabled: true },
+    chatAlert: { enabled: false }
   };
   const payload = { config: { name: "Legacy zone", effects: [block] }, state: { repeat: {} } };
   const token = { uuid: "Token.legacy", name: "Target", actor: {} };
   const region = { uuid: "Region.legacy" };
   const requested = [];
   const previous = {
-    eligible: runtime.eligible, isImmune: runtime.isImmune,
-    applyOutcome: runtime.applyOutcome, requestSave: runtime.requestSave
+    eligible: runtime.eligible,
+    isImmune: runtime.isImmune,
+    applyOutcome: runtime.applyOutcome,
+    requestSave: runtime.requestSave
   };
+
   try {
     runtime.eligible = async () => true;
     runtime.isImmune = () => false;
-    runtime.applyOutcome = async () => { throw new Error("No Save result must not run"); };
+
+    runtime.applyOutcome = async () => {
+      throw new Error("No Save result must not run");
+    };
+
     runtime.requestSave = async (_region, state, savingBlock, target, trigger) => {
       requested.push({ target, trigger });
       runtime.markRepeat(state, target.uuid, savingBlock);
@@ -65,7 +79,9 @@ test("legacy continuous-plus-save blocks leave the repeat limit for Entry saves"
 for (const policy of ["once-per-round", "once-per-zone", "every"]) {
   test(`continuous condition and effect return after same-round re-entry with ${policy} repeat`, async () => {
     const items = new Map();
+
     items.find = (predicate) => [...items.values()].find(predicate);
+
     let creations = 0;
     let alerts = 0;
     let damageRolls = 0;
@@ -75,8 +91,17 @@ for (const policy of ["once-per-round", "once-per-zone", "every"]) {
       async createEmbeddedDocuments(_type, sources) {
         return sources.map((source) => {
           const id = `effect-${++creations}`;
-          const item = { ...source, id, parent: actor, async delete() { items.delete(id); } };
+          const item = {
+            ...source,
+            id,
+            parent: actor,
+            async delete() {
+              items.delete(id);
+            }
+          };
+
           items.set(id, item);
+
           return item;
         });
       }
@@ -90,12 +115,15 @@ for (const policy of ["once-per-round", "once-per-zone", "every"]) {
     const condition = {
       toObject: () => ({ type: "condition", system: { value: { isValued: true, value: 1 } } })
     };
+
     game.pf2e = { ConditionManager: { getCondition: () => condition } };
+
     const documents = new Map([
       [actor.uuid, actor],
       [token.uuid, token],
       ["Item.maintained", effect]
     ]);
+
     globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
 
     const block = {
@@ -126,16 +154,28 @@ for (const policy of ["once-per-round", "once-per-zone", "every"]) {
       uuid: `Region.${policy}`,
       parent: scene,
       getFlag: () => stored,
-      async update(changes) { stored = changes["flags.world.pf2eZone"]; }
+      async update(changes) {
+        stored = changes["flags.world.pf2eZone"];
+      }
     };
+
     scene.regions.set(region.id, region);
 
     let occupants = [token];
+
     runtime.tokensInside = () => occupants;
     runtime.eligible = async () => true;
     runtime.isImmune = () => false;
-    runtime.postChatAlertOnce = async () => { alerts++; };
-    runtime.postDamage = async () => { damageRolls++; return true; };
+
+    runtime.postChatAlertOnce = async () => {
+      alerts++;
+    };
+
+    runtime.postDamage = async () => {
+      damageRolls++;
+
+      return true;
+    };
 
     await runtime.withState(region, (payload) => runtime.reconcileContinuousUnlocked(region, payload));
     assert.equal(items.size, 2, "condition and effect apply on first entry");

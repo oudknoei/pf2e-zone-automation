@@ -27,7 +27,7 @@ Implement in the order below. Each feature should leave a usable workflow and pr
 | Order | Priority | Status | Feature | Usable result | Depends on |
 | --- | --- | --- | --- | --- | --- |
 | F1 | P0 | Coded | Session lifecycle, editable Journal, and Quick Note | Run a session notebook and copy its notes for an external recap | None |
-| F2 | P0 | Proposed | Campaign Day/time and activity time advances | Track the starting/ending Day and time, with quick advances for activities and travel | F1 |
+| F2 | P0 | Coded | Campaign Day/time and activity time advances | Track the starting/ending Day and time, with quick advances for activities and travel | F1 |
 | F3 | P1 | Proposed | Automatic combat, narrative chat, and Scene capture | Reduce manual recording while retaining honest observations | F1; F2 for clock context |
 | F4 | P1 | Proposed | Closing review and complete recap package | Fill narrative gaps and export a reviewed, reusable LLM input | F1-F3 |
 | F5 | P2 | Proposed | Detailed mechanical and reward evidence | Recover useful details without overwhelming the narrative timeline | F3-F4 |
@@ -149,7 +149,7 @@ If a gap is minor, write around it without inventing a bridge. If a contradictio
 
 ### Scope
 
-Add the **Advance Time** macro and a compact Day/time panel to Session Notes. Always show both values, for example **Day 42, 3:40 PM**. The Day number represents progress since the campaign began and is independent of session number or a named calendar date. Let the GM retain their existing numbering convention, including whether their campaign began on Day 0 or Day 1.
+Add the **Advance Time** macro and chat shortcut, plus a compact Day/time panel with an Advance Time button in an active or paused Session Notes dialog. Keep the lifecycle controls and historical browsing rules from the state-specific F1 UI. Always show both clock values, for example **Day 42, 3:40 PM**. The Day number represents progress since the campaign began and is independent of session number or a named calendar date. Let the GM retain their existing numbering convention, including whether their campaign began on Day 0 or Day 1.
 
 The GM supplies the current Day and time once, anchored to the current Foundry world timestamp; this works with an already-running campaign. Derive subsequent Day/time values from that anchor and Foundry's world-time changes using 24-hour days. Carry the current Day/time across sessions and attach it to new events automatically. Foundry remains the source of elapsed seconds; do not run a second advancing clock or convert elapsed real-world minutes into campaign time. No named calendar date or calendar module is required.
 
@@ -195,6 +195,22 @@ Pause Session marks a capture break and pauses the real-world play-duration coun
 - Retrying after an uncertain acknowledgment never blindly advances the clock again. Confirm the operation through persisted provenance where possible; otherwise require reconciliation against the current clock.
 - A rewind remains visible as a correction and does not reorder notes or produce a misleading elapsed-time total.
 - A reload preserves the current Day/time, its anchor, start time, breaks, and the clock history.
+
+### Implemented F2 workflow and recovery
+
+F2 shares the default-off **Enable Session Notes** switch and authenticated active-GM worker with F1. The **Advance Time** macro, chat button, session clock panel, and Journal button focus the same window. The primary action is a count of ten-minute blocks. Other actions are one minute, one hour, eight hours, custom seconds/minutes/hours/days, Advance Until, and Set Day/Time. The window previews start/end and duration before dispatch, retains a draft during background clock updates, and remembers the last successfully recorded activity label. Details can describe concurrent tasks; optional participant checkboxes snapshot character names on the same interval.
+
+The hidden, GM-only world setting `sessionClock` stores a versioned Day/time anchor, anchor revision, last observed world timestamp, capture sequence, bounded recent-operation index, and durable pending operations/events. Completed Journal receipts remain authoritative after the recent-operation index is pruned. All events are ordinary editable Journal pages. During an active or paused session they go into that session's Journal; paused events are marked outside recorded play. Between sessions, events go into a private **Campaign Clock** Journal in the same Session Notes folder. No ended session is selected as the default destination.
+
+Use **Set Day/Time** with an explanation to recalibrate the display. World time stays unchanged. **Correct Event Time** in a session Journal explicitly changes one event's Day/time label, preserves its native prose and original before/after provenance, and adds an audit event. It does not move the live anchor or the event's capture order. The Journal and Copy Notes show real play duration excluding breaks, recorded positive advances and rewinds, display corrections, and net raw world-clock change including pauses/gaps. Deleted event pages are absent from the recorded-interval totals; raw net change remains separately visible.
+
+The recorder uses Foundry v14's [GameTime.advance](https://foundryvtt.com/api/classes/foundry.helpers.GameTime.html#advance) with operation provenance in its options and observes [updateWorldTime](https://foundryvtt.com/api/functions/hookEvents.updateWorldTime.html). It does not listen to combat rounds to add another advance. An explained advance and its matching native clock hook resolve to one interval. External forward and backward changes retain exact seconds. Notes and lifecycle boundaries snapshot the derived Day/time and available world timestamp; a pause/resume interval also records its starting/ending campaign clocks and outside-play world-time change.
+
+Before dispatching an advance, persist its requested interval and operation identity. After a confirmed result or matching hook provenance, persist that confirmation before writing the Journal page. Journal failures leave a durable pending event; retries reuse its stable page/receipt identity and preserve native edits or deletion tombstones. If the worker loses its result before confirmation and no matching provenance is saved, the advance remains uncertain. The window then shows requested start/end and the current campaign clock and requires the GM to choose **The advance was applied** or **The advance was not applied**, with an explanation. Confirmation records the decision without advancing world time. A cancelled operation stays cancelled on retry; a genuinely new advance needs a new operation.
+
+On an F1 upgrade, anchor the last saved campaign Day/time at the current raw world timestamp. Preserve the existing session's start time, breaks, notes, and event labels. Do not infer elapsed time from an old real-world start date. The initialization record identifies that imported baseline so the GM can review it. On reload, GM handoff, or re-enabling after missed clock changes, save a gap stating that intermediate activities are unknown. Rewinds retain capture order. Changes to a Foundry calendar do not affect the twenty-four-hour Day calculation.
+
+F2 uses the existing serialized GM queue and browser-origin Web Lock when available. Foundry world-clock writes and Journal/settings writes are separate server operations; this is not a server transaction. The module rechecks the preview and authority before dispatch and refuses blind retries. A browser crash, missing hook provenance, or competing writes from separate browsers using the same GM account can still require manual reconciliation. Live multi-client, Forge, calendar, and combat-integration verification remains necessary.
 
 ## F3 — Automatic capture of major events
 
@@ -330,20 +346,22 @@ The export's prompt snapshot is historical provenance stored with its package, n
 
 ## Proposed module integration
 
-F1 entry points and implementation files are listed below; later clock/capture/export targets remain proposed:
+F1/F2 entry points and implementation files are listed below; later capture/export targets remain proposed:
 
 | Surface | Proposed responsibility |
 | --- | --- |
 | `module.api.openSessionNotes()` | Open/focus the dashboard |
 | `module.api.openQuickNote()` | Open/focus the note dialog |
-| `module.api.promptAdvanceSessionTime()` (F2, proposed) | Open/focus the clock action |
+| `module.api.promptAdvanceSessionTime()` | Open/focus Advance Time; all mutations use the authenticated session worker |
 | `scripts/session-notes.js` | Dashboard and quick-note workflows |
 | `scripts/session-notes-chat.js` | GM-only chat-log shortcuts using the existing module entry points |
 | `scripts/session-notes-settings.js` | World-scoped Recap Prompt setting, GM editor, and bundled spoken-recap default |
 | `scripts/session-notes-repository.js` | Session Journals, event pages, receipts, and migrations |
 | `scripts/session-notes-data.js` | F1 validation, Day/time formatting, current viewport Actors, literal text, and Copy Notes |
 | `scripts/session-notes-repository.js` | F1 authorized mutations, metadata receipts, deterministic document IDs, serialization, and retry handling |
-| `scripts/session-notes-clock.js` (F2, proposed) | Campaign Day/time anchors, activity intervals, clock observations, and explained advances |
+| `scripts/session-notes-clock.js` | Activity/correction/reconciliation window, live preview, and world-clock observer hooks |
+| `scripts/session-clock-data.js` | Calendar-independent Day/time/seconds arithmetic, duration formatting, and advance previews |
+| `scripts/session-clock-repository.js` | Durable clock anchors, event receipts, explained advances, observations, historical label corrections, and safe retry/reconciliation |
 | `scripts/session-notes-capture.js` (F3, proposed) | Recorder authority, collector lifecycle, deduplication, and gaps |
 | `scripts/session-notes-export.js` (F4, proposed) | Review selections, audience filtering, and versioned export snapshots |
 | `packs/src/zone-macros/` | Thin macro entry points added with each feature |
@@ -376,6 +394,8 @@ Dashboard cleanup on 2026-10-27: removed the redundant prompt-editor shortcut, e
 Further dashboard cleanup on 2026-10-27: removed Refresh in favor of closing and reopening, removed redundant optional labels, aligned the Session/Title/Session number controls, kept Day/time labels on one line, and made Select All compact. The reopening regression confirms saved page links and Day/time reload without writes and unsaved fields are discarded. All 421 tests, ESLint, syntax, and whitespace checks pass; live Foundry appearance remains unverified.
 
 State-specific session dialog on 2026-10-28: setup appears only without an active or paused session; running sessions show Pause/End Session and paused sessions show Continue/End Session. Historical browsing stays in the native Journal. Copy Notes, Set Day/Time, and Add Addendum now live in the Journal status panel. All 425 tests pass, including full lifecycle transitions, ending while paused, carry-forward setup, external GM state changes, preserved setup drafts, Journal controls, clock retries, and activation guards. ESLint, syntax, and whitespace checks pass; live Foundry appearance remains unverified.
+
+F2 coded on 2026-10-29: added the shared campaign clock anchor, exact-second world-clock observations, explained activity advances, Advance Until, display and historical-event corrections, pause/gap accounting, a private between-session Campaign Clock Journal, and durable retry/reconciliation. Advance Time is available through the module API, macro compendium, chat shortcuts, session panel, and current session Journal. All 446 tests pass, including new clock arithmetic, simultaneous/sequential activities, midnight/travel, native hooks, lost acknowledgments, persistent pending records, native edits/deletion, F1 migration, authority/preflight changes, UI preview, and recovery checks. Rebuilt and inspected all compiled packs, including six unique macros. ESLint, syntax, and whitespace checks pass. Live Foundry/Forge layout and multi-client clock/combat/calendar integration remain unverified.
 
 The pack tests now explicitly open the copied LevelDB before reading records and use the writable, ignored workspace test-results directory. This exposes database errors directly and avoids the sandboxed Windows temporary-directory rename failure that previously appeared as an iterator error.
 

@@ -1,17 +1,23 @@
 import { test as base, expect } from "@playwright/test";
 
 export const FOUNDRY_URL = process.env.FOUNDRY_URL || "http://127.0.0.1:31000";
+
 const USERS = ["Primary GM", "Remote GM", "Zone Creator", "Bystander"];
 
 async function login(page, userName) {
   await page.goto(`${FOUNDRY_URL}/join`, { waitUntil: "domcontentloaded" });
+
   const select = page.locator('select[name="userid"]');
+
   await select.waitFor({ state: "visible", timeout: 30_000 });
+
   const option = select.locator("option", { hasText: userName }).first();
+
   if (await option.count() !== 1) throw new Error(`Foundry test user '${userName}' is missing.`);
   if (await option.evaluate((element) => element.disabled)) {
     throw new Error(`Foundry test user '${userName}' is already logged in.`);
   }
+
   await select.selectOption({ label: userName });
   await page.locator('button[name="join"]').click();
   await page.waitForSelector(".game.system-pf2e", { timeout: 60_000 });
@@ -57,6 +63,7 @@ async function installHelpers(page) {
     const behavior = () => {
       const type = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
         .find(([, model]) => model?.name === "ExecuteScriptRegionBehaviorType")?.[0] ?? "executeScript";
+
       return {
         name: "PF2e Zone Runtime",
         type,
@@ -81,22 +88,35 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
       state,
 
       async cleanup() {
-        try { await game.user?.updateTokenTargets?.([]); } catch { /* best effort */ }
-        try { canvas?.tokens?.releaseAll?.(); } catch { /* best effort */ }
+        try {
+          await game.user?.updateTokenTargets?.([]);
+        } catch { /* best effort */ }
+
+        try {
+          canvas?.tokens?.releaseAll?.();
+        } catch { /* best effort */ }
 
         for (const message of [...(game.messages?.contents ?? [])].reverse()) {
           if (String(message.content ?? "").includes(prefix) || message.getFlag("world", "pf2eZoneE2E")) {
-            try { await message.delete(); } catch { /* best effort */ }
+            try {
+              await message.delete();
+            } catch { /* best effort */ }
           }
         }
+
         for (const scene of [...(game.scenes?.contents ?? [])].reverse()) {
           if (String(scene.name ?? "").startsWith(prefix)) {
-            try { await scene.delete(); } catch { /* best effort */ }
+            try {
+              await scene.delete();
+            } catch { /* best effort */ }
           }
         }
+
         for (const actor of [...(game.actors?.contents ?? [])].reverse()) {
           if (String(actor.name ?? "").startsWith(prefix)) {
-            try { await actor.delete(); } catch { /* best effort */ }
+            try {
+              await actor.delete();
+            } catch { /* best effort */ }
           }
         }
       },
@@ -112,7 +132,12 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           height: 2_000,
           padding: 0,
           backgroundColor: "#20242a",
-          grid: { type: CONST.GRID_TYPES.SQUARE, size: 100, distance: 5, units: "ft" }
+          grid: {
+            type: CONST.GRID_TYPES.SQUARE,
+            size: 100,
+            distance: 5,
+            units: "ft"
+          }
         });
       },
 
@@ -127,16 +152,19 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           height: 1,
           disposition: CONST.TOKEN_DISPOSITIONS.NEUTRAL
         }]);
+
         return token;
       },
 
       async defaultConfig(name, configure = null) {
         const { defaultConfig } = await import("/modules/pf2e-zone-automation/scripts/zone-config.js");
         const config = defaultConfig();
+
         config.name = `${prefix} ${name}`;
         config.mode = "area";
         config.targeting.affects = "both";
         if (configure) configure(config);
+
         return config;
       },
 
@@ -154,23 +182,32 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           behaviors: [behavior()],
           flags: { world: { pf2eZone: payload } }
         }]);
+
         return region;
       },
 
       async effectSource() {
         const effect = await fromUuid("Compendium.pf2e.feat-effects.Item.FlyWq9znOHvpISNW");
+
         if (!effect || effect.type !== "effect") throw new Error("PF2e Taunt effect was not found.");
+
         const source = effect.toObject();
+
         delete source._id;
+
         return source;
       },
 
       async packItem(packId, slug) {
         const pack = game.packs.get(packId);
+
         if (!pack) throw new Error(`PF2e compendium '${packId}' was not found.`);
+
         const index = await pack.getIndex({ fields: ["system.slug"] });
         const entry = index.find((item) => item.system?.slug === slug);
+
         if (!entry) throw new Error(`PF2e item '${slug}' was not found in '${packId}'.`);
+
         return pack.getDocument(entry._id);
       },
 
@@ -185,6 +222,7 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
         ]);
         const featSource = feat.toObject();
         const shieldSource = shield.toObject();
+
         delete featSource._id;
         delete shieldSource._id;
         shieldSource.system.equipped = {
@@ -193,13 +231,24 @@ await api.handleRegionEvent({ behavior, event, region, scene: typeof scene !== "
           handsHeld: 1,
           invested: null
         };
+
         await guardian.createEmbeddedDocuments("Item", [featSource, shieldSource]);
 
         const sourceToken = await this.createToken(scene, guardian, { x: 100, y: 100 });
         const oldToken = await this.createToken(scene, oldTarget, { x: 300, y: 100 });
         const newToken = await this.createToken(scene, newTarget, { x: 500, y: 100 });
+
         if (!guardian.heldShield) throw new Error("The real PF2e Actor did not recognize its held steel shield.");
-        return { scene, guardian, oldTarget, newTarget, sourceToken, oldToken, newToken };
+
+        return {
+          scene,
+          guardian,
+          oldTarget,
+          newTarget,
+          sourceToken,
+          oldToken,
+          newToken
+        };
       }
     };
   });
@@ -209,15 +258,20 @@ export const test = base.extend({
   sessions: [async ({ browser }, use) => {
     const contexts = [];
     const pages = {};
+
     try {
       for (const userName of USERS) {
         const context = await browser.newContext({ viewport: { width: 1_280, height: 800 } });
+
         contexts.push(context);
+
         const page = await context.newPage();
+
         await login(page, userName);
         await installHelpers(page);
         pages[userName] = page;
       }
+
       await use({
         primary: pages["Primary GM"],
         remote: pages["Remote GM"],

@@ -1,12 +1,21 @@
 import { escapeHtml } from "./utils.js";
 
 /** Keeps a randomly determined zone lifetime visible to exactly the people allowed to see that zone. */
-export async function postFormulaDurationMessage({ zoneName, duration, visibility, creatorUserId = null, actor = null, token = null } = {}) {
+export async function postFormulaDurationMessage({
+  zoneName,
+  duration,
+  visibility,
+  creatorUserId = null,
+  actor = null,
+  token = null
+} = {}) {
   const formula = String(duration?.formula ?? "").trim();
   const rounds = Number(duration?.rounds);
+
   if (!formula || !Number.isSafeInteger(rounds) || rounds < 1) return null;
 
   const Chat = globalThis.ChatMessage;
+
   if (typeof Chat?.create !== "function") return null;
 
   try {
@@ -17,20 +26,25 @@ export async function postFormulaDurationMessage({ zoneName, duration, visibilit
     };
 
     const creatorId = String(creatorUserId ?? "").trim();
+
     if (visibility === "creator" && creatorId) {
       message.whisper = [creatorId];
     } else if (visibility === "gm") {
       if (typeof Chat.getWhisperRecipients !== "function") return null;
+
       const whisper = Array.from(Chat.getWhisperRecipients("GM") ?? [])
         .map((user) => user?.id)
         .filter(Boolean);
+
       if (!whisper.length) return null;
+
       message.whisper = whisper;
     }
 
     return await Chat.create(message);
   } catch (error) {
     console.error("PF2e Zone: could not post the duration message", error);
+
     return null;
   }
 }

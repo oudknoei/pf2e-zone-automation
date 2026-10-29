@@ -13,6 +13,7 @@ test("Class-or-Spell DC uses the highest prepared class or spell statistic", () 
     getStatistic(slug) {
       if (slug === "spell-dc") return { dc: { value: 27 } };
       if (slug === "class-spell") return { dc: { value: 0 } };
+
       return null;
     }
   };
@@ -35,6 +36,7 @@ test("missing and nonpositive statistic values are unavailable", () => {
   for (const value of [null, undefined, "", 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.equal(statisticDc({ dc: { value } }), null);
   }
+
   assert.equal(statisticDc(null), null);
   assert.equal(statisticDc({ dc: { value: 27 } }), 27);
 
@@ -46,9 +48,11 @@ test("missing and nonpositive statistic values are unavailable", () => {
     getStatistic(slug) {
       if (slug === "spell-dc") return { dc: { value: null } };
       if (slug === "class-spell") return { dc: { value: 0 } };
+
       return null;
     }
   };
+
   assert.equal(actorStatisticDc(actor, "spell-dc"), null);
   assert.equal(highestClassOrSpellDc(actor), null);
   assert.deepEqual(getDcChoices(actor), []);
@@ -63,23 +67,30 @@ test("only resolved positive Actor DCs can be selected for a save", () => {
     getStatistic(slug) {
       if (slug === "spell-dc") return { dc: { value: null } };
       if (slug === "class-spell") return { dc: { value: 0 } };
+
       return null;
     }
   };
   const choices = getDcChoices(actor);
+
   assert.deepEqual(Object.fromEntries(choices.map(({ statistic, dc }) => [statistic, dc])), {
-    "class-dc": 27, "class-spell": 27
+    "class-dc": 27,
+    "class-spell": 27
   });
+
   assert.equal(actorStatisticDc(actor, "class-dc"), 27);
 
   const config = defaultConfig();
+
   config.name = "DC test";
   config.targeting.affects = "enemies";
   config.effects[0].triggers.activation = true;
   config.effects[0].chatAlert.enabled = true;
   config.effects[0].save.enabled = true;
   config.effects[0].save.dc = { mode: "actorStatistic", statistic: "spell-dc" };
+
   const invalid = validateConfig(config, { sourceActor: actor });
+
   assert.match(invalid.errors.join(" "), /spell-dc.*not available/);
   assert.equal(invalid.issues.find((issue) => issue.target?.field === "dc-source")?.target.index, 0);
 

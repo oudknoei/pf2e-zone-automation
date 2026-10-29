@@ -11,6 +11,7 @@ export function escapeHtml(value) {
 /** Copies configuration and flag data without mutating the source, including older browsers without structuredClone. */
 export function cloneData(value) {
   if (globalThis.structuredClone) return structuredClone(value);
+
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -20,6 +21,7 @@ function orderedJsonData(value) {
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.keys(value).sort().map((key) => [key, orderedJsonData(value[key])]));
   }
+
   return value;
 }
 
@@ -36,7 +38,9 @@ export function titleCase(value) {
 /** Uses system translations when available and preserves the caller's fallback for custom content. */
 export function localize(key, fallback) {
   if (typeof key !== "string") return fallback;
+
   const localized = game.i18n.localize(key);
+
   return localized && localized !== key ? localized : fallback;
 }
 
@@ -59,5 +63,6 @@ export function readDocumentFlag(document, scope, key) {
 export function isGMAuthoredMessage(message) {
   const author = message?.author !== undefined ? message.author : message?.user;
   const authorId = typeof author === "string" ? author : author?.id;
+
   return Boolean(typeof authorId === "string" && game.users?.get(authorId)?.isGM);
 }

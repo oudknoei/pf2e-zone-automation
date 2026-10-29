@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const hooks = new Map();
+
 globalThis.Hooks = {
-  on(name, fn) { hooks.set(name, fn); return name; },
+  on(name, fn) {
+    hooks.set(name, fn);
+
+    return name;
+  },
   off() {}
 };
+
 globalThis.document = { addEventListener() {}, removeEventListener() {} };
 globalThis.foundry = { utils: { randomID: () => "hp-event" } };
 globalThis._replace = (value) => value;
@@ -25,6 +31,7 @@ const { defaultConfig, normalizeConfig, validateConfig, SCHEMA_VERSION } =
   await import("../scripts/zone-config.js");
 const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
+
 await new Promise((resolve) => setTimeout(resolve, 0));
 
 function makeZone(tokens, blocks) {
@@ -34,22 +41,38 @@ function makeZone(tokens, blocks) {
   };
   const scene = { regions: new Map() };
   const region = {
-    id: "zone", uuid: "Scene.test.Region.zone", parent: scene,
+    id: "zone",
+    uuid: "Scene.test.Region.zone",
+    parent: scene,
     getFlag: () => stored,
-    async update(changes) { stored = changes["flags.world.pf2eZone"]; }
+    async update(changes) {
+      stored = changes["flags.world.pf2eZone"];
+    }
   };
+
   scene.regions.set(region.id, region);
   game.scenes = [scene];
   runtime.tokensInside = () => tokens;
-  return { region, stored: () => stored, setTokens(next) { tokens = next; } };
+
+  return {
+    region,
+    stored: () => stored,
+    setTokens(next) {
+      tokens = next;
+    }
+  };
 }
 
 function hpBlock(id, threshold, repeat = "every") {
   return {
-    id, name: id, triggers: { hpThreshold: true },
-    hitPoints: { threshold }, repeat,
+    id,
+    name: id,
+    triggers: { hpThreshold: true },
+    hitPoints: { threshold },
+    repeat,
     chatAlert: { enabled: true, text: "{creature}: {previousHp} to {hp}" },
-    save: { enabled: false }, immunity: { duration: "none", starts: [] }
+    save: { enabled: false },
+    immunity: { duration: "none", starts: [] }
   };
 }
 
@@ -64,14 +87,22 @@ test("HP threshold values remain visible and invalid input is rejected", () => {
   assert.equal(crossedHpThreshold(21, 20, 20), true);
   assert.equal(crossedHpThreshold(20, 19, 20), false);
   assert.equal(crossedHpThreshold(10, 9, 10), false);
-  assert.equal(runtime.formatChatAlert("{creature}: {previousHp} to {hp}, threshold {threshold}", { creature: "Troop", previousHp: 180, hp: 150, threshold: 159 }), "Troop: 180 to 150, threshold 159");
+  assert.equal(runtime.formatChatAlert("{creature}: {previousHp} to {hp}, threshold {threshold}", {
+    creature: "Troop",
+    previousHp: 180,
+    hp: 150,
+    threshold: 159
+  }), "Troop: 180 to 150, threshold 159");
 
   const config = defaultConfig();
+
   config.name = "HP watch";
   config.targeting.includeSelf = true;
   config.effects[0].triggers.hpThreshold = true;
   config.effects[0].chatAlert.enabled = true;
+
   let normalized = normalizeConfig(config);
+
   assert.match(validateConfig(normalized, { sourceActor: { name: "Source" } }).errors.join(" "), /Hit Point threshold/);
 
   config.effects[0].hitPoints.threshold = "25";
@@ -96,15 +127,20 @@ test("GM HP watcher fires on downward crossings and rearms after healing", async
   const zone = makeZone([token], [hpBlock("first", 20), hpBlock("second", 10)]);
   const alerts = [];
   const prior = {
-    eligible: runtime.eligible, isImmune: runtime.isImmune,
-    postChatAlertOnce: runtime.postChatAlertOnce, applyOutcome: runtime.applyOutcome
+    eligible: runtime.eligible,
+    isImmune: runtime.isImmune,
+    postChatAlertOnce: runtime.postChatAlertOnce,
+    applyOutcome: runtime.applyOutcome
   };
+
   try {
     runtime.eligible = async () => true;
     runtime.isImmune = () => false;
+
     runtime.postChatAlertOnce = async (_region, _payload, block, _token, _batch, context) => {
       alerts.push({ block: block.id, ...context });
     };
+
     runtime.applyOutcome = async () => false;
     assert.equal(typeof hooks.get("updateActor"), "function");
     await runtime.withState(zone.region, (state) => runtime.reconcileHpBaselinesUnlocked(zone.region, state));
@@ -147,13 +183,16 @@ test("GM HP watcher fires on downward crossings and rearms after healing", async
 test("linked troop segment HP updates produce one event for the troop", async () => {
   const actorA = { uuid: "Actor.a", system: { traits: { value: ["troop"] }, attributes: { hp: { value: 30 } } } };
   const actorB = { uuid: "Actor.b", system: { traits: { value: ["troop"] }, attributes: { hp: { value: 30 } } } };
+
   actorA.otherSegments = [actorB];
   actorB.otherSegments = [actorA];
+
   const tokenA = { uuid: "Token.a", actor: actorA };
   const tokenB = { uuid: "Token.b", actor: actorB };
   const zone = makeZone([tokenA, tokenB], [hpBlock("troop", 20)]);
   const processed = [];
   const prior = { eligible: runtime.eligible, processBlock: runtime.processBlock };
+
   try {
     runtime.eligible = async () => true;
     runtime.processBlock = async (_region, _payload, _block, token) => processed.push(token.uuid);

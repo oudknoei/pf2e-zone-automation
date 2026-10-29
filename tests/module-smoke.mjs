@@ -6,18 +6,29 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const hooks = new Map();
+
 globalThis.Hooks = {
-  once(name, handler) { hooks.set(name, handler); },
-  on(name, handler) { hooks.set(name, handler); }
+  once(name, handler) {
+    hooks.set(name, handler);
+  },
+  on(name, handler) {
+    hooks.set(name, handler);
+  }
 };
+
 globalThis.foundry = { utils: {}, applications: { api: { DialogV2: class {} } } };
+
 const module = {};
 const settings = new Map();
 const settingValues = new Map();
 const wrappers = new Map();
+
 globalThis.libWrapper = {
-  register(_namespace, target, wrapper) { wrappers.set(target, wrapper); }
+  register(_namespace, target, wrapper) {
+    wrappers.set(target, wrapper);
+  }
 };
+
 globalThis.game = {
   modules: { get: (id) => id === "pf2e-zone-automation" ? module : null },
   settings: {
@@ -26,7 +37,11 @@ globalThis.game = {
     get: (namespace, key) => settingValues.get(`${namespace}.${key}`) ?? settings.get(`${namespace}.${key}`)?.default
   },
   pf2e: {
-    Modifier: class { constructor(data) { Object.assign(this, data); } },
+    Modifier: class {
+      constructor(data) {
+        Object.assign(this, data);
+      }
+    },
     settings: { variants: { abp: "ABPRulesAsWritten" } },
     variantRules: {
       AutomaticBonusProgression: {
@@ -41,10 +56,12 @@ globalThis.game = {
 };
 
 const { handleWorkerRequest } = await import("../scripts/worker.js");
+
 await import("../scripts/main.js");
 
 test("manifest points to files that ship", () => {
   const manifest = JSON.parse(readFileSync(resolve(root, "module.json"), "utf8"));
+
   assert.equal(manifest.id, "pf2e-zone-automation");
   assert.equal(manifest.author, "m.mestemaker");
   assert.deepEqual(manifest.authors, [{ name: "m.mestemaker" }]);
@@ -54,18 +71,23 @@ test("manifest points to files that ship", () => {
     manifest: "https://github.com/foundryvtt/pf2e/releases/latest/download/system.json",
     compatibility: { minimum: "8.5.1" }
   }]);
+
   assert.equal(manifest.socket, true);
   assert.ok(manifest.packs.every((pack) => pack.system === "pf2e"));
   assert.deepEqual(
     new Set(manifest.relationships.requires.map(({ id }) => id)),
     new Set(["advanced-macros", "pf2e-flatcheck-helper", "lib-wrapper"])
   );
+
   for (const file of [...manifest.esmodules, ...manifest.styles]) {
     assert.ok(existsSync(resolve(root, file)), `${file} is missing`);
   }
+
   const forbiddenMacroReferences = [/game\.macros\b/, /\bGM_WORKER_NAME\b/, /\bpf2eZoneWorkerRequest\b/];
+
   for (const script of readdirSync(resolve(root, "scripts")).filter((file) => file.endsWith(".js"))) {
     const source = readFileSync(resolve(root, "scripts", script), "utf8");
+
     for (const reference of forbiddenMacroReferences) {
       assert.doesNotMatch(source, reference, `scripts/${script} retains a macro-only reference`);
     }
@@ -84,17 +106,36 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.createHeroPointReminder, "function");
   assert.equal(typeof module.api.openSessionNotes, "function");
   assert.equal(typeof module.api.openQuickNote, "function");
+  assert.equal(typeof module.api.promptAdvanceSessionTime, "function");
   assert.equal(settings.get("pf2e-zone-automation.sessionRecapPrompt").scope, "world");
+
   const sessionSetting = settings.get("pf2e-zone-automation.sessionNotesEnabled");
+
   assert.equal(sessionSetting.default, false);
   assert.equal(sessionSetting.scope, "world");
   assert.equal(sessionSetting.config, true);
   assert.equal(sessionSetting.restricted, true);
   assert.equal(settings.get("pf2e-zone-automation.sessionRecapPromptEditor").restricted, true);
-  assert.equal(typeof hooks.get("renderChatMessageHTML"), "function", "Reminder buttons must be registered before chat history renders");
-  assert.equal(typeof hooks.get("renderChatLog"), "function", "Session Notes shortcuts must be registered before the chat sidebar renders");
-  assert.equal(typeof hooks.get("renderChatInput"), "function", "Session Notes shortcuts must follow Foundry's separately rendered chat input");
+  assert.equal(
+    typeof hooks.get("renderChatMessageHTML"),
+    "function",
+    "Reminder buttons must be registered before chat history renders"
+  );
+
+  assert.equal(
+    typeof hooks.get("renderChatLog"),
+    "function",
+    "Session Notes shortcuts must be registered before the chat sidebar renders"
+  );
+
+  assert.equal(
+    typeof hooks.get("renderChatInput"),
+    "function",
+    "Session Notes shortcuts must follow Foundry's separately rendered chat input"
+  );
+
   const controls = { tokens: { tools: { select: {} } } };
+
   hooks.get("getSceneControlButtons")(controls);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.button, true);
   assert.equal(controls.tokens.tools.pf2eZoneBuilder.visible, true);
@@ -103,17 +144,33 @@ test("Foundry hooks expose the builder and add its Token control", () => {
 test("ABP spell attacks work on the first character preparation, before the setup hook", () => {
   // Foundry v14 initializes world Documents between init and setup. Do not fire setup here.
   const wrapper = wrappers.get("game.pf2e.variantRules.AutomaticBonusProgression.concatModifiers");
+
   assert.equal(typeof wrapper, "function", "The ABP wrapper must already be installed by init");
   settingValues.set("pf2e-zone-automation.abpSpellAttacks", true);
+
   for (const mode of ["ABPRulesAsWritten", "ABPFundamentalPotency", "noABP"]) {
     game.pf2e.settings.variants.abp = mode;
-    const actor = { type: "character", level: 10, flags: { pf2e: {} }, synthetics: { modifiers: {} } };
+
+    const actor = {
+      type: "character",
+      level: 10,
+      flags: { pf2e: {} },
+      synthetics: { modifiers: {} }
+    };
+
     wrapper(() => {}, actor);
+
     const bonuses = (actor.synthetics.modifiers["spell-attack-roll"] ?? []).map((factory) => factory());
-    assert.equal(18 + bonuses.reduce((total, modifier) => total + modifier.modifier, 0), mode === "noABP" ? 18 : 20,
-      `Initial preparation must apply spell attack potency only with ABP enabled (${mode})`);
+
+    assert.equal(
+      18 + bonuses.reduce((total, modifier) => total + modifier.modifier, 0),
+      mode === "noABP" ? 18 : 20,
+`Initial preparation must apply spell attack potency only with ABP enabled (${mode})`
+    );
+
     assert.equal(actor.synthetics.modifiers["spell-dc"], undefined, "The spell DC must remain 28");
   }
+
   game.pf2e.settings.variants.abp = "ABPRulesAsWritten";
   settingValues.clear();
 });
@@ -126,7 +183,12 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
     fromUuid: globalThis.fromUuid,
     runtime: globalThis.PF2EZoneRuntime
   };
-  const requester = { id: "player", name: "Player", active: true, isGM: false };
+  const requester = {
+    id: "player",
+    name: "Player",
+    active: true,
+    isGM: false
+  };
   const sourceActor = { testUserPermission: (user, level) => user === requester && level === "OWNER" };
   const scene = { id: "scene", regions: { get: (id) => id === "zone" ? region : null } };
   const region = {
@@ -147,7 +209,9 @@ test("a source owner can dismiss a zone regardless of its retired dismissal flag
     globalThis.PF2EZoneRuntime = {
       version: RUNTIME_VERSION,
       installHooks: () => undefined,
-      endZone: async (target, reason) => { ended = { target, reason }; }
+      endZone: async (target, reason) => {
+        ended = { target, reason };
+      }
     };
 
     const result = await handleWorkerRequest({
@@ -178,22 +242,38 @@ test("a source owner can move a fixed area but an unowned request is rejected", 
     scenes: game.scenes,
     fromUuid: globalThis.fromUuid
   };
-  const requester = { id: "player", name: "Player", active: true, isGM: false };
+  const requester = {
+    id: "player",
+    name: "Player",
+    active: true,
+    isGM: false
+  };
   let ownsSource = true;
   const sourceActor = {
     testUserPermission: (user, level) => ownsSource && user === requester && level === "OWNER"
   };
-  let shape = { type: "rectangle", x: 0, y: 20, width: 100, height: 60, rotation: 15 };
+  let shape = {
+    type: "rectangle",
+    x: 0,
+    y: 20,
+    width: 100,
+    height: 60,
+    rotation: 15
+  };
   const scene = { id: "scene", regions: { get: (id) => id === "zone" ? region : null } };
   const region = {
     id: "zone",
     parent: scene,
-    get shapes() { return [{ toObject: () => ({ ...shape }) }]; },
+    get shapes() {
+      return [{ toObject: () => ({ ...shape }) }];
+    },
     getFlag: () => ({
       config: { mode: "area", areaShape: "square", sideLength: 10 },
       state: { sourceActorUuid: "Actor.source" }
     }),
-    async update(changes) { [shape] = changes.shapes; }
+    async update(changes) {
+      [shape] = changes.shapes;
+    }
   };
 
   try {
@@ -210,14 +290,23 @@ test("a source owner can move a fixed area but an unowned request is rejected", 
       regionId: region.id,
       areaCenter: { x: 300, y: 250 }
     });
+
     assert.equal(moved.ok, true, moved.error);
     assert.deepEqual(shape, {
-      type: "rectangle", x: 250, y: 220, width: 100, height: 60, rotation: 15
+      type: "rectangle",
+      x: 250,
+      y: 220,
+      width: 100,
+      height: 60,
+      rotation: 15
     });
 
     ownsSource = false;
+
     const previousConsoleError = console.error;
+
     console.error = () => {};
+
     try {
       const denied = await handleWorkerRequest({
         protocol: 1,
@@ -227,6 +316,7 @@ test("a source owner can move a fixed area but an unowned request is rejected", 
         regionId: region.id,
         areaCenter: { x: 500, y: 500 }
       });
+
       assert.equal(denied.ok, false);
       assert.match(denied.error, /do not own the source Actor/);
     } finally {
@@ -243,14 +333,19 @@ test("a source owner can move a fixed area but an unowned request is rejected", 
 
 test("worker rejects non-GM execution and dispatches GM requests", async () => {
   const request = { protocol: 1, action: "ping", requesterUserId: "gm" };
+
   game.user.isGM = false;
+
   const denied = await handleWorkerRequest(request);
+
   assert.equal(denied.ok, false);
   assert.match(denied.error, /active GM client/);
 
   game.user.isGM = true;
   assert.deepEqual((await handleWorkerRequest(request)).action, "ping");
+
   const unknown = await handleWorkerRequest({ ...request, action: "unknown" });
+
   assert.equal(unknown.ok, false);
   assert.match(unknown.error, /Unsupported worker action/);
 });

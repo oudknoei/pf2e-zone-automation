@@ -6,6 +6,7 @@ import { JSDOM } from "jsdom";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "https://example.test/" });
 const { window } = dom;
+
 globalThis.window = window;
 globalThis.document = window.document;
 globalThis.HTMLElement = window.HTMLElement;
@@ -15,6 +16,7 @@ Math.clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const moduleVersion = JSON.parse(readFileSync(new URL("../module.json", import.meta.url), "utf8")).version;
 const dialogs = [];
 let importResponse = null;
+
 class TestDialog extends window.EventTarget {
   constructor(options) {
     super();
@@ -28,6 +30,7 @@ class TestDialog extends window.EventTarget {
   async render() {
     document.body.append(this.element);
     this.dispatchEvent(new window.Event("render"));
+
     return this;
   }
 
@@ -36,11 +39,15 @@ class TestDialog extends window.EventTarget {
     this.dispatchEvent(new window.Event("close"));
   }
 
-  static async prompt() { return null; }
+  static async prompt() {
+    return null;
+  }
 
   static async input() {
     const response = importResponse;
+
     importResponse = null;
+
     return response;
   }
 }
@@ -50,39 +57,64 @@ const notices = [];
 let builderSocketListener;
 const effectUuid = "Item.builder-smoke-effect";
 const effect = {
-  documentName: "Item", type: "effect", uuid: effectUuid,
-  name: "Builder smoke effect", img: "icons/smoke.webp"
+  documentName: "Item",
+  type: "effect",
+  uuid: effectUuid,
+  name: "Builder smoke effect",
+  img: "icons/smoke.webp"
 };
 const effectDocuments = new Map([[effectUuid, effect]]);
 const hookCallbacks = new Map();
 let nextHookId = 0;
+
 globalThis.Hooks = {
   on(name, callback) {
     const id = ++nextHookId;
+
     if (!hookCallbacks.has(name)) hookCallbacks.set(name, new Map());
+
     hookCallbacks.get(name).set(id, callback);
+
     return id;
   },
-  off(name, id) { hookCallbacks.get(name)?.delete(id); },
+  off(name, id) {
+    hookCallbacks.get(name)?.delete(id);
+  },
   call(name, ...args) {
     for (const callback of hookCallbacks.get(name)?.values() ?? []) callback(...args);
   }
 };
+
 const actor = {
-  uuid: "Actor.source", name: "Source", img: "icons/source.webp",
-  combatant: null, testUserPermission: () => true
+  uuid: "Actor.source",
+  name: "Source",
+  img: "icons/source.webp",
+  combatant: null,
+  testUserPermission: () => true
 };
+
 class RegionCollection extends Map {
-  [Symbol.iterator]() { return this.values(); }
+  [Symbol.iterator]() {
+    return this.values();
+  }
 }
+
 const regions = new RegionCollection();
 const scene = { id: "scene", regions };
 const tokenDocument = {
-  uuid: "Scene.scene.Token.source", documentName: "Token",
-  parent: scene, actor, texture: { src: "icons/source.webp" }
+  uuid: "Scene.scene.Token.source",
+  documentName: "Token",
+  parent: scene,
+  actor,
+  texture: { src: "icons/source.webp" }
 };
 const token = { actor, name: "Source", document: tokenDocument };
-const gm = { id: "gm", name: "GM", isGM: true, color: "#336699" };
+const gm = {
+  id: "gm",
+  name: "GM",
+  isGM: true,
+  color: "#336699"
+};
 const runtimeCalls = { activated: [], ended: [] };
 let failDismissal = false;
 
@@ -93,7 +125,9 @@ globalThis.foundry = {
     setProperty: (object, path, value) => {
       const keys = path.split(".");
       let current = object;
+
       for (const key of keys.slice(0, -1)) current = current[key] ??= {};
+
       current[keys.at(-1)] = value;
     }
   },
@@ -102,6 +136,7 @@ globalThis.foundry = {
     ux: { TextEditor: { getDragEventData: (event) => JSON.parse(event.dataTransfer.getData("text/plain")) } }
   }
 };
+
 globalThis.CONFIG = {
   PF2E: { conditionTypes: {}, damageTypes: {} },
   RegionBehavior: { dataModels: {} },
@@ -110,29 +145,40 @@ globalThis.CONFIG = {
       async createTokenEmanation(source, radius, data) {
         assert.equal(source, tokenDocument);
         assert.ok(radius > 0);
+
         const id = `region-${++nextId}`;
         const region = {
-          id, uuid: `Scene.scene.Region.${id}`, name: data.name, parent: scene,
+          id,
+          uuid: `Scene.scene.Region.${id}`,
+          name: data.name,
+          parent: scene,
           getFlag: (scope, key) => data.flags?.[scope]?.[key]
         };
+
         regions.set(id, region);
+
         return region;
       }
     }
   }
 };
+
 globalThis.CONST = {
   REGION_VISIBILITY: { ALWAYS: 2, OBSERVER: 3 },
   DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0, OBSERVER: 2 }
 };
+
 globalThis.game = {
   system: { id: "pf2e" },
-  user: gm, users: { activeGM: gm },
+  user: gm,
+  users: { activeGM: gm },
   modules: new Map([["pf2e-zone-automation", { version: moduleVersion }]]),
   scenes: { get: (id) => id === scene.id ? scene : null },
-  time: { worldTime: 0 }, combat: null,
+  time: { worldTime: 0 },
+  combat: null,
   i18n: { localize: (key) => key }
 };
+
 globalThis.canvas = { ready: true, scene, tokens: { controlled: [token] } };
 globalThis.ui = {
   notifications: {
@@ -141,15 +187,21 @@ globalThis.ui = {
     error: (message) => notices.push({ level: "error", message })
   }
 };
+
 globalThis.fromUuid = async (uuid) => effectDocuments.get(uuid) ?? ({
-  [actor.uuid]: actor, [tokenDocument.uuid]: tokenDocument
+  [actor.uuid]: actor,
+  [tokenDocument.uuid]: tokenDocument
 })[uuid] ?? null;
+
 globalThis.PF2EZoneRuntime = {
   version: RUNTIME_VERSION,
   installHooks() {},
-  async activateRegion(region) { runtimeCalls.activated.push(region); },
+  async activateRegion(region) {
+    runtimeCalls.activated.push(region);
+  },
   async endZone(region) {
     if (failDismissal) throw new Error("Region deletion failed");
+
     runtimeCalls.ended.push(region);
     regions.delete(region.id);
   }
@@ -161,8 +213,10 @@ const { openZoneBuilder } = await import("../scripts/builder.js");
 async function until(predicate) {
   for (let attempt = 0; attempt < 200; attempt++) {
     if (predicate()) return;
+
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+
   assert.fail("Builder action did not finish");
 }
 
@@ -170,30 +224,50 @@ async function until(predicate) {
 function change(element, value, event = "change") {
   if (element.type === "checkbox") element.checked = Boolean(value);
   else element.value = value;
+
   element.dispatchEvent(new window.Event(event, { bubbles: true }));
 }
 
 test("overlapping Save actions leave edits made during the GM response intact", async () => {
   const previous = { user: game.user, users: game.users, socket: game.socket };
-  const player = { id: "player", name: "Player", active: true, isGM: false, color: "#336699" };
+  const player = {
+    id: "player",
+    name: "Player",
+    active: true,
+    isGM: false,
+    color: "#336699"
+  };
   const users = new Map([[gm.id, gm], [player.id, player]]);
+
   users.activeGM = gm;
+
   let socketListener;
   const sent = [];
+
   game.user = player;
   game.users = users;
   game.socket = {
     connected: true,
-    on(_channel, listener) { socketListener = builderSocketListener = listener; },
-    emit(_channel, message) { sent.push(message); }
+    on(_channel, listener) {
+      socketListener = builderSocketListener = listener;
+    },
+    emit(_channel, message) {
+      sent.push(message);
+    }
   };
+
   const { registerZoneSocket } = await import("../scripts/transport.js");
+
   registerZoneSocket();
+
   let builderDialog;
+
   try {
     await openZoneBuilder();
     builderDialog = dialogs.at(-1);
+
     const root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     change(root.querySelector('[data-zone="name"]'), "Before Save", "input");
     change(root.querySelector('[data-zone="affects-enemies"]'), true);
     change(root.querySelector('[data-trigger="activation"]'), true);
@@ -202,35 +276,49 @@ test("overlapping Save actions leave edits made during the GM response intact", 
     assert.equal(root.querySelector(".zb-create").disabled, false);
 
     const button = root.querySelector(".zb-save");
+
     button.click();
     button.dispatchEvent(new window.Event("click", { bubbles: true }));
     root.querySelector(".zb-save-as").dispatchEvent(new window.Event("click", { bubbles: true }));
     await until(() => sent.length === 1);
+
     const request = sent.shift();
+
     assert.equal(request.request.action, "library-save");
     assert.equal(request.request.config.name, "Before Save");
     assert.equal(button.disabled, true, "Save is reserved before the GM responds");
 
     change(root.querySelector('[data-zone="name"]'), "Edited After Save", "input");
     await socketListener({
-      kind: "response", id: request.id, gmId: gm.id, recipientUserId: player.id,
+      kind: "response",
+      id: request.id,
+      gmId: gm.id,
+      recipientUserId: player.id,
       response: {
         ok: true,
         record: {
-          id: "saved-before-edit", name: "Before Save", revision: 1,
+          id: "saved-before-edit",
+          name: "Before Save",
+          revision: 1,
           createdBy: { userId: player.id, name: player.name },
           config: request.request.config
         }
       }
     }, gm.id);
+
     await until(() => !button.disabled);
     assert.equal(root.querySelector('[data-zone="name"]').value, "Edited After Save");
-    assert.equal(builderDialog.window.content.querySelector(".pf2e-zone-builder"), root,
-      "a delayed response does not rerender over newer edits");
+    assert.equal(
+      builderDialog.window.content.querySelector(".pf2e-zone-builder"),
+      root,
+      "a delayed response does not rerender over newer edits"
+    );
+
     assert.equal(sent.length, 0, "overlapping Save and Save As did not send another write");
     assert.ok(notices.some((notice) => notice.message.includes("editor changed during saving")));
   } finally {
     if (builderDialog?.element.isConnected) await builderDialog.close();
+
     game.user = previous.user;
     game.users = previous.users;
     game.socket = previous.socket;
@@ -238,44 +326,88 @@ test("overlapping Save actions leave edits made during the GM response intact", 
 });
 
 async function withSavingBuilder(run) {
-  const previous = { user: game.user, users: game.users, socket: game.socket, setTimeout, error: console.error };
-  const player = { id: "preset-player", name: "Player", active: true, isGM: false, color: "#336699" };
+  const previous = {
+    user: game.user,
+    users: game.users,
+    socket: game.socket,
+    setTimeout,
+    error: console.error
+  };
+  const player = {
+    id: "preset-player",
+    name: "Player",
+    active: true,
+    isGM: false,
+    color: "#336699"
+  };
   const users = new Map([[gm.id, gm], [player.id, player]]);
+
   users.activeGM = gm;
+
   const f = { sent: [], timeouts: [], player };
+
   game.user = player;
   game.users = users;
   game.socket = {
     connected: true,
-    on(_channel, listener) { builderSocketListener = listener; },
+    on(_channel, listener) {
+      builderSocketListener = listener;
+    },
     emit(_channel, message) {
       f.sent.push(message);
-      if (f.failSend) { f.failSend = false; throw new Error("Connection lost after send"); }
+
+      if (f.failSend) {
+        f.failSend = false;
+
+        throw new Error("Connection lost after send");
+      }
     }
   };
+
   globalThis.setTimeout = (callback, duration, ...args) => {
-    if (duration === 60000) { f.timeouts.push(callback); return {}; }
+    if (duration === 60000) {
+      f.timeouts.push(callback);
+
+      return {};
+    }
+
     return previous.setTimeout(callback, duration, ...args);
   };
+
   console.error = () => {};
+
   const { registerZoneSocket } = await import("../scripts/transport.js");
+
   registerZoneSocket();
   f.reply = async (message, response = null) => builderSocketListener({
-    kind: "response", id: message.id, gmId: gm.id, recipientUserId: player.id,
-    response: response ?? { ok: true, action: "library-save", record: {
-      id: message.request.recordId ?? `saved-${message.request.operationId}`,
-      revision: (message.request.expectedRevision ?? 0) + 1,
-      name: message.request.config.name, createdBy: { userId: player.id, name: player.name },
-      config: structuredClone(message.request.config)
-    }, warnings: [] }
+    kind: "response",
+    id: message.id,
+    gmId: gm.id,
+    recipientUserId: player.id,
+    response: response ?? {
+      ok: true,
+      action: "library-save",
+      record: {
+        id: message.request.recordId ?? `saved-${message.request.operationId}`,
+        revision: (message.request.expectedRevision ?? 0) + 1,
+        name: message.request.config.name,
+        createdBy: { userId: player.id, name: player.name },
+        config: structuredClone(message.request.config)
+      },
+      warnings: []
+    }
   }, gm.id);
+
   let builderDialog;
+
   try {
     await openZoneBuilder();
     builderDialog = dialogs.at(-1);
     f.dialog = builderDialog;
     f.root = () => builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     const root = f.root();
+
     change(root.querySelector('[data-zone="name"]'), "Original preset", "input");
     change(root.querySelector('[data-zone="affects-enemies"]'), true);
     change(root.querySelector('[data-trigger="activation"]'), true);
@@ -284,6 +416,7 @@ async function withSavingBuilder(run) {
     await run(f);
   } finally {
     if (builderDialog?.element.isConnected) await builderDialog.close();
+
     game.user = previous.user;
     game.users = previous.users;
     game.socket = previous.socket;
@@ -295,9 +428,12 @@ async function withSavingBuilder(run) {
 test("Save As timeout retries the original request and keeps edits made before confirmation", async () => withSavingBuilder(async (f) => {
   const root = f.root();
   const saveAs = root.querySelector(".zb-save-as");
+
   saveAs.click();
   await until(() => f.sent.length === 1);
+
   const first = f.sent[0];
+
   assert.equal(typeof first.request.operationId, "string");
   f.timeouts[0]();
   await until(() => !saveAs.disabled);
@@ -308,7 +444,9 @@ test("Save As timeout retries the original request and keeps edits made before c
   assert.equal(f.sent.length, 1);
   saveAs.click();
   await until(() => f.sent.length === 2);
+
   const retry = f.sent[1];
+
   assert.notEqual(retry.id, first.id, "The socket exchange is new while the logical save is the same");
   assert.deepEqual(retry.request, first.request);
   await f.reply(retry);
@@ -317,29 +455,45 @@ test("Save As timeout retries the original request and keeps edits made before c
   assert.equal(root.querySelector('[data-zone="name"]').value, "Newer unsaved edit");
   assert.equal(root.querySelector(".zb-save").disabled, false);
   await f.reply(first);
-  assert.equal(root.querySelector('[data-zone="name"]').value, "Newer unsaved edit", "A late reply cannot restore old editor state");
+  assert.equal(
+    root.querySelector('[data-zone="name"]').value,
+    "Newer unsaved edit",
+    "A late reply cannot restore old editor state"
+  );
 }));
 
 test("overwrite retries preserve the operation and original expected revision after an unconfirmed worker write", async () => withSavingBuilder(async (f) => {
   f.root().querySelector(".zb-save").click();
   await until(() => f.sent.length === 1);
+
   const first = f.sent[0];
   const oldRoot = f.root();
+
   await f.reply(first);
   await until(() => f.root() !== oldRoot && !f.root().querySelector(".zb-save").disabled);
   change(f.root().querySelector('[data-field="chat-alert-text"]'), "Overwrite alert", "input");
   f.root().querySelector(".zb-save").click();
   await until(() => f.sent.length === 2);
+
   const overwrite = f.sent[1];
+
   assert.equal(overwrite.request.recordId, `saved-${first.request.operationId}`);
   assert.equal(overwrite.request.expectedRevision, 1);
-  await f.reply(overwrite, { ok: false, error: "Save could not be confirmed", errorCode: "PF2E_ZONE_PRESET_SAVE_UNCERTAIN", retryable: true });
+  await f.reply(overwrite, {
+    ok: false,
+    error: "Save could not be confirmed",
+    errorCode: "PF2E_ZONE_PRESET_SAVE_UNCERTAIN",
+    retryable: true
+  });
+
   await until(() => !f.root().querySelector(".zb-save").disabled);
   assert.equal(f.root().querySelector(".zb-save-as").disabled, true);
   f.root().querySelector(".zb-save").click();
   await until(() => f.sent.length === 3);
   assert.deepEqual(f.sent[2].request, overwrite.request);
+
   const beforeConfirmation = f.root();
+
   await f.reply(f.sent[2]);
   await until(() => f.root() !== beforeConfirmation && !f.root().querySelector(".zb-save").disabled);
   f.root().querySelector(".zb-save").click();
@@ -353,7 +507,9 @@ test("overwrite retries preserve the operation and original expected revision af
 test("a definite preset rejection releases its operation instead of treating it as an unknown acknowledgment", async () => withSavingBuilder(async (f) => {
   f.root().querySelector(".zb-save-as").click();
   await until(() => f.sent.length === 1);
+
   const first = f.sent[0];
+
   await f.reply(first, { ok: false, error: "Invalid preset configuration" });
   await until(() => !f.root().querySelector(".zb-save-as").disabled);
   assert.equal(f.root().querySelector(".zb-save").disabled, false);
@@ -368,7 +524,9 @@ test("send failures and a missing GM preserve an earlier uncertain save until it
   f.failSend = true;
   f.root().querySelector(".zb-save-as").click();
   await until(() => f.sent.length === 1 && !f.root().querySelector(".zb-save-as").disabled);
+
   const first = f.sent[0];
+
   game.users.activeGM = null;
   f.root().querySelector(".zb-save-as").click();
   await until(() => !f.root().querySelector(".zb-save-as").disabled);
@@ -385,14 +543,20 @@ test("two builder dialogs retain independent uncertain preset saves", async () =
   await withSavingBuilder(async f => {
     f.root().querySelector(".zb-save-as").click();
     await until(() => f.sent.length === 1 && f.timeouts.length === 1);
+
     const original = f.sent[0];
+
     f.timeouts.shift()();
     await until(() => !f.root().querySelector(".zb-save-as").disabled);
+
     let second;
+
     try {
       await openZoneBuilder();
       second = dialogs.at(-1);
+
       const secondRoot = second.window.content.querySelector(".pf2e-zone-builder");
+
       change(secondRoot.querySelector('[data-zone="name"]'), "Independent preset", "input");
       change(secondRoot.querySelector('[data-zone="affects-enemies"]'), true);
       change(secondRoot.querySelector('[data-trigger="activation"]'), true);
@@ -424,51 +588,101 @@ for (const cancel of [false, true]) {
     const previous = { users: game.users, app: canvas.app, coordinates: canvas.canvasCoordinatesFromClient };
     const activeGM = { ...gm, active: true };
     const users = new Map([[gm.id, activeGM]]);
+
     users.activeGM = activeGM;
     game.users = users;
+
     const canvasElement = document.createElement("canvas");
+
     document.body.append(canvasElement);
     canvas.app = { canvas: canvasElement };
     canvas.canvasCoordinatesFromClient = () => ({ x: 400, y: 600 });
-    let shapes = [{ type: "rectangle", x: 25, y: 30, width: 200, height: 100, rotation: 15 }];
+
+    let shapes = [{
+      type: "rectangle",
+      x: 25,
+      y: 30,
+      width: 200,
+      height: 100,
+      rotation: 15
+    }];
     let moves = 0;
     const region = {
-      id: `terminal-move-${cancel}`, uuid: `Scene.scene.Region.terminal-move-${cancel}`,
-      name: "Move test", parent: scene, get shapes() { return shapes; },
-      getFlag: () => ({ config: { mode: "area", areaShape: "square", sideLength: 5, duration: { type: "unlimited" } },
-        state: { sourceActorUuid: actor.uuid, createdBy: { name: "GM" } } }),
-      async update(changes) { moves++; shapes = structuredClone(changes.shapes); }
+      id: `terminal-move-${cancel}`,
+      uuid: `Scene.scene.Region.terminal-move-${cancel}`,
+      name: "Move test",
+      parent: scene,
+      get shapes() {
+        return shapes;
+      },
+      getFlag: () => ({
+        config: {
+          mode: "area",
+          areaShape: "square",
+          sideLength: 5,
+          duration: { type: "unlimited" }
+        },
+        state: { sourceActorUuid: actor.uuid, createdBy: { name: "GM" } }
+      }),
+      async update(changes) {
+        moves++;
+        shapes = structuredClone(changes.shapes);
+      }
     };
+
     regions.set(region.id, region);
+
     let builder;
     let manager;
+
     try {
       await openZoneBuilder();
       builder = dialogs.at(-1);
       builder.window.content.querySelector(".zb-manage").click();
       await until(() => dialogs.at(-1) !== builder && dialogs.at(-1).element.isConnected);
       manager = dialogs.at(-1);
+
       const dialogCount = dialogs.length;
+
       manager.window.content.querySelector(`[data-region-id="${region.id}"] [data-action="move"]`).click();
       await until(() => !manager.element.isConnected && !builder.element.isConnected && canvasElement.style.cursor === "crosshair");
+
       if (cancel) {
         window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
       } else {
-        canvasElement.dispatchEvent(new window.MouseEvent("pointerdown", { button: 0, clientX: 400, clientY: 600, cancelable: true }));
+        canvasElement.dispatchEvent(new window.MouseEvent("pointerdown", {
+          button: 0,
+          clientX: 400,
+          clientY: 600,
+          cancelable: true
+        }));
       }
+
       await until(() => notices.some(notice => notice.message === (cancel ? "Zone movement was cancelled." : "Moved 'Move test'.")));
       assert.equal(moves, cancel ? 0 : 1);
-      if (!cancel) assert.deepEqual(shapes, [{ type: "rectangle", x: 300, y: 550, width: 200, height: 100, rotation: 15 }]);
+      if (!cancel)
+        assert.deepEqual(shapes, [{
+          type: "rectangle",
+          x: 300,
+          y: 550,
+          width: 200,
+          height: 100,
+          rotation: 15
+        }]);
+
       assert.equal(canvasElement.style.cursor, "");
       assert.equal(dialogs.length, dialogCount, "Neither completion nor cancellation reopens the builder");
       assert.equal(builder.element.isConnected, false);
       assert.equal(manager.element.isConnected, false);
+
       const followingClick = new window.MouseEvent("pointerdown", { button: 0, cancelable: true });
+
       canvasElement.dispatchEvent(followingClick);
       assert.equal(followingClick.defaultPrevented, false, "Placement no longer intercepts normal play");
     } finally {
       if (builder?.element.isConnected) await builder.close();
       if (manager?.element.isConnected) await manager.close();
+
       canvasElement.remove();
       regions.delete(region.id);
       game.users = previous.users;
@@ -483,9 +697,13 @@ for (const cancel of [false, true]) {
 test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses a zone", async () => {
   try {
     await openZoneBuilder();
+
     const builderDialog = dialogs.at(-1);
+
     assert.equal(builderDialog.title, `PF2e Zone Automation v${moduleVersion}`);
+
     let root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     assert.ok(root);
     assert.equal(root.querySelector('[data-zone="line-of-effect"]').value, "respect");
     assert.deepEqual(
@@ -496,6 +714,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     const { defaultConfig } = await import("../scripts/zone-config.js");
     const duplicateImport = defaultConfig();
+
     duplicateImport.name = "Imported duplicate blocks";
     duplicateImport.targeting.affects = "enemies";
     duplicateImport.effects[0].triggers.activation = true;
@@ -505,30 +724,43 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     root.querySelector(".zb-import").click();
     await until(() => builderDialog.window.content.querySelector('[data-zone="name"]')?.value === duplicateImport.name);
     root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     const importedBlockIds = [...root.querySelectorAll("[data-block-id]")].map((block) => block.dataset.blockId);
+
     assert.equal(new Set(importedBlockIds).size, 2);
     assert.equal(importedBlockIds[0], duplicateImport.effects[0].id);
     assert.notEqual(importedBlockIds[1], importedBlockIds[0]);
 
     const invalidImport = defaultConfig();
+
     invalidImport.name = "Imported with unavailable choices";
     invalidImport.targeting.affects = "enemies";
     invalidImport.duration.type = "until-next-moon";
     invalidImport.effects[0].triggers.activation = true;
     invalidImport.effects[0].chatAlert.enabled = true;
     invalidImport.effects[0].outcomes.noSave.conditions.push({
-      slug: "mystery-condition", value: 2, removal: "condition-end", condition: "missing-link"
+      slug: "mystery-condition",
+      value: 2,
+      removal: "condition-end",
+      condition: "missing-link"
     });
+
     importResponse = { json: JSON.stringify(invalidImport) };
     root.querySelector(".zb-import").click();
     await until(() => builderDialog.window.content.querySelector('[data-zone="name"]')?.value === invalidImport.name);
     root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
+
     const durationChoice = root.querySelector('[data-zone="duration-type"]');
     const conditionRow = root.querySelector('[data-outcome="noSave"] .zb-condition-row');
+
     assert.equal(durationChoice.value, "until-next-moon");
     assert.match(durationChoice.selectedOptions[0].textContent, /Unavailable duration/);
     assert.equal(conditionRow.querySelector('[data-field="condition-slug"]').value, "mystery-condition");
-    assert.match(conditionRow.querySelector('[data-field="condition-slug"]').selectedOptions[0].textContent, /Unavailable condition/);
+    assert.match(
+      conditionRow.querySelector('[data-field="condition-slug"]').selectedOptions[0].textContent,
+      /Unavailable condition/
+    );
+
     assert.equal(conditionRow.querySelector('[data-field="condition-link"]').value, "missing-link");
     assert.equal(root.querySelector(".zb-create").disabled, true);
     change(durationChoice, "unlimited");
@@ -537,11 +769,18 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     assert.match(root.querySelector("[data-validation-status]").textContent, /Ready to create/);
     invalidImport.effects[0].repeat = "occasionally";
     importResponse = { json: JSON.stringify(invalidImport) };
+
     const importNoticeCount = notices.length;
+
     root.querySelector(".zb-import").click();
     await until(() => notices.slice(importNoticeCount).some((notice) => notice.level === "error"));
     assert.match(notices.at(-1).message, /repeat setting.*occasionally/);
-    assert.equal(root.querySelector('[data-zone="duration-type"]').value, "unlimited", "rejected import keeps the current editor");
+    assert.equal(
+      root.querySelector('[data-zone="duration-type"]').value,
+      "unlimited",
+      "rejected import keeps the current editor"
+    );
+
     root.querySelector(".zb-clear").click();
     root = builderDialog.window.content.querySelector(".pf2e-zone-builder");
 
@@ -558,12 +797,16 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     change(root.querySelector('[data-trigger="activation"]'), false);
     change(root.querySelector('[data-trigger="hpThreshold"]'), true);
+
     const hpField = root.querySelector('[data-field="hp-threshold"]');
+
     assert.equal(hpField.closest(".zb-hp-threshold-options").style.display, "block");
     change(hpField, "2d4", "input");
     assert.match(hpField.closest("label").textContent, /whole-number Hit Point threshold/);
     change(hpField, "12", "input");
+
     const effectBlock = root.querySelector("details.zb-block");
+
     effectBlock.open = false;
     await until(() => /HP drops to 12/.test(root.querySelector("[data-block-summary]").textContent));
     effectBlock.open = true;
@@ -572,24 +815,34 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     const dropTarget = root.querySelector('[data-outcome="noSave"] .zb-effect-list');
     const drop = new window.Event("drop", { bubbles: true, cancelable: true });
+
     Object.defineProperty(drop, "dataTransfer", {
       value: { getData: () => JSON.stringify({ type: "Item", uuid: effectUuid }) }
     });
+
     dropTarget.dispatchEvent(drop);
     await until(() => root.querySelector('[data-outcome="noSave"] [data-field="effect-uuid"]')?.value === effectUuid);
     assert.match(root.querySelector('[data-outcome="noSave"] .zb-effect-info').textContent, /Builder smoke effect/);
     assert.match(root.querySelector("[data-validation-status]").textContent, /Ready to create/);
 
     const retryUuid = "Item.builder-retry-effect";
+
     root.querySelector('[data-outcome="noSave"] .zb-add-effect').click();
+
     const retryRow = [...root.querySelectorAll('[data-outcome="noSave"] .zb-effect-row')].at(-1);
+
     change(retryRow.querySelector('[data-field="effect-uuid"]'), retryUuid, "input");
     await until(() => /could not be found/.test(retryRow.querySelector(".zb-effect-info").textContent));
     assert.equal(root.querySelector(".zb-create").disabled, true);
+
     const retryEffect = {
-      documentName: "Item", type: "effect", uuid: retryUuid,
-      name: "Retry effect", img: "icons/retry.webp"
+      documentName: "Item",
+      type: "effect",
+      uuid: retryUuid,
+      name: "Retry effect",
+      img: "icons/retry.webp"
     };
+
     effectDocuments.set(retryUuid, retryEffect);
     retryRow.querySelector(".zb-retry-effect").click();
     await until(() => /Retry effect/.test(retryRow.querySelector(".zb-effect-info").textContent));
@@ -616,12 +869,18 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     const compendiumUuid = "Compendium.test.effects.Item.cached";
     const compendiumEffect = {
-      documentName: "Item", type: "effect", uuid: compendiumUuid,
-      name: "Compendium effect", img: "icons/pack.webp"
+      documentName: "Item",
+      type: "effect",
+      uuid: compendiumUuid,
+      name: "Compendium effect",
+      img: "icons/pack.webp"
     };
+
     effectDocuments.set(compendiumUuid, compendiumEffect);
     root.querySelector('[data-outcome="noSave"] .zb-add-effect').click();
+
     const compendiumRow = [...root.querySelectorAll('[data-outcome="noSave"] .zb-effect-row')].at(-1);
+
     change(compendiumRow.querySelector('[data-field="effect-uuid"]'), compendiumUuid, "input");
     await until(() => /Compendium effect/.test(compendiumRow.querySelector(".zb-effect-info").textContent));
     compendiumEffect.name = "Updated compendium effect";
@@ -629,22 +888,28 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     await until(() => /Updated compendium effect/.test(compendiumRow.querySelector(".zb-effect-info").textContent));
 
     root.querySelector('[data-outcome="failure"] .zb-add-effect').click();
+
     const hiddenEffect = root.querySelector('[data-outcome="failure"] [data-field="effect-uuid"]');
+
     change(hiddenEffect, "Item.deleted", "input");
     assert.equal(root.querySelector(".zb-create").disabled, false, "hidden Failure Item does not block No Save creation");
     change(root.querySelector('[data-field="save-enabled"]'), true);
     await until(() => root.querySelector(".zb-create").disabled &&
       /could not be found/.test(root.querySelector('[data-outcome="failure"] .zb-effect-info').textContent));
+
     change(root.querySelector('[data-field="save-enabled"]'), false);
     assert.equal(root.querySelector(".zb-create").disabled, false, "turning saves off restores readiness");
 
     const createButton = root.querySelector(".zb-create");
+
     createButton.click();
     createButton.dispatchEvent(new window.Event("click", { bubbles: true }));
     await until(() => regions.size === 1);
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(regions.size, 1, "two clicks before validation finishes create only one Region");
+
     const region = [...regions][0];
+
     assert.equal(region.name, "Smoke Zone");
     assert.equal(region.getFlag("world", "pf2eZone").config.targeting.lineOfEffect, "respect");
     assert.equal(region.getFlag("world", "pf2eZone").config.effects[0].outcomes.noSave.effects[0].uuid, effectUuid);
@@ -656,18 +921,27 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     region.getFlag("world", "pf2eZone").state.endRequested = true;
     region.getFlag("world", "pf2eZone").state.pendingSaves = {
       "save-1": {
-        id: "save-1", identifier: "pf2e-zone:scene:region:save-1",
-        tokenUuid: tokenDocument.uuid, actorUuid: actor.uuid,
-        blockId: "block", blockName: "Battle Cry", saveTypes: ["will"], dc: 25
+        id: "save-1",
+        identifier: "pf2e-zone:scene:region:save-1",
+        tokenUuid: tokenDocument.uuid,
+        actorUuid: actor.uuid,
+        blockId: "block",
+        blockName: "Battle Cry",
+        saveTypes: ["will"],
+        dc: 25
       }
     };
 
     await openZoneBuilder();
+
     const reopenedDialog = dialogs.at(-1);
+
     root = reopenedDialog.window.content.querySelector(".pf2e-zone-builder");
     root.querySelector(".zb-manage").click();
     await until(() => dialogs.at(-1).title === "Manage PF2e Zones");
+
     const manageDialog = dialogs.at(-1);
+
     assert.match(manageDialog.window.content.textContent, /Smoke Zone/);
     assert.match(manageDialog.window.content.textContent, /Cleanup pending/);
     assert.match(manageDialog.window.content.querySelector('[data-action="end"]').textContent, /Retry Dismiss/);
@@ -676,13 +950,18 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     const originalCancel = globalThis.PF2EZoneRuntime.cancelPendingSave;
     const originalGetUser = game.users.get;
+
     game.users.get = (id) => id === gm.id ? { ...gm, active: true } : null;
+
     const cancelled = [];
+
     globalThis.PF2EZoneRuntime.cancelPendingSave = async (_region, pendingId, identifier) => {
       cancelled.push([pendingId, identifier]);
       delete region.getFlag("world", "pf2eZone").state.pendingSaves[pendingId];
+
       return { status: "cancelled" };
     };
+
     try {
       manageDialog.window.content.querySelector('[data-action="cancel-save"]').click();
       await until(() => !manageDialog.window.content.querySelector('[data-action="cancel-save"]'));
@@ -699,15 +978,20 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
 
     const dismissButton = manageDialog.window.content.querySelector('[data-action="end"]');
     const dismissalNoticeStart = notices.length;
+
     failDismissal = true;
+
     const priorConsoleError = console.error;
+
     try {
       console.error = () => {};
+
       dismissButton.click();
       await until(() => notices.slice(dismissalNoticeStart).some((notice) => notice.level === "error"));
     } finally {
       console.error = priorConsoleError;
     }
+
     assert.equal(regions.size, 1, "failed dismissal leaves the Region intact");
     assert.equal(manageDialog.element.isConnected, true);
     assert.equal(dismissButton.disabled, false, "failed dismissal can be retried");
@@ -728,16 +1012,21 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     const originalActivate = globalThis.PF2EZoneRuntime.activateRegion;
     const priorCreationError = console.error;
     const noticeCount = notices.length;
+
     globalThis.PF2EZoneRuntime.activateRegion = async () => {
       throw new Error("Simulated activation failure");
     };
+
     console.error = () => {};
+
     try {
       await until(() => !root.querySelector(".zb-create").disabled);
       root.querySelector(".zb-create").click();
       await until(() => regions.size === 1);
       await until(() => notices.slice(noticeCount).some((notice) => notice.level === "warn"));
+
       const creationNotices = notices.slice(noticeCount);
+
       assert.ok(creationNotices.some((notice) => notice.level === "info" && notice.message.includes("created")));
       assert.ok(creationNotices.some((notice) => notice.level === "warn" && notice.message.includes("activation did not finish")));
       assert.equal(creationNotices.some((notice) => notice.level === "error"), false);
@@ -747,7 +1036,7 @@ test("builder opens, edits, accepts an Effect Item drop, creates, and dismisses 
     }
   } finally {
     for (const dialog of dialogs) if (dialog.element.isConnected) await dialog.close();
+
     dom.window.close();
   }
 });
-

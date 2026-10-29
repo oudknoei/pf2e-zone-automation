@@ -20,13 +20,16 @@ export function storedTargeting({ allies = false, enemies = false, self = false 
 /** Prevents a zone that cannot affect anyone from being saved or created. */
 export function hasTargetSelection(targeting) {
   if (!AFFECTS.has(targeting?.affects)) return false;
+
   const choices = targetingChoices(targeting);
+
   return choices.allies || choices.enemies || choices.self;
 }
 
 /** Uses the same names in previews that users selected in the builder. */
 export function targetLabels(targeting) {
   const choices = targetingChoices(targeting);
+
   return [
     choices.allies && "Allies",
     choices.enemies && "Enemies",

@@ -6,11 +6,13 @@ globalThis.Hooks = {
   on: () => 1,
   off: () => {}
 };
+
 globalThis.foundry = { utils: {} };
 globalThis.document = {
   addEventListener: () => {},
   removeEventListener: () => {}
 };
+
 globalThis.game = {
   actors: { contents: [] },
   scenes: { contents: [] },
@@ -27,16 +29,19 @@ test("runtime uses a formula duration's stored result without attempting a rerol
   assert.equal(runtime.durationRounds(formulaConfig, { duration: { rounds: 5, formula: "2d4" } }), 5);
   assert.equal(runtime.durationRounds(formulaConfig, { duration: {} }), null);
 });
+
 test("runtime resolves the same positive Actor DC that validation offers", () => {
   const actor = {
     classDC: { dc: { value: 27 } },
     getStatistic(slug) {
       if (slug === "spell-dc") return { dc: { value: null } };
       if (slug === "class-spell") return { dc: { value: 0 } };
+
       return null;
     }
   };
   const block = { save: { dc: { mode: "actorStatistic", statistic: "spell-dc" } } };
+
   assert.equal(runtime.resolveDC({}, block, actor), null);
   block.save.dc.statistic = "class-dc";
   assert.equal(runtime.resolveDC({}, block, actor), 27);
@@ -64,21 +69,28 @@ test("zone cleanup serializes accepted state work before deleting the Region", a
       regions.delete(this.id);
     }
   };
+
   regions.set(region.id, region);
 
   let releaseStateWork;
-  const stateWorkReleased = new Promise((resolve) => { releaseStateWork = resolve; });
+  const stateWorkReleased = new Promise((resolve) => {
+    releaseStateWork = resolve;
+  });
   let markStateWorkStarted;
-  const stateWorkStarted = new Promise((resolve) => { markStateWorkStarted = resolve; });
+  const stateWorkStarted = new Promise((resolve) => {
+    markStateWorkStarted = resolve;
+  });
 
   const acceptedStateWork = runtime.withState(region, async (payload) => {
     markStateWorkStarted();
     await stateWorkReleased;
     payload.state.marker = "saved-before-cleanup";
   });
+
   await stateWorkStarted;
 
   const ending = runtime.endZone(region, "test expiration");
+
   assert.equal(
     await runtime.withState(region, async () => assert.fail("ending zones must reject new state work")),
     null
@@ -99,21 +111,32 @@ test("failed Item cleanup retains records and retries after reconnect", async ()
     const priorUi = globalThis.ui;
     const priorConsoleError = console.error;
     const notices = [];
+
     globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
+
     console.error = () => {};
+
     try {
       let failFirst = true;
       const first = {
-        id: "first", name: "First", parent: sourceActor,
+        id: "first",
+        name: "First",
+        parent: sourceActor,
         async delete() {
           if (failFirst) throw new Error("temporary Item deletion failure");
+
           sourceActor.items.delete(this.id);
         }
       };
       const second = {
-        id: "second", name: "Second", parent: sourceActor,
-        async delete() { sourceActor.items.delete(this.id); }
+        id: "second",
+        name: "Second",
+        parent: sourceActor,
+        async delete() {
+          sourceActor.items.delete(this.id);
+        }
       };
+
       sourceActor.items = new Map([[first.id, first], [second.id, second]]);
       region.getFlag().state.applied = {
         first: { actorUuid: sourceActor.uuid, itemId: first.id, removal: "zone-end" },
@@ -146,6 +169,7 @@ test("deleting an affected unlinked Token clears its synthetic Actor records bef
       uuid: "Scene.scene.Token.deleted-target",
       actorLink: false
     };
+
     region.getFlag().state.applied = {
       exit: {
         actorUuid: "Scene.scene.Token.deleted-target.Actor.synthetic",
@@ -176,6 +200,7 @@ test("deleting an affected unlinked Token clears its synthetic Actor records bef
 test("on-exit cleanup follows shared Actor occupancy for either linked-Token order", async () => {
   const previousFromUuid = globalThis.fromUuid;
   const previousEligible = runtime.eligible;
+
   try {
     for (const entryOrder of [["first", "second"], ["second", "first"]]) {
       for (const exitOrder of [["first", "second"], ["second", "first"]]) {
@@ -188,9 +213,13 @@ test("on-exit cleanup follows shared Actor occupancy for either linked-Token ord
         const item = {
           id: "shared-effect",
           parent: actor,
-          async delete() { actor.items.delete(this.id); }
+          async delete() {
+            actor.items.delete(this.id);
+          }
         };
+
         actor.items.set(item.id, item);
+
         const payload = {
           state: {
             applied: {
@@ -205,10 +234,12 @@ test("on-exit cleanup follows shared Actor occupancy for either linked-Token ord
           }
         };
         const documents = new Map([[actor.uuid, actor], ...Object.values(tokens).map((token) => [token.uuid, token])]);
+
         globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
         runtime.eligible = async (_payload, token) => token.actor?.uuid === actor.uuid;
 
         const remaining = tokens[exitOrder[1]];
+
         await runtime.cleanupExitedItemsUnlocked({}, payload, [remaining]);
         assert.equal(actor.items.has(item.id), true, `${label}: first exit must retain the shared Item`);
         assert.ok(payload.state.applied.shared, `${label}: first exit must retain its cleanup record`);
@@ -246,6 +277,7 @@ test("a deleted target Actor is completed cleanup instead of blocking zone dismi
 test("Actor deletion reconciliation removes only records belonging to that Actor", async () => {
   await withFiniteZoneFixture(async ({ region }) => {
     const deletedActor = { uuid: "Actor.deleted-target" };
+
     region.getFlag().state.applied = {
       deleted: {
         actorUuid: deletedActor.uuid,
@@ -271,13 +303,18 @@ test("failed Region deletion rejects dismissal and remains retryable", async () 
   await withFiniteZoneFixture(async ({ scene, region }) => {
     const priorUi = globalThis.ui;
     const priorConsoleError = console.error;
+
     globalThis.ui = { notifications: { error: () => {} } };
+
     console.error = () => {};
+
     try {
       const originalDelete = region.delete;
       let failDelete = true;
+
       region.delete = async function () {
         if (failDelete) throw new Error("temporary Region deletion failure");
+
         return originalDelete.call(this);
       };
 
@@ -301,23 +338,38 @@ test("simultaneous dismissal requests share a failed Region deletion", async () 
   await withFiniteZoneFixture(async ({ scene, region }) => {
     const priorUi = globalThis.ui;
     const priorConsoleError = console.error;
+
     globalThis.ui = { notifications: { error: () => {} } };
+
     console.error = () => {};
+
     try {
       let signalStarted;
-      const started = new Promise((resolve) => { signalStarted = resolve; });
+      const started = new Promise((resolve) => {
+        signalStarted = resolve;
+      });
       let releaseDelete;
-      const released = new Promise((resolve) => { releaseDelete = resolve; });
+      const released = new Promise((resolve) => {
+        releaseDelete = resolve;
+      });
+
       region.delete = async () => {
         signalStarted();
         await released;
+
         throw new Error("simultaneous Region deletion failure");
       };
+
       const first = runtime.endZone(region, "first request");
+
       await started;
+
       const second = runtime.endZone(region, "second request");
+
       releaseDelete();
+
       const results = await Promise.allSettled([first, second]);
+
       assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
       assert.match(results[1].reason.message, /simultaneous Region deletion failure/);
       assert.equal(scene.regions.has(region.id), true);
@@ -336,19 +388,27 @@ test("orphaned zone Items can be retried after an external Region deletion", asy
     const priorGetProperty = foundry.utils.getProperty;
     const priorActors = game.actors.contents;
     const notices = [];
+
     globalThis.ui = { notifications: { error: (message) => notices.push(message) } };
+
     console.error = () => {};
+
     foundry.utils.getProperty = (object, path) => path.split(".").reduce((value, key) => value?.[key], object);
+
     try {
       let failDeletion = true;
       const item = {
-        id: "orphaned", name: "Orphaned effect", parent: sourceActor,
+        id: "orphaned",
+        name: "Orphaned effect",
+        parent: sourceActor,
         flags: { world: { pf2eZone: { zoneUuid: region.uuid, removal: "zone-end" } } },
         async delete() {
           if (failDeletion) throw new Error("temporary orphan cleanup failure");
+
           sourceActor.items.delete(this.id);
         }
       };
+
       sourceActor.items = new Map([[item.id, item]]);
       game.actors.contents = [sourceActor];
       scene.regions.delete(region.id);
@@ -372,12 +432,15 @@ test("orphaned zone Items can be retried after an external Region deletion", asy
 test("a stale Item deletion error is harmless once the Item is gone", async () => {
   const actor = { uuid: "Actor.stale", items: new Map() };
   const item = {
-    id: "stale", parent: actor,
+    id: "stale",
+    parent: actor,
     async delete() {
       actor.items.delete(this.id);
+
       throw new Error("undefined id [stale] does not exist in the EmbeddedCollection collection");
     }
   };
+
   actor.items.set(item.id, item);
   assert.equal(await runtime.deleteOwnedItem(item), true);
   assert.equal(actor.items.has(item.id), false);
@@ -387,17 +450,22 @@ test("failed on-exit cleanup retries at startup without replaying continuous eff
   await withFiniteZoneFixture(async ({ region, sourceActor, sourceToken }) => {
     let failDeletion = true;
     const item = {
-      id: "exited", parent: sourceActor,
+      id: "exited",
+      parent: sourceActor,
       async delete() {
         if (failDeletion) throw new Error("temporary exit cleanup failure");
+
         sourceActor.items.delete(this.id);
       }
     };
+
     sourceActor.items = new Map([[item.id, item]]);
     region.getFlag().state.applied = {
       exited: {
-        actorUuid: sourceActor.uuid, tokenUuid: sourceToken.uuid,
-        itemId: item.id, removal: "on-exit"
+        actorUuid: sourceActor.uuid,
+        tokenUuid: sourceToken.uuid,
+        itemId: item.id,
+        removal: "on-exit"
       }
     };
 
@@ -405,17 +473,22 @@ test("failed on-exit cleanup retries at startup without replaying continuous eff
       runtime.withState(region, (payload) => runtime.cleanupExitedItemsUnlocked(region, payload)),
       /temporary exit cleanup failure/
     );
+
     assert.equal(sourceActor.items.has(item.id), true);
     assert.ok(region.getFlag().state.applied.exited);
 
     failDeletion = false;
+
     const previousContinuous = runtime.processContinuousUnlocked;
+
     runtime.processContinuousUnlocked = () => assert.fail("startup retry must not replay continuous effects");
+
     try {
       await runtime.reconcileUnfinishedExitCleanup();
     } finally {
       runtime.processContinuousUnlocked = previousContinuous;
     }
+
     assert.equal(sourceActor.items.has(item.id), false);
     assert.deepEqual(region.getFlag().state.applied, {});
   });
@@ -434,14 +507,18 @@ test("self-only and legacy both targeting remain compatible", async () => {
   const enemy = { uuid: "Token.enemy", actor: actor("enemy", false, true) };
   const neutral = { uuid: "Token.neutral", actor: actor("neutral", false, false) };
   const originalResolveSource = runtime.resolveSource;
+
   runtime.resolveSource = async () => ({ token: sourceToken, actor: sourceActor });
+
   try {
     const selfOnly = { config: { targeting: { affects: "none", includeSelf: true } } };
+
     assert.equal(await runtime.eligible(selfOnly, sourceToken), true);
     assert.equal(await runtime.eligible(selfOnly, ally), false);
     assert.equal(await runtime.eligible(selfOnly, enemy), false);
 
     const both = { config: { targeting: { affects: "both", includeSelf: false } } };
+
     assert.equal(await runtime.eligible(both, sourceToken), false);
     assert.equal(await runtime.eligible(both, ally), true);
     assert.equal(await runtime.eligible(both, enemy), true);
@@ -454,31 +531,50 @@ test("self-only and legacy both targeting remain compatible", async () => {
 test("target eligibility respects closed walls by default and allows the zone override", async () => {
   const previousConst = globalThis.CONST;
   const originalResolveSource = runtime.resolveSource;
+
   globalThis.CONST = {
     EDGE_SENSE_TYPES: { NONE: 0, NORMAL: 20 },
     WALL_DOOR_TYPES: { NONE: 0, DOOR: 1 },
     WALL_DOOR_STATES: { CLOSED: 0, OPEN: 1 }
   };
-  const wall = { c: [150, 0, 150, 100], move: 20, door: 1, ds: 0 };
+
+  const wall = {
+    c: [150, 0, 150, 100],
+    move: 20,
+    door: 1,
+    ds: 0
+  };
   const scene = { walls: [wall] };
   const sourceActor = { uuid: "Actor.source", isOfType: () => true };
   const targetActor = {
-    uuid: "Actor.target", isOfType: () => true,
-    isEnemyOf: () => true, isAllyOf: () => false
+    uuid: "Actor.target",
+    isOfType: () => true,
+    isEnemyOf: () => true,
+    isAllyOf: () => false
   };
   const sourceToken = {
-    uuid: "Token.source", actor: sourceActor, parent: scene,
-    x: 0, y: 0, getSize: () => ({ width: 100, height: 100 })
+    uuid: "Token.source",
+    actor: sourceActor,
+    parent: scene,
+    x: 0,
+    y: 0,
+    getSize: () => ({ width: 100, height: 100 })
   };
   const targetToken = {
-    uuid: "Token.target", actor: targetActor, parent: scene,
-    x: 200, y: 0, getSize: () => ({ width: 100, height: 100 })
+    uuid: "Token.target",
+    actor: targetActor,
+    parent: scene,
+    x: 200,
+    y: 0,
+    getSize: () => ({ width: 100, height: 100 })
   };
   const region = { parent: scene };
   const payload = {
     config: { mode: "emanation", targeting: { affects: "enemies", includeSelf: false } }
   };
+
   runtime.resolveSource = async () => ({ token: sourceToken, actor: sourceActor });
+
   try {
     assert.equal(await runtime.eligible(payload, targetToken, region), false, "missing legacy setting uses the new default");
     payload.config.targeting.lineOfEffect = "ignore";
@@ -495,6 +591,7 @@ test("target eligibility respects closed walls by default and allows the zone ov
 
 test("runtime watches token and wall changes for effective-zone reconciliation", () => {
   const hooks = globalThis.PF2EZoneRuntimeHookRegistry?.hookIds?.map(([name]) => name) ?? [];
+
   assert.ok(hooks.includes("updateToken"));
   assert.ok(hooks.includes("createWall"));
   assert.ok(hooks.includes("updateWall"));
@@ -513,12 +610,16 @@ test("effective occupancy fires Entry once when line of effect is restored", asy
   };
   const entries = [];
   let clear = false;
+
   runtime.tokensInside = () => [token];
   runtime.eligible = async () => clear;
+
   runtime.processTriggerUnlocked = async (_region, _payload, target, trigger) => {
     if (trigger === "enter") entries.push(target.uuid);
   };
+
   runtime.effectiveOccupants.set(region.uuid, new Set());
+
   try {
     clear = true;
     await runtime.reconcileContinuousUnlocked(region, payload);
@@ -549,7 +650,11 @@ async function withFiniteZoneFixture(run) {
     replace: globalThis._replace
   };
   const regions = new Map();
-  regions[Symbol.iterator] = function* () { yield* this.values(); };
+
+  regions[Symbol.iterator] = function* () {
+    yield* this.values();
+  };
+
   const scene = { id: "scene", regions, tokens: [] };
   const sourceActor = { uuid: "Actor.source" };
   const sourceToken = { uuid: "Scene.scene.Token.source", actor: sourceActor, parent: scene };
@@ -563,10 +668,17 @@ async function withFiniteZoneFixture(run) {
     turns: [sourceCombatant, otherCombatant],
     combatant: sourceCombatant
   };
+
   sourceActor.combatant = sourceCombatant;
+
   const rounds = 2;
   let stored = {
-    config: { name: "Timed area", mode: "area", duration: { type: "custom-rounds", rounds }, effects: [] },
+    config: {
+      name: "Timed area",
+      mode: "area",
+      duration: { type: "custom-rounds", rounds },
+      effects: []
+    },
     state: {
       sourceActorUuid: sourceActor.uuid,
       sourceTokenUuid: sourceToken.uuid,
@@ -588,11 +700,18 @@ async function withFiniteZoneFixture(run) {
     parent: scene,
     behaviors: [{ name: "PF2e Zone Runtime", disabled: false }],
     getFlag: () => stored,
-    async update(changes) { stored = changes["flags.world.pf2eZone"]; },
-    async delete() { scene.regions.delete(this.id); }
+    async update(changes) {
+      stored = changes["flags.world.pf2eZone"];
+    },
+    async delete() {
+      scene.regions.delete(this.id);
+    }
   };
+
   scene.regions.set(region.id, region);
+
   const documents = new Map([[sourceActor.uuid, sourceActor], [sourceToken.uuid, sourceToken]]);
+
   globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
   globalThis._replace = (payload) => payload;
   game.time = { worldTime: 100 };
@@ -602,8 +721,16 @@ async function withFiniteZoneFixture(run) {
 
   try {
     await run({
-      scene, region, combat, sourceActor, sourceToken, sourceCombatant, otherCombatant,
-      get stored() { return stored; }
+      scene,
+      region,
+      combat,
+      sourceActor,
+      sourceToken,
+      sourceCombatant,
+      otherCombatant,
+      get stored() {
+        return stored;
+      }
     });
   } finally {
     game.time = saved.time;
@@ -647,7 +774,14 @@ test("a removed source combatant falls back to world time or the combat deadline
 });
 
 test("a new encounter preserves observed remaining rounds instead of restarting duration", async () => {
-  await withFiniteZoneFixture(async ({ scene, region, combat, sourceActor, sourceToken, otherCombatant }) => {
+  await withFiniteZoneFixture(async ({
+    scene,
+    region,
+    combat,
+    sourceActor,
+    sourceToken,
+    otherCombatant
+  }) => {
     combat.round = 2;
     combat.turn = 1;
     combat.combatant = otherCombatant;
@@ -655,7 +789,16 @@ test("a new encounter preserves observed remaining rounds instead of restarting 
     assert.equal(scene.regions.has(region.id), true);
 
     const newSource = { id: "new-source", actor: sourceActor, token: sourceToken };
-    game.combat = { id: "next-fight", scene, round: 1, turn: 0, turns: [newSource], combatant: newSource };
+
+    game.combat = {
+      id: "next-fight",
+      scene,
+      round: 1,
+      turn: 0,
+      turns: [newSource],
+      combatant: newSource
+    };
+
     game.combats.contents.push(game.combat);
     await runtime.checkSourceAndDuration(region);
     assert.equal(scene.regions.has(region.id), true);
@@ -682,13 +825,17 @@ test("disabling a behavior persists deactivation, removes owned effects, and sil
     const item = {
       id: "owned",
       parent: sourceActor,
-      async delete() { sourceActor.items.delete(this.id); }
+      async delete() {
+        sourceActor.items.delete(this.id);
+      }
     };
+
     sourceActor.items = new Map([[item.id, item]]);
     region.getFlag().config.effects = [{ id: "spell", triggers: { spellCast: true, turnStart: true } }];
     region.getFlag().state.applied = {
       owned: { actorUuid: sourceActor.uuid, itemId: item.id, removal: "zone-end" }
     };
+
     region.getFlag().state.pendingSaves = { pending: { id: "pending" } };
     region.behaviors[0].disabled = true;
 
@@ -700,10 +847,23 @@ test("disabling a behavior persists deactivation, removes owned effects, and sil
     let traitReads = 0;
     let turns = 0;
     let spellTriggers = 0;
+
     runtime.installHooks = () => {};
-    runtime.traitUseInfoFromMessage = async () => { traitReads++; return { token: sourceToken, traits: new Set(), isSpellCast: true }; };
-    runtime.processTurnStartUnlocked = async () => { turns++; };
-    runtime.processBlock = async () => { spellTriggers++; };
+
+    runtime.traitUseInfoFromMessage = async () => {
+      traitReads++;
+
+      return { token: sourceToken, traits: new Set(), isSpellCast: true };
+    };
+
+    runtime.processTurnStartUnlocked = async () => {
+      turns++;
+    };
+
+    runtime.processBlock = async () => {
+      spellTriggers++;
+    };
+
     runtime.tokensInside = () => [sourceToken];
 
     try {
@@ -767,12 +927,16 @@ test("startup reconciliation cleans a previously disabled behavior with a stale 
     const item = {
       id: "old-owned",
       parent: sourceActor,
-      async delete() { sourceActor.items.delete(this.id); }
+      async delete() {
+        sourceActor.items.delete(this.id);
+      }
     };
+
     sourceActor.items = new Map([[item.id, item]]);
     region.getFlag().state.applied = {
       owned: { actorUuid: sourceActor.uuid, itemId: item.id, removal: "zone-end" }
     };
+
     delete region.getFlag().state.deactivated;
     region.behaviors[0].disabled = true;
 
@@ -786,16 +950,21 @@ test("a legacy scheduled flag cannot prevent activation recovery", async () => {
   await withFiniteZoneFixture(async ({ region }) => {
     region.tokens = new Set();
     region.getFlag().state.activationFinalizeScheduled = true;
+
     try {
       await runtime.reconcileUnfinishedActivations();
+
       const state = region.getFlag().state;
+
       assert.equal(state.activationPending, true);
       assert.ok(Number.isFinite(state.activationFinalizeAt));
       assert.equal(Object.hasOwn(state, "activationFinalizeScheduled"), false);
       assert.ok(runtime.activationFinalizeTimers.has(region.uuid));
     } finally {
       const timer = runtime.activationFinalizeTimers.get(region.uuid);
+
       if (timer) clearTimeout(timer);
+
       runtime.activationFinalizeTimers.delete(region.uuid);
     }
   });
@@ -804,17 +973,22 @@ test("a legacy scheduled flag cannot prevent activation recovery", async () => {
 test("activation resumes from its saved deadline after a GM reload", async () => {
   await withFiniteZoneFixture(async ({ region, sourceToken }) => {
     region.tokens = new Set();
+
     const originalEligible = runtime.eligible;
     const originalTrigger = runtime.processTriggerUnlocked;
     let entries = 0;
+
     try {
       runtime.eligible = async () => true;
+
       runtime.processTriggerUnlocked = async (_region, _payload, _token, trigger) => {
         if (trigger === "enter") entries++;
       };
 
       await runtime.activateRegion(region);
+
       const state = region.getFlag().state;
+
       assert.equal(state.activationPending, true);
       assert.ok(state.activationFinalizeAt >= Date.now());
       assert.ok(runtime.activationFinalizeTimers.has(region.uuid));
@@ -828,10 +1002,12 @@ test("activation resumes from its saved deadline after a GM reload", async () =>
       state.initialOccupants.initial__Scene_scene_Token_source = true;
 
       const enter = { event: { name: "tokenEnter", data: { token: sourceToken, movement: {} } }, region };
+
       await runtime.handleRegionEvent(enter);
       assert.equal(entries, 0, "the original occupant is ignored until activation finalizes");
 
       await runtime.reconcileUnfinishedActivations();
+
       for (let attempt = 0; attempt < 25 && !region.getFlag().state.activationProcessed; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
@@ -845,7 +1021,9 @@ test("activation resumes from its saved deadline after a GM reload", async () =>
       assert.equal(entries, 1, "later re-entry must be processed normally");
     } finally {
       const timer = runtime.activationFinalizeTimers.get(region.uuid);
+
       if (timer) clearTimeout(timer);
+
       runtime.activationFinalizeTimers.delete(region.uuid);
       runtime.eligible = originalEligible;
       runtime.processTriggerUnlocked = originalTrigger;
@@ -857,9 +1035,14 @@ test("reactivating an overdue zone ends it before maintained effects return", as
   await withFiniteZoneFixture(async ({ scene, region, combat }) => {
     region.getFlag().state.deactivated = true;
     combat.round = 3;
+
     const originalReconcile = runtime.reconcileContinuousUnlocked;
     let reconciles = 0;
-    runtime.reconcileContinuousUnlocked = async () => { reconciles++; };
+
+    runtime.reconcileContinuousUnlocked = async () => {
+      reconciles++;
+    };
+
     try {
       await runtime.activateRegion(region);
       assert.equal(scene.regions.has(region.id), false);
@@ -874,9 +1057,13 @@ test("a zone ignores another Scene's combat clock while its own encounter advanc
   await withFiniteZoneFixture(async ({ scene, region, combat }) => {
     const otherScene = { id: "other" };
     const otherCombat = {
-      id: "other-fight", scene: otherScene, round: 1, turn: 0,
+      id: "other-fight",
+      scene: otherScene,
+      round: 1,
+      turn: 0,
       turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
     };
+
     game.combats.contents.push(otherCombat);
     game.combat = otherCombat;
 
@@ -895,9 +1082,13 @@ test("a zone uses world time when only an unrelated Scene has an encounter", asy
   await withFiniteZoneFixture(async ({ scene, region }) => {
     const otherScene = { id: "other" };
     const otherCombat = {
-      id: "other-fight", scene: otherScene, round: 20, turn: 0,
+      id: "other-fight",
+      scene: otherScene,
+      round: 20,
+      turn: 0,
       turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
     };
+
     game.combats.contents = [otherCombat];
     game.combat = otherCombat;
 
@@ -915,13 +1106,20 @@ test("once-per-round limits follow the zone's encounter instead of another Scene
   await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
     const otherScene = { id: "other" };
     const otherCombat = {
-      id: "other-fight", scene: otherScene, round: 10, turn: 0,
+      id: "other-fight",
+      scene: otherScene,
+      round: 10,
+      turn: 0,
       turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
     };
+
     game.combats.contents.push(otherCombat);
     game.combat = otherCombat;
+
     const payload = region.getFlag();
+
     payload.state.repeat = {};
+
     const block = { id: "alert", repeat: "once-per-round" };
 
     runtime.markRepeat(payload, sourceToken.uuid, block);
@@ -937,19 +1135,29 @@ test("temporary immunity uses the zone's encounter and ignores another Scene", a
   await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
     const otherScene = { id: "other" };
     const otherCombat = {
-      id: "other-fight", scene: otherScene, round: 5, turn: 0,
+      id: "other-fight",
+      scene: otherScene,
+      round: 5,
+      turn: 0,
       turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
     };
+
     game.combats.contents.push(otherCombat);
     game.combat = otherCombat;
+
     const payload = region.getFlag();
+
     payload.state.immunities = {};
     runtime.setImmunity(payload, sourceToken.uuid, { id: "fervor", immunity: { duration: "1-round" } });
+
     const record = Object.values(payload.state.immunities)[0];
+
     assert.equal(record.expiry.combatId, combat.id);
 
     const priorLog = console.info;
+
     console.info = () => {};
+
     try {
       otherCombat.round = 20;
       assert.equal(runtime.isImmune(payload, sourceToken.uuid, "fervor"), true);
@@ -965,12 +1173,18 @@ test("another Scene's combat update cannot start this zone's source or occupant 
   await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
     const otherScene = { id: "other" };
     const otherCombat = {
-      id: "other-fight", scene: otherScene, round: 2, turn: 0,
+      id: "other-fight",
+      scene: otherScene,
+      round: 2,
+      turn: 0,
       turns: [{ id: "other", token: { uuid: "Scene.other.Token.other", parent: otherScene } }]
     };
+
     game.combats.contents.push(otherCombat);
     game.combat = otherCombat;
+
     const payload = region.getFlag();
+
     payload.config.effects = [{ triggers: { sourceTurnStart: true, turnStart: true } }];
     payload.state.lastSourceTriggerTurnKey = null;
 
@@ -981,9 +1195,17 @@ test("another Scene's combat update cannot start this zone's source or occupant 
     };
     let sourceStarts = 0;
     let occupantStarts = 0;
-    runtime.processSourceTurnStartUnlocked = async () => { sourceStarts++; };
-    runtime.processTurnStartUnlocked = async () => { occupantStarts++; };
+
+    runtime.processSourceTurnStartUnlocked = async () => {
+      sourceStarts++;
+    };
+
+    runtime.processTurnStartUnlocked = async () => {
+      occupantStarts++;
+    };
+
     runtime.tokensInside = () => [sourceToken];
+
     try {
       await runtime.processSourceTurnStart(region, otherCombat);
       await runtime.processActiveTurnStart(region, otherCombat);
@@ -1003,6 +1225,7 @@ test("another Scene's combat update cannot start this zone's source or occupant 
 test("a Summoner turn starts an inside Eidolon's zone effects even when the Summoner is outside", async () => {
   await withFiniteZoneFixture(async ({ scene, region, sourceActor }) => {
     sourceActor.id = "summoner";
+
     const eidolonActor = {
       id: "eidolon",
       uuid: "Actor.eidolon",
@@ -1024,12 +1247,15 @@ test("a Summoner turn starts an inside Eidolon's zone effects even when the Summ
     const originalInside = runtime.tokensInside;
     const originalTurnStart = runtime.processTurnStartUnlocked;
     const processed = [];
+
     game.actors = {
       get: (id) => id === sourceActor.id ? sourceActor : null,
       contents: [sourceActor, eidolonActor]
     };
+
     region.getFlag().config.effects = [{ triggers: { turnStart: true } }];
     runtime.tokensInside = () => [eidolonToken, unrelatedToken];
+
     runtime.processTurnStartUnlocked = async (_region, _payload, token) => {
       processed.push(token.uuid);
     };
@@ -1062,13 +1288,18 @@ test("PF2e Toolbelt-linked turn bodies are processed once with their master", as
     const originalInside = runtime.tokensInside;
     const originalTurnStart = runtime.processTurnStartUnlocked;
     const processed = [];
+
     game.modules = {
-      get: (id) => id === "pf2e-toolbelt" ? {
-        api: { shareData: { getMasterInMemory: (actor) => actor === eidolonActor ? sourceActor : null } }
-      } : null
+      get: (id) => id === "pf2e-toolbelt"
+        ? {
+          api: { shareData: { getMasterInMemory: (actor) => actor === eidolonActor ? sourceActor : null } }
+        }
+        : null
     };
+
     region.getFlag().config.effects = [{ triggers: { turnStart: true } }];
     runtime.tokensInside = () => [sourceToken, duplicateSummonerToken, eidolonToken];
+
     runtime.processTurnStartUnlocked = async (_region, _payload, token) => {
       processed.push(token.uuid);
     };
@@ -1088,12 +1319,17 @@ test("entering combat keeps only the unused world-time immunity duration", async
   await withFiniteZoneFixture(async ({ region, combat, sourceToken }) => {
     game.combat = null;
     game.combats.contents = [];
+
     const payload = region.getFlag();
+
     payload.state.immunities = {};
     runtime.setImmunity(payload, sourceToken.uuid, {
-      id: "stench", immunity: { duration: "1-minute" }
+      id: "stench",
+      immunity: { duration: "1-minute" }
     });
+
     const expiry = Object.values(payload.state.immunities)[0].expiry;
+
     assert.equal(expiry.combatId, null);
     assert.equal(expiry.worldExpires, 160);
 
@@ -1113,19 +1349,28 @@ test("entering combat keeps only the unused world-time immunity duration", async
 test("changing encounters carries prior combat progress even after a missed update hook", async () => {
   await withFiniteZoneFixture(async ({ region, combat, sourceToken, sourceActor }) => {
     const payload = region.getFlag();
+
     payload.state.immunities = {};
     runtime.setImmunity(payload, sourceToken.uuid, {
-      id: "stench", immunity: { duration: "1-minute" }
+      id: "stench",
+      immunity: { duration: "1-minute" }
     });
+
     const expiry = Object.values(payload.state.immunities)[0].expiry;
+
     delete expiry.remainingRounds; // A legacy record has no progress field.
     combat.round = 6;
 
     const nextSource = { id: "next-source", actor: sourceActor, token: sourceToken };
     const nextCombat = {
-      id: "next-fight", scene: region.parent, round: 1, turn: 0,
-      turns: [nextSource], combatant: nextSource
+      id: "next-fight",
+      scene: region.parent,
+      round: 1,
+      turn: 0,
+      turns: [nextSource],
+      combatant: nextSource
     };
+
     game.combats.contents.push(nextCombat);
     game.combat = nextCombat;
     runtime.syncImmunityCombatClock(payload);
@@ -1144,11 +1389,15 @@ test("changing encounters carries prior combat progress even after a missed upda
 test("leaving combat shortens the world deadline before a later encounter", async () => {
   await withFiniteZoneFixture(async ({ region, combat, sourceToken, sourceActor }) => {
     const payload = region.getFlag();
+
     payload.state.immunities = {};
     runtime.setImmunity(payload, sourceToken.uuid, {
-      id: "stench", immunity: { duration: "1-minute" }
+      id: "stench",
+      immunity: { duration: "1-minute" }
     });
+
     const expiry = Object.values(payload.state.immunities)[0].expiry;
+
     combat.round = 5;
     runtime.syncImmunityCombatClock(payload);
     assert.equal(expiry.remainingRounds, 6);
@@ -1160,11 +1409,17 @@ test("leaving combat shortens the world deadline before a later encounter", asyn
     assert.equal(expiry.worldExpires, 136);
 
     game.time.worldTime = 112;
+
     const nextSource = { id: "next-source", actor: sourceActor, token: sourceToken };
     const nextCombat = {
-      id: "next-fight", scene: region.parent, round: 1, turn: 0,
-      turns: [nextSource], combatant: nextSource
+      id: "next-fight",
+      scene: region.parent,
+      round: 1,
+      turn: 0,
+      turns: [nextSource],
+      combatant: nextSource
     };
+
     game.combats.contents.push(nextCombat);
     game.combat = nextCombat;
     runtime.syncImmunityCombatClock(payload);
@@ -1179,11 +1434,13 @@ test("leaving combat shortens the world deadline before a later encounter", asyn
 test("immunity keeps its original turn as the expiration point", async () => {
   await withFiniteZoneFixture(async ({ region, combat, sourceToken, otherCombatant }) => {
     const payload = region.getFlag();
+
     payload.state.immunities = {};
     combat.turn = 1;
     combat.combatant = otherCombatant;
     runtime.setImmunity(payload, sourceToken.uuid, {
-      id: "stench", immunity: { duration: "1-round" }
+      id: "stench",
+      immunity: { duration: "1-round" }
     });
 
     combat.round = 2;
@@ -1215,13 +1472,18 @@ test("active-GM recovery coalesces hook bursts and continues after an individual
   const errors = [];
   let markStarted;
   let releaseFirstStep;
-  const started = new Promise((resolve) => { markStarted = resolve; });
-  const firstStepReleased = new Promise((resolve) => { releaseFirstStep = resolve; });
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const firstStepReleased = new Promise((resolve) => {
+    releaseFirstStep = resolve;
+  });
   const authority = { id: "handoff-gm", isGM: true };
 
   for (const name of stepNames) {
     runtime[name] = async () => {
       calls.push(name);
+
       if (name === stepNames[0]) {
         markStarted();
         await firstStepReleased;
@@ -1229,6 +1491,7 @@ test("active-GM recovery coalesces hook bursts and continues after an individual
       if (name === "reconcileUnfinishedZoneEnds") throw new Error("injected recovery failure");
     };
   }
+
   game.user = authority;
   game.users = { activeGM: authority };
   console.error = (...args) => errors.push(args);
@@ -1237,7 +1500,9 @@ test("active-GM recovery coalesces hook bursts and continues after an individual
     runtime.scheduleAuthorityRecovery("test handoff");
     runtime.scheduleAuthorityRecovery("duplicate hook");
     await started;
+
     const joined = runtime.reconcileAuthorityState("in-flight hook");
+
     releaseFirstStep();
     await joined;
 
@@ -1249,6 +1514,7 @@ test("active-GM recovery coalesces hook bursts and continues after an individual
   } finally {
     releaseFirstStep();
     for (const [name, original] of originals) runtime[name] = original;
+
     game.user = previousUser;
     game.users = previousUsers;
     console.error = previousError;

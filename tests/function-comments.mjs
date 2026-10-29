@@ -16,6 +16,7 @@ function namedDeclarations(source) {
     const methodMatch = line.match(/^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*\)\s*\{\s*$/);
     const arrowMatch = line.match(/^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^()\n]*\)|[A-Za-z_$][\w$]*)\s*=>/);
     const name = functionMatch?.[1] ?? methodMatch?.[1] ?? arrowMatch?.[1] ?? null;
+
     if (name && !ignored.has(name)) declarations.push({ index, name });
   }
 
@@ -28,9 +29,12 @@ test("every named JavaScript function has a purpose comment", () => {
 
   for (const file of readdirSync(scripts).filter((name) => name.endsWith(".js"))) {
     const { lines, declarations } = namedDeclarations(readFileSync(resolve(scripts, file), "utf8"));
+
     for (const declaration of declarations) {
       let previous = declaration.index - 1;
+
       while (previous >= 0 && lines[previous].trim() === "") previous -= 1;
+
       if (previous < 0 || !lines[previous].trim().endsWith("*/")) {
         missing.push(`${file}:${declaration.index + 1} ${declaration.name}`);
       }

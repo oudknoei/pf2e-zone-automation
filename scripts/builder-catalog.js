@@ -40,15 +40,19 @@ export const WATCHED_TRAITS = Object.freeze([
 /** Uses the installed PF2e condition catalog so the builder follows the active system version. */
 export function getConditionChoices() {
   const config = CONFIG.PF2E?.conditionTypes ?? {};
+
   return conditionSlugs()
     .map((slug) => {
       const raw = config[slug];
       let label = titleCase(slug);
+
       if (typeof raw === "string") label = localize(raw, label);
       else if (raw && typeof raw === "object") {
         const candidate = raw.label ?? raw.name;
+
         if (typeof candidate === "string") label = localize(candidate, titleCase(slug));
       }
+
       return { slug, label };
     })
     .sort((a, b) => a.label.localeCompare(b.label));
@@ -61,5 +65,6 @@ export function getDamageChoices() {
     slug,
     label: typeof config[slug] === "string" ? localize(config[slug], titleCase(slug)) : titleCase(slug)
   }));
+
   return values.sort((a, b) => a.label.localeCompare(b.label));
 }

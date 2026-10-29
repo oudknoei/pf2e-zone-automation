@@ -10,6 +10,7 @@ const gm = { id: "gm", isGM: true, active: true };
 const owner = { id: "owner", isGM: false, active: true };
 const stranger = { id: "stranger", isGM: false, active: true };
 const users = new Map([gm, owner, stranger].map((user) => [user.id, user]));
+
 globalThis.game = {
   system: { id: "pf2e" },
   actors: { contents: [] },
@@ -32,12 +33,24 @@ async function withPendingSave(run) {
     uuid: "Actor.target",
     testUserPermission: (user, level) => user.id === owner.id && level === "OWNER"
   };
-  const token = { id: "target-token", uuid: "Scene.scene.Token.target-token", name: "Target", actor };
+  const token = {
+    id: "target-token",
+    uuid: "Scene.scene.Token.target-token",
+    name: "Target",
+    actor
+  };
   const identifier = "pf2e-zone:scene:zone:pending";
   const pending = {
-    id: "pending", identifier, tokenUuid: token.uuid, actorUuid: actor.uuid,
-    blockId: "block", blockName: "Save", dc: 25, saveTypes: ["reflex"],
-    trigger: "enter", batchId: "batch"
+    id: "pending",
+    identifier,
+    tokenUuid: token.uuid,
+    actorUuid: actor.uuid,
+    blockId: "block",
+    blockName: "Save",
+    dc: 25,
+    saveTypes: ["reflex"],
+    trigger: "enter",
+    batchId: "batch"
   };
   const block = { id: "block", name: "Save" };
   let stored = {
@@ -45,37 +58,76 @@ async function withPendingSave(run) {
     state: { activationProcessed: true, pendingSaves: { pending } }
   };
   const region = {
-    id: "zone", uuid: "Scene.scene.Region.zone", name: "Zone", parent: scene,
+    id: "zone",
+    uuid: "Scene.scene.Region.zone",
+    name: "Zone",
+    parent: scene,
     behaviors: [{ name: "PF2e Zone Runtime", disabled: false }],
     getFlag: () => stored,
-    async update(changes) { stored = changes["flags.world.pf2eZone"]; }
+    async update(changes) {
+      stored = changes["flags.world.pf2eZone"];
+    }
   };
+
   scene.regions.set(region.id, region);
   game.scenes = { contents: [scene], get: (id) => id === scene.id ? scene : null };
   game.messages.contents = [];
+
   const previousFromUuid = globalThis.fromUuid;
+
   globalThis.fromUuid = async (uuid) => uuid === token.uuid ? token : null;
+
   const previousApplyOutcome = runtime.applyOutcome;
   const previousApplyImmunityStarts = runtime.applyImmunityStarts;
   let applications = 0;
   let immunities = 0;
-  runtime.applyOutcome = async () => { applications++; return true; };
-  runtime.applyImmunityStarts = () => { immunities++; };
+
+  runtime.applyOutcome = async () => {
+    applications++;
+
+    return true;
+  };
+
+  runtime.applyImmunityStarts = () => {
+    immunities++;
+  };
 
   const makeMessage = (author = owner) => ({
-    author, actor, token,
-    flags: { pf2e: { context: {
-      type: "saving-throw", identifier, actor: actor.id, token: token.id,
-      dc: { value: 25 }, domains: ["saving-throw", "reflex"], outcome: "failure"
-    } } },
+    author,
+    actor,
+    token,
+    flags: {
+      pf2e: {
+        context: {
+          type: "saving-throw",
+          identifier,
+          actor: actor.id,
+          token: token.id,
+          dc: { value: 25 },
+          domains: ["saving-throw", "reflex"],
+          outcome: "failure"
+        }
+      }
+    },
     rolls: [{ degreeOfSuccess: 1, options: { type: "saving-throw", identifier, rollerId: author.id } }]
   });
 
   try {
-    await run({ actor, token, pending, region, makeMessage,
-      get stored() { return stored; },
-      get applications() { return applications; },
-      get immunities() { return immunities; }
+    await run({
+      actor,
+      token,
+      pending,
+      region,
+      makeMessage,
+      get stored() {
+        return stored;
+      },
+      get applications() {
+        return applications;
+      },
+      get immunities() {
+        return immunities;
+      }
     });
   } finally {
     runtime.applyOutcome = previousApplyOutcome;
@@ -87,24 +139,52 @@ async function withPendingSave(run) {
 
 test("GM rejects unauthorized or mismatched save chat without consuming pending work", async () => {
   const cases = [
-    ["missing roll", (message) => { message.rolls = []; }],
-    ["missing Actor", (message) => { message.actor = null; }],
-    ["different Actor", (message) => { message.actor = { id: "other", uuid: "Actor.other" }; }],
-    ["different context Actor", (message) => { message.flags.pf2e.context.actor = "other"; }],
-    ["unrelated author", (message) => { message.author = stranger; message.rolls[0].options.rollerId = stranger.id; }],
-    ["unknown author", (message) => { message.author = { id: "unknown", isGM: true }; }],
-    ["different roll identifier", (message) => { message.rolls[0].options.identifier = "other"; }],
-    ["different roll type", (message) => { message.rolls[0].options.type = "skill-check"; }],
-    ["different roller", (message) => { message.rolls[0].options.rollerId = stranger.id; }],
-    ["different DC", (message) => { message.flags.pf2e.context.dc.value = 20; }],
-    ["different save", (message) => { message.flags.pf2e.context.domains = ["saving-throw", "will"]; }],
-    ["different outcome", (message) => { message.flags.pf2e.context.outcome = "success"; }],
-    ["no degree", (message) => { message.rolls[0].degreeOfSuccess = null; }]
+    ["missing roll", (message) => {
+      message.rolls = [];
+    }],
+    ["missing Actor", (message) => {
+      message.actor = null;
+    }],
+    ["different Actor", (message) => {
+      message.actor = { id: "other", uuid: "Actor.other" };
+    }],
+    ["different context Actor", (message) => {
+      message.flags.pf2e.context.actor = "other";
+    }],
+    ["unrelated author", (message) => {
+      message.author = stranger;
+      message.rolls[0].options.rollerId = stranger.id;
+    }],
+    ["unknown author", (message) => {
+      message.author = { id: "unknown", isGM: true };
+    }],
+    ["different roll identifier", (message) => {
+      message.rolls[0].options.identifier = "other";
+    }],
+    ["different roll type", (message) => {
+      message.rolls[0].options.type = "skill-check";
+    }],
+    ["different roller", (message) => {
+      message.rolls[0].options.rollerId = stranger.id;
+    }],
+    ["different DC", (message) => {
+      message.flags.pf2e.context.dc.value = 20;
+    }],
+    ["different save", (message) => {
+      message.flags.pf2e.context.domains = ["saving-throw", "will"];
+    }],
+    ["different outcome", (message) => {
+      message.flags.pf2e.context.outcome = "success";
+    }],
+    ["no degree", (message) => {
+      message.rolls[0].degreeOfSuccess = null;
+    }]
   ];
 
   for (const [name, change] of cases) {
     await withPendingSave(async (fixture) => {
       const message = fixture.makeMessage();
+
       change(message);
       await runtime.handleSaveResult(message);
       assert.equal(fixture.applications, 0, name);
@@ -118,6 +198,7 @@ test("the target owner and a GM can resolve the pending save exactly once", asyn
   for (const author of [owner, gm]) {
     await withPendingSave(async (fixture) => {
       const message = fixture.makeMessage(author);
+
       await runtime.handleSaveResult(message);
       await runtime.handleSaveResult(message);
       assert.equal(fixture.applications, 1);
@@ -130,8 +211,11 @@ test("the target owner and a GM can resolve the pending save exactly once", asyn
 test("a forged chat message cannot make a pending save appear completed", async () => {
   await withPendingSave(async (fixture) => {
     const forged = fixture.makeMessage(stranger);
+
     game.messages.contents = [forged];
+
     const payload = runtime.readPayload(fixture.region);
+
     assert.equal(await runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId), true);
     assert.ok(payload.state.pendingSaves.pending);
   });
@@ -140,6 +224,7 @@ test("a forged chat message cannot make a pending save appear completed", async 
 test("a GM reroll may retain the original owner's CheckRoll", async () => {
   await withPendingSave(async (fixture) => {
     const message = fixture.makeMessage(gm);
+
     message.rolls[0].options.rollerId = owner.id;
     await runtime.handleSaveResult(message);
     assert.equal(fixture.applications, 1);
@@ -147,16 +232,16 @@ test("a GM reroll may retain the original owner's CheckRoll", async () => {
   });
 });
 
-
 test("a missed authorized save is applied before a later save request replaces it", async () => {
   await withPendingSave(async (fixture) => {
     const valid = fixture.makeMessage();
     const forged = fixture.makeMessage(stranger);
+
     game.messages.contents = [valid, forged];
 
     const stillPending = await runtime.withState(fixture.region, (payload) =>
-      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId)
-    );
+      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId));
+
     assert.equal(stillPending, false);
     assert.equal(fixture.applications, 1);
     assert.equal(fixture.immunities, 1);
@@ -171,20 +256,23 @@ test("a missed authorized save is applied before a later save request replaces i
 test("pending scan reconciles later completed requests even when an earlier save is unanswered", async () => {
   await withPendingSave(async (fixture) => {
     const secondIdentifier = "pf2e-zone:scene:zone:second";
+
     fixture.stored.state.pendingSaves.second = {
       ...fixture.pending,
       id: "second",
       identifier: secondIdentifier,
       batchId: "second-event"
     };
+
     const completed = fixture.makeMessage();
+
     completed.flags.pf2e.context.identifier = secondIdentifier;
     completed.rolls[0].options.identifier = secondIdentifier;
     game.messages.contents = [completed];
 
     const stillPending = await runtime.withState(fixture.region, (payload) =>
-      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId)
-    );
+      runtime.hasPending(fixture.region, payload, fixture.token.uuid, fixture.pending.blockId));
+
     assert.equal(stillPending, true);
     assert.equal(fixture.applications, 1);
     assert.ok(fixture.stored.state.pendingSaves.pending);
@@ -201,6 +289,7 @@ test("GM startup replays completed saves but leaves forged or unanswered saves p
     assert.ok(fixture.stored.state.pendingSaves.pending);
 
     const valid = fixture.makeMessage();
+
     game.messages.contents.push(valid);
     await runtime.reconcileCompletedSaves();
     await runtime.reconcileCompletedSaves();
@@ -214,13 +303,17 @@ test("GM startup replays completed saves but leaves forged or unanswered saves p
 test("GM cancellation clears only the unanswered save and releases its repeat marker", async () => {
   await withPendingSave(async (fixture) => {
     const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+
     fixture.stored.state.repeat = { [key]: { zone: true } };
+
     const stale = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, "wrong-identifier");
+
     assert.equal(stale.status, "missing");
     assert.ok(fixture.stored.state.pendingSaves.pending);
     assert.ok(fixture.stored.state.repeat[key]);
 
     const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+
     assert.equal(result.status, "cancelled");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
     assert.equal(fixture.stored.state.repeat[key], undefined);
@@ -233,11 +326,14 @@ test("GM cancellation clears only the unanswered save and releases its repeat ma
 test("cancelling a stale pending record keeps an already resolved save spent", async () => {
   await withPendingSave(async (fixture) => {
     const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+
     fixture.stored.state.repeat = { [key]: { zone: true } };
     fixture.stored.state.resolvedSaves = {
       pending: { identifier: fixture.pending.identifier, outcome: "failure" }
     };
+
     const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+
     assert.equal(result.status, "resolved");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
     assert.deepEqual(fixture.stored.state.repeat[key], { zone: true });
@@ -250,7 +346,9 @@ test("GM can remove a stale pending request from an inactive zone", async () => 
   await withPendingSave(async (fixture) => {
     fixture.stored.state.deactivated = true;
     game.messages.contents = [fixture.makeMessage()];
+
     const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+
     assert.equal(result.status, "cancelled");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);
     assert.equal(fixture.applications, 0);
@@ -260,9 +358,13 @@ test("GM can remove a stale pending request from an inactive zone", async () => 
 test("GM cancellation applies a completed save found in chat instead of discarding it", async () => {
   await withPendingSave(async (fixture) => {
     game.messages.contents = [fixture.makeMessage()];
+
     const key = runtime.repeatKey(fixture.token.uuid, fixture.pending.blockId);
+
     fixture.stored.state.repeat = { [key]: { zone: true } };
+
     const result = await runtime.cancelPendingSave(fixture.region, fixture.pending.id, fixture.pending.identifier);
+
     assert.equal(result.status, "resolved");
     assert.deepEqual(fixture.stored.state.repeat[key], { zone: true }, "a completed save keeps its repeat allowance spent");
     assert.equal(fixture.applications, 1);
@@ -274,14 +376,20 @@ test("GM cancellation applies a completed save found in chat instead of discardi
 test("the GM worker refuses player cancellation and accepts the GM request", async () => {
   await withPendingSave(async (fixture) => {
     const request = {
-      protocol: 1, action: "cancel-pending-save",
-      sceneId: fixture.region.parent.id, regionId: fixture.region.id,
-      pendingId: fixture.pending.id, identifier: fixture.pending.identifier
+      protocol: 1,
+      action: "cancel-pending-save",
+      sceneId: fixture.region.parent.id,
+      regionId: fixture.region.id,
+      pendingId: fixture.pending.id,
+      identifier: fixture.pending.identifier
     };
     const previousError = console.error;
+
     console.error = () => {};
+
     try {
       const denied = await handleWorkerRequest({ ...request, requesterUserId: owner.id });
+
       assert.equal(denied.ok, false);
       assert.match(denied.error, /Only a GM/);
       assert.ok(fixture.stored.state.pendingSaves.pending);
@@ -290,6 +398,7 @@ test("the GM worker refuses player cancellation and accepts the GM request", asy
     }
 
     const accepted = await handleWorkerRequest({ ...request, requesterUserId: gm.id });
+
     assert.equal(accepted.ok, true, accepted.error);
     assert.equal(accepted.status, "cancelled");
     assert.equal(fixture.stored.state.pendingSaves.pending, undefined);

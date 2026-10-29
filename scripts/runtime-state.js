@@ -16,20 +16,28 @@ export function createRegionStateService() {
     /** Normalizes persisted state on read so older zones can participate in newer runtime behavior. */
     readPayload(region) {
       const raw = region?.getFlag?.(FLAG_SCOPE, FLAG_KEY);
+
       if (!raw || typeof raw !== "object") return null;
+
       const payload = clone(raw);
+
       payload.state ??= {};
       payload.state.pendingSaves ??= {};
+
       for (const pending of Object.values(payload.state.pendingSaves)) {
         if (!pending || typeof pending !== "object") continue;
         if (!pending.delivery || typeof pending.delivery !== "object") pending.delivery = {};
+
         pending.delivery.status = pending.delivery.status === "delivered" ? "delivered" : "undelivered";
         pending.delivery.attempts = Number.isSafeInteger(pending.delivery.attempts)
-          ? Math.max(0, pending.delivery.attempts) : 0;
+          ? Math.max(0, pending.delivery.attempts)
+          : 0;
+
         pending.delivery.messageId ??= null;
         pending.delivery.lastAttemptWorldTime ??= null;
         pending.delivery.lastError ??= null;
       }
+
       payload.state.resolvedSaves ??= {};
       payload.state.repeat ??= {};
       payload.state.hpObserved ??= {};
@@ -47,12 +55,14 @@ export function createRegionStateService() {
       delete payload.state.activationFinalizeScheduled;
       payload.state.duration ??= {};
       payload.state.lastSourceTriggerTurnKey ??= null;
+
       return payload;
     },
 
     /** Avoids persisting cleanup state to a Region that was deleted during an asynchronous action. */
     isLiveRegion(region) {
       const scene = region?.parent;
+
       return Boolean(scene?.regions?.get?.(region.id));
     },
 
@@ -61,7 +71,9 @@ export function createRegionStateService() {
       if (!this.payloadAuthorityCurrent(payload) || !this.isLiveRegion(region)) return false;
 
       this.pruneRuntimeHistory(payload);
+
       const current = region.getFlag?.(FLAG_SCOPE, FLAG_KEY);
+
       if (current && dataSignature(current) === dataSignature(payload)) return true;
 
       const path = `flags.${FLAG_SCOPE}.${FLAG_KEY}`;
@@ -77,6 +89,7 @@ export function createRegionStateService() {
         // this payload an authoritative snapshot.
         if (typeof globalThis._replace === "function") {
           await region.update({ [path]: globalThis._replace(payload) });
+
           return true;
         }
 
@@ -85,13 +98,16 @@ export function createRegionStateService() {
         // semantics rather than silently merging stale runtime keys.
         await region.unsetFlag(FLAG_SCOPE, FLAG_KEY);
         if (!this.payloadAuthorityCurrent(payload) || !this.isLiveRegion(region)) return false;
+
         await region.setFlag(FLAG_SCOPE, FLAG_KEY, payload);
+
         return true;
       } catch (error) {
         // A manually deleted Region can disappear between the live-document
         // check and Foundry receiving the update. Its state no longer needs
         // persistence, so treat that lifecycle race as a completed write.
         if (staleRegionError(error)) return false;
+
         throw error;
       }
     },
@@ -99,7 +115,9 @@ export function createRegionStateService() {
     /** Retains roll and save history only while an unanswered save can still consume it. */
     pruneRuntimeHistory(payload) {
       const state = payload?.state;
+
       if (!state) return false;
+
       let changed = false;
       const pendingEntries = Object.entries(state.pendingSaves ?? {})
         .filter(([, entry]) => entry && typeof entry === "object");
@@ -108,28 +126,37 @@ export function createRegionStateService() {
       const damageKeys = new Set();
       const healingKeys = new Set();
       const hasUnscopedPending = pending.some((entry) => !entry.blockId || !entry.batchId);
+
       for (const entry of pending) {
         if (!entry.blockId || !entry.batchId) continue;
+
         damageKeys.add(stateKey("damage", entry.blockId, entry.batchId));
         healingKeys.add(stateKey("healing", entry.blockId, entry.batchId));
       }
 
       for (const key of Object.keys(state.damageRolls ?? {})) {
         if (hasUnscopedPending || damageKeys.has(key)) continue;
+
         delete state.damageRolls[key];
         changed = true;
       }
+
       for (const key of Object.keys(state.healingRolls ?? {})) {
         if (hasUnscopedPending || healingKeys.has(key)) continue;
+
         delete state.healingRolls[key];
         changed = true;
       }
+
       for (const [pendingId, record] of Object.entries(state.resolvedSaves ?? {})) {
         const unresolved = pendingById.get(pendingId);
+
         if (unresolved?.identifier === record?.identifier) continue;
+
         delete state.resolvedSaves[pendingId];
         changed = true;
       }
+
       return changed;
     },
 
@@ -144,12 +171,14 @@ export function createRegionStateService() {
           writable: false
         });
       }
+
       payload.__pf2eZoneAfterCommit.push(callback);
     },
 
     /** Serializes updates to one Region so simultaneous hooks cannot overwrite each other. */
     async withState(region, callback, lease = this.captureAuthorityLease()) {
       if (!region?.uuid || !this.authorityLeaseCurrent(lease)) return null;
+
       const key = region.uuid;
 
       // endZone waits for work that was already accepted, but must not start
@@ -160,7 +189,9 @@ export function createRegionStateService() {
       /** Chains work after an earlier state update even if that earlier update failed. */
       const next = prior.catch(() => undefined).then(async () => {
         if (!this.authorityLeaseCurrent(lease) || !this.isLiveRegion(region)) return null;
+
         const payload = this.bindAuthorityLease(this.readPayload(region), lease);
+
         if (!payload) return null;
 
         const result = await callback(payload);
@@ -172,12 +203,15 @@ export function createRegionStateService() {
         // stale payload snapshot.
         if (!this.authorityLeaseCurrent(lease)) return null;
         if (!this.isLiveRegion(region)) return result;
+
         const persisted = await this.writePayload(region, payload);
+
         if (!this.authorityLeaseCurrent(lease)) return null;
         if (!persisted || !this.isLiveRegion(region)) return result;
 
         for (const action of afterCommit) {
           if (!this.authorityLeaseCurrent(lease)) return null;
+
           try {
             await action();
           } catch (error) {
@@ -187,7 +221,9 @@ export function createRegionStateService() {
 
         return this.authorityLeaseCurrent(lease) ? result : null;
       });
+
       this.locks.set(key, next);
+
       try {
         return await next;
       } finally {
@@ -198,19 +234,22 @@ export function createRegionStateService() {
     /** Limits scans to Regions created by this module instead of inspecting unrelated Scene automation. */
     allZones() {
       const scenes = game.scenes?.contents ?? game.scenes ?? [];
+
       return Array.from(scenes).flatMap((scene) =>
         Array.from(scene.regions?.values?.() ?? scene.regions ?? [])
-          .filter((region) => Boolean(region?.getFlag?.(FLAG_SCOPE, FLAG_KEY)))
-      );
+          .filter((region) => Boolean(region?.getFlag?.(FLAG_SCOPE, FLAG_KEY))));
     },
 
     /** Reads hidden world state while retaining a no-setting fallback for tests and startup edges. */
     readSharedImmunities() {
       let stored = {};
+
       try {
         const value = game.settings?.get?.(MODULE_ID, SHARED_IMMUNITIES_SETTING);
+
         if (value && typeof value === "object" && !Array.isArray(value)) stored = clone(value);
       } catch (_error) { /* setting is not registered in lightweight test contexts */ }
+
       return { ...stored, ...clone(this.sharedImmunityCache ?? {}) };
     },
 
@@ -219,19 +258,27 @@ export function createRegionStateService() {
       const prior = this.sharedImmunityWrite ?? Promise.resolve();
       const next = prior.catch(() => undefined).then(async () => {
         if (!this.authorityLeaseCurrent(lease)) return null;
+
         const records = this.readSharedImmunities();
         const before = dataSignature(records);
         const result = await mutator(records);
+
         if (!this.authorityLeaseCurrent(lease)) return null;
+
         const changed = before !== dataSignature(records);
+
         if (changed && game.settings?.set) {
           await game.settings.set(MODULE_ID, SHARED_IMMUNITIES_SETTING, records);
         }
         if (!this.authorityLeaseCurrent(lease)) return null;
+
         this.sharedImmunityCache = clone(records);
+
         return result;
       });
+
       this.sharedImmunityWrite = next;
+
       try {
         return await next;
       } finally {
@@ -242,14 +289,18 @@ export function createRegionStateService() {
     /** Prevents concurrent save outcomes for one Actor/group from passing each other. */
     async withSharedResolutionLock(key, callback) {
       if (!key) return await callback();
+
       const prior = this.sharedResolutionLocks.get(key) ?? Promise.resolve();
       const next = prior.catch(() => undefined).then(callback);
+
       this.sharedResolutionLocks.set(key, next);
+
       try {
         return await next;
       } finally {
         if (this.sharedResolutionLocks.get(key) === next) this.sharedResolutionLocks.delete(key);
       }
-    },
+    }
+    ,
   };
 }

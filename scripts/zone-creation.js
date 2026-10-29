@@ -15,7 +15,9 @@ const FLAG_KEY = "pf2eZone";
 export function requireValidConfig(raw, sourceActor) {
   const config = normalizeConfig(raw, { strict: true });
   const validation = validateConfig(config, { sourceActor });
+
   if (validation.errors.length) throw new Error(validation.errors[0]);
+
   return config;
 }
 
@@ -23,11 +25,16 @@ export function requireValidConfig(raw, sourceActor) {
 export function creationRequestFingerprint(request) {
   // Serialize first so Color/Number wrappers and omitted fields follow the socket's JSON representation.
   return canonicalJson({
-    version: 1, requesterUserId: request.requesterUserId ?? null,
-    sceneId: request.sceneId ?? null, sourceTokenUuid: request.sourceTokenUuid ?? null,
-    config: request.config ?? null, savedPresetId: request.savedPresetId ?? null,
-    savedPresetRevision: request.savedPresetRevision ?? null, chosenDamageType: request.chosenDamageType ?? null,
-    color: request.color ?? null, areaCenter: request.areaCenter ?? null
+    version: 1,
+    requesterUserId: request.requesterUserId ?? null,
+    sceneId: request.sceneId ?? null,
+    sourceTokenUuid: request.sourceTokenUuid ?? null,
+    config: request.config ?? null,
+    savedPresetId: request.savedPresetId ?? null,
+    savedPresetRevision: request.savedPresetRevision ?? null,
+    chosenDamageType: request.chosenDamageType ?? null,
+    color: request.color ?? null,
+    areaCenter: request.areaCenter ?? null
   });
 }
 
@@ -37,10 +44,13 @@ function lightenZoneColor(value, amount = 0.1) {
   const short = raw.match(/^#?([0-9a-f]{3})$/i);
   const full = raw.match(/^#?([0-9a-f]{6})$/i);
   const hex = full?.[1] ?? (short ? short[1].split("").map((c) => `${c}${c}`).join("") : null);
+
   if (!hex) return raw || "#999999";
+
   const t = Math.clamp(Number(amount) || 0, 0, 1);
   const channels = [0, 2, 4].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
   const mixed = channels.map((channel) => Math.round(channel + (255 - channel) * t));
+
   return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
@@ -48,6 +58,7 @@ function lightenZoneColor(value, amount = 0.1) {
 function executeScriptBehaviorType() {
   const match = Object.entries(CONFIG.RegionBehavior?.dataModels ?? {})
     .find(([, cls]) => cls?.name === "ExecuteScriptRegionBehaviorType");
+
   return match?.[0] ?? "executeScript";
 }
 
@@ -80,11 +91,22 @@ function presetRevision(value) {
 /** Reopens a dismissed zone with its original revision so stale presets cannot be overwritten. */
 export function savedPresetFromZone(record, zoneState) {
   if (!record) return null;
+
   return { ...record, revision: presetRevision(zoneState?.savedPresetRevision) };
 }
 
 /** Gives finite zones the same duration metadata regardless of who created them. */
-function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId, creationFingerprint }) {
+function initialRuntimeState({
+  sourceActor,
+  sourceToken,
+  requester,
+  savedPresetId,
+  savedPresetRevision,
+  chosenDamageType,
+  durationResolution,
+  operationId,
+  creationFingerprint
+}) {
   const { combat = null, sourceCombatant = null } = combatForZone({
     sceneId: sourceToken.parent?.id,
     sourceTokenUuid: sourceToken.uuid,
@@ -95,6 +117,7 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
   const currentTurnKey = currentIsSource
     ? `${combat.id}:${Number(combat.round ?? 0)}:${Number(combat.turn ?? 0)}:${sourceCombatant.id}`
     : null;
+
   return {
     createdWorldTime: Number(game.time?.worldTime ?? 0),
     createdBy: { userId: requester.id, name: requester.name },
@@ -121,34 +144,64 @@ function initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetI
     recoveryWatchers: {},
     turnStartEvents: {},
     lastSourceTriggerTurnKey: currentTurnKey,
-    duration: rounds ? {
-      rounds,
-      formula: durationResolution?.formula ?? null,
-      worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
-      combatId: combat?.id ?? null,
-      sourceCombatantId: sourceCombatant?.id ?? null,
-      sourceTurnsElapsed: 0,
-      lastSourceTurnKey: currentTurnKey,
-      ...combatDurationDeadline(combat, sourceCombatant, rounds)
-    } : {}
+    duration: rounds
+      ? {
+        rounds,
+        formula: durationResolution?.formula ?? null,
+        worldExpires: Number(game.time?.worldTime ?? 0) + rounds * 6,
+        combatId: combat?.id ?? null,
+        sourceCombatantId: sourceCombatant?.id ?? null,
+        sourceTurnsElapsed: 0,
+        lastSourceTurnKey: currentTurnKey,
+        ...combatDurationDeadline(combat, sourceCombatant, rounds)
+      }
+      : {}
   };
 }
 
 /** Shares validation, payload, activation, and duration handling while allowing each client to place an area in its own UI. */
-export async function createZoneDocument({ rawConfig, scene, sourceActor, sourceToken, requester, savedPresetId = null, savedPresetRevision = null, chosenDamageType = null, color, placeArea, operationId = null, creationFingerprint = null }) {
+export async function createZoneDocument({
+  rawConfig,
+  scene,
+  sourceActor,
+  sourceToken,
+  requester,
+  savedPresetId = null,
+  savedPresetRevision = null,
+  chosenDamageType = null,
+  color,
+  placeArea,
+  operationId = null,
+  creationFingerprint = null
+}) {
   if (!scene || sourceToken?.parent?.id !== scene.id) throw new Error("Source Token is not on the requested Scene.");
+
   const config = requireValidConfig(rawConfig, sourceActor);
   const effectValidation = await validateEffectItems(config);
+
   if (effectValidation.errors.length) throw new Error(effectValidation.errors[0]);
+
   const choice = config.activationChoices?.damageType;
+
   if (choice?.enabled && (!choice.options.includes(chosenDamageType) || !damageTypeAvailable(chosenDamageType))) {
     throw new Error("Choose an allowed shared damage type before creating this zone.");
   }
+
   const durationResolution = await resolveDurationRounds(config.duration);
   const payload = {
     runtimeVersion: RUNTIME_VERSION,
     config,
-    state: initialRuntimeState({ sourceActor, sourceToken, requester, savedPresetId, savedPresetRevision, chosenDamageType, durationResolution, operationId, creationFingerprint })
+    state: initialRuntimeState({
+      sourceActor,
+      sourceToken,
+      requester,
+      savedPresetId,
+      savedPresetRevision,
+      chosenDamageType,
+      durationResolution,
+      operationId,
+      creationFingerprint
+    })
   };
   const regionData = {
     name: config.name,
@@ -159,30 +212,36 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
       : (CONST.REGION_VISIBILITY?.ALWAYS ?? 2),
     ownership: config.visibility === "creator"
       ? {
-          default: CONST.DOCUMENT_OWNERSHIP_LEVELS?.NONE ?? 0,
-          [requester.id]: CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2
-        }
+        default: CONST.DOCUMENT_OWNERSHIP_LEVELS?.NONE ?? 0,
+        [requester.id]: CONST.DOCUMENT_OWNERSHIP_LEVELS?.OBSERVER ?? 2
+      }
       : undefined,
     behaviors: [regionBehaviorData()],
     flags: { [FLAG_SCOPE]: { [FLAG_KEY]: payload } }
   };
 
   let region;
+
   if (config.mode === "emanation") {
     const RegionDocument = CONFIG.Region.documentClass;
+
     if (typeof RegionDocument?.createTokenEmanation !== "function") {
       throw new Error("Foundry V14 RegionDocument.createTokenEmanation is unavailable.");
     }
+
     region = await RegionDocument.createTokenEmanation(sourceToken, config.radius, regionData);
   } else {
     if (typeof placeArea !== "function") throw new Error("Area placement is unavailable.");
+
     region = await placeArea(regionData, config);
   }
   if (!region) return { region: null, durationResolution: null };
 
   const warnings = [];
+
   try {
     const runtime = await zoneRuntimeEntrypoint();
+
     await runtime.activateRegion(region);
   } catch (error) {
     console.error("PF2e Zone: Region was created but activation failed", region, error);
@@ -198,6 +257,7 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
       actor: sourceActor,
       token: sourceToken
     });
+
     if (durationResolution?.formula && !durationMessage) {
       warnings.push("The zone was created, but its rolled duration could not be posted to chat.");
     }
@@ -205,5 +265,6 @@ export async function createZoneDocument({ rawConfig, scene, sourceActor, source
     console.error("PF2e Zone: Region was created but its duration announcement failed", region, error);
     warnings.push("The zone was created, but its rolled duration could not be posted to chat.");
   }
+
   return { region, durationResolution, warnings };
 }

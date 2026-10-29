@@ -6,10 +6,12 @@ const { postFormulaDurationMessage } = await import("../scripts/duration-chat.js
 test("formula duration chat messages match their zone visibility", async () => {
   const originalChatMessage = globalThis.ChatMessage;
   let created = null;
+
   try {
     globalThis.ChatMessage = {
       getWhisperRecipients(target) {
         assert.equal(target, "GM");
+
         return [{ id: "gm-one" }, { id: "gm-two" }];
       },
       getSpeaker({ actor, token }) {
@@ -17,6 +19,7 @@ test("formula duration chat messages match their zone visibility", async () => {
       },
       async create(data) {
         created = data;
+
         return data;
       }
     };
@@ -40,6 +43,7 @@ test("formula duration chat messages match their zone visibility", async () => {
       visibility: "creator",
       creatorUserId: "player-one"
     });
+
     assert.deepEqual(created.whisper, ["player-one"]);
 
     created = null;
@@ -48,6 +52,7 @@ test("formula duration chat messages match their zone visibility", async () => {
       duration: { formula: "1d4", rounds: 3 },
       visibility: "everyone"
     });
+
     assert.equal("whisper" in created, false);
     assert.match(created.content, /Public Zone will last <strong>3 rounds<\/strong> \(rolled 1d4\)/);
 

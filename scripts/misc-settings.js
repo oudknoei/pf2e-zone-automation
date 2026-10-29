@@ -12,6 +12,7 @@ export function registerMiscSettings() {
     default: false,
     requiresReload: true
   });
+
   Hooks.on("renderSettingsConfig", addMiscSettingsHeading);
 }
 
@@ -19,10 +20,14 @@ export function registerMiscSettings() {
 function addMiscSettingsHeading(_application, html) {
   const root = html?.querySelector ? html : html?.[0];
   const row = root?.querySelector(`input[name="${MODULE_ID}.${ABP_SPELL_ATTACKS_SETTING}"]`)?.closest(".form-group");
+
   if (!row) return;
+
   row.classList.add("pza-abp-spell-attacks-setting");
   if (root.querySelector(".pza-misc-settings-heading")) return;
+
   const heading = row.ownerDocument.createElement("h3");
+
   heading.className = "pza-misc-settings-heading";
   heading.textContent = "Miscellaneous";
   row.before(heading);
@@ -31,7 +36,9 @@ function addMiscSettingsHeading(_application, html) {
 /** Extends native ABP preparation before PF2e builds spellcasting statistics, without changing stored actors. */
 export function installABPSpellAttacks() {
   if (game.system.id !== "pf2e") return;
+
   const abp = game.pf2e?.variantRules?.AutomaticBonusProgression;
+
   if (!globalThis.libWrapper?.register || typeof abp?.concatModifiers !== "function"
       || typeof abp.isEnabled !== "function" || typeof abp.getAttackPotency !== "function"
       || typeof game.pf2e.Modifier !== "function") {
@@ -41,11 +48,15 @@ export function installABPSpellAttacks() {
   /** Preserves native ABP and adds its typed attack bonus only to the spell attack roll selector. */
   libWrapper.register(MODULE_ID, "game.pf2e.variantRules.AutomaticBonusProgression.concatModifiers", function(wrapped, actor, ...args) {
     const result = wrapped(actor, ...args);
+
     if (!game.settings.get(MODULE_ID, ABP_SPELL_ATTACKS_SETTING)
         || actor?.type !== "character" || !abp.isEnabled(actor)) return result;
+
     const bonus = abp.getAttackPotency(actor.level);
+
     if (bonus > 0) {
       const modifiers = (actor.synthetics.modifiers["spell-attack-roll"] ??= []);
+
       modifiers.push(() => new game.pf2e.Modifier({
         slug: "attack-potency",
         label: "PF2E.AutomaticBonusProgression.attackPotency",
@@ -53,6 +64,7 @@ export function installABPSpellAttacks() {
         type: "potency"
       }));
     }
+
     return result;
   }, "WRAPPER");
 }

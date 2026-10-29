@@ -22,11 +22,13 @@ export const WORKER_ACTION_POLICY = Object.freeze({
 /** Rejects unknown or inherited action names before selecting a privileged handler. */
 export function getWorkerActionPolicy(action) {
   return typeof action === "string" && Object.hasOwn(WORKER_ACTION_POLICY, action)
-    ? WORKER_ACTION_POLICY[action] : null;
+    ? WORKER_ACTION_POLICY[action]
+    : null;
 }
 
 /** Keeps shared operations on the active GM while retaining intentional direct-GM paths and the no-active-GM fallback. */
 export function canExecuteWorkerLocally(action, user, activeGM) {
   const policy = getWorkerActionPolicy(action);
+
   return Boolean(user?.isGM && (policy?.authority !== "active-gm" || !activeGM || activeGM.id === user.id));
 }

@@ -1,8 +1,11 @@
 /** Keeps DC selection compatible with the statistic shapes PF2e exposes across actor types. */
 export function statisticDc(statistic) {
   const value = statistic?.dc?.value ?? statistic?.dc ?? null;
+
   if (value == null || String(value).trim() === "") return null;
+
   const dc = Number(value);
+
   return Number.isFinite(dc) && dc > 0 ? dc : null;
 }
 
@@ -16,19 +19,23 @@ export function statisticDc(statistic) {
  */
 export function highestClassOrSpellDc(actor) {
   const values = [];
+
   /** Keeps only usable prepared statistics in the comparison so incomplete actor data cannot lower a DC. */
   const add = (statistic) => {
     const dc = statisticDc(statistic);
+
     if (dc !== null) values.push(dc);
   };
 
   try {
     add(actor?.classDC);
     for (const statistic of Object.values(actor?.classDCs ?? {})) add(statistic);
+
     add(actor?.getStatistic?.("spell-dc"));
 
     const entries = actor?.spellcasting?.contents
       ?? (Array.isArray(actor?.spellcasting) ? actor.spellcasting : []);
+
     for (const entry of entries) add(entry?.statistic);
   } catch (_error) {
     // Actor types expose different subsets of class and spell statistics.
@@ -48,14 +55,18 @@ export function highestClassOrSpellDc(actor) {
 /** Keeps creation and save requests on the same usable Actor DC for a saved selector. */
 export function actorStatisticDc(actor, slug) {
   if (slug === "class-spell") return highestClassOrSpellDc(actor);
+
   try {
     if (slug === "class-dc") {
       const primary = statisticDc(actor?.classDC);
+
       if (primary !== null) return primary;
     } else if (slug !== "spell-dc") {
       const classDc = statisticDc(actor?.classDCs?.[slug]);
+
       if (classDc !== null) return classDc;
     }
+
     return statisticDc(actor?.getStatistic?.(slug));
   } catch (_error) {
     return null;

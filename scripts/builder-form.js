@@ -1,4 +1,12 @@
-import { SCHEMA_VERSION, OUTCOMES, newId, isValuedCondition, conditionSlugs, normalizeTraitSlugs, normalizeConfig } from "./zone-config.js";
+import {
+  SCHEMA_VERSION,
+  OUTCOMES,
+  newId,
+  isValuedCondition,
+  conditionSlugs,
+  normalizeTraitSlugs,
+  normalizeConfig
+} from "./zone-config.js";
 import { editableZoneSize } from "./config-input.js";
 import { storedTargeting } from "./targeting.js";
 import { zoneTypeFields } from "./area-shape.js";
@@ -14,6 +22,7 @@ export function readOutcome(outcomeEl, key) {
     const slug = row.querySelector('[data-field="condition-slug"]').value;
     const rawValue = row.querySelector('[data-field="condition-value"]').value.trim();
     const removal = row.querySelector('[data-field="condition-removal"]').value;
+
     return {
       slug,
       value: isValuedCondition(slug)
@@ -85,8 +94,10 @@ export function readConfig(root) {
       : { mode: "actorStatistic", statistic: dcSource.replace(/^stat:/, "") };
 
     const outcomes = {};
+
     for (const [key] of OUTCOMES) {
       const outcomeEl = blockEl.querySelector(`[data-outcome="${key}"]`);
+
       outcomes[key] = readOutcome(outcomeEl, key);
     }
 

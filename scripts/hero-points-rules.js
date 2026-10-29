@@ -7,6 +7,7 @@ export function canManageHeroPoints(actor, user) {
 /** Reads PF2e's Hero Point resource, respecting character maxima below three. */
 export function heroPointState(actor) {
   const resource = actor.system?.resources?.heroPoints;
+
   return {
     value: Number(resource?.value ?? 0),
     max: Math.min(3, Math.max(0, Number(resource?.max ?? 3)))
@@ -17,6 +18,7 @@ export function heroPointState(actor) {
 export function nextHeroPointTotal(actor, amount, mode) {
   const { value, max } = heroPointState(actor);
   const total = mode === "set" ? amount : value + (mode === "remove" ? -amount : amount);
+
   return Math.min(max, Math.max(0, total));
 }
 

@@ -1,5 +1,12 @@
 import { escapeHtml } from "./utils.js";
-import { SESSION_MODULE, SESSION_ENABLED_SETTING, SESSION_ENABLED_HOOK, requireSessionNotes, sessionNotesEnabled } from "./session-notes-data.js";
+import {
+  SESSION_MODULE,
+  SESSION_ENABLED_SETTING,
+  SESSION_ENABLED_HOOK,
+  requireSessionNotes,
+  sessionNotesEnabled
+} from "./session-notes-data.js";
+import { CLOCK_SETTING, CLOCK_CHANGED_HOOK } from "./session-clock-data.js";
 
 export const DEFAULT_RECAP_PROMPT = `Write a recap of the supplied Pathfinder campaign session that the GM can read aloud at the beginning of the next game. Help the players remember what mattered and settle back into the story.
 
@@ -19,71 +26,137 @@ let PromptEditor;
 /** Gets the settings-owned prompt without inventing a separate per-session override. */
 export function recapPrompt() {
   requireSessionNotes();
+
   return game.settings.get(SESSION_MODULE, "sessionRecapPrompt") ?? DEFAULT_RECAP_PROMPT;
 }
 
 /** Opens or focuses the same editor used by the module's Configure Settings menu. */
 export async function openRecapPrompt() {
   requireSessionNotes();
+
   if (promptEditor) {
     promptEditor.bringToFront();
+
     return promptEditor;
   }
+
   const dialog = new PromptEditor();
+
   promptEditor = dialog;
   await dialog.render({ force: true });
+
   return dialog;
 }
 
 /** Registers the world prompt and restricted multiline editor without changing existing custom text. */
 export function registerSessionNotesSettings() {
+  game.settings.register(SESSION_MODULE, CLOCK_SETTING, {
+    name: "Campaign clock state",
+    scope: "world",
+    config: false,
+    restricted: true,
+    type: Object,
+    default: {},
+    onChange: () => Hooks.callAll(CLOCK_CHANGED_HOOK)
+  });
+
   game.settings.register(SESSION_MODULE, SESSION_ENABLED_SETTING, {
     name: "Enable Session Notes",
-    hint: "Enable GM session notebooks, Quick Note, and chat shortcuts. Turning this off closes Session Notes windows; saved Journals and the recap prompt are kept.",
-    scope: "world", config: true, restricted: true, type: Boolean, default: false,
+    hint: "Enable GM session notebooks, Quick Note, Advance Time, and chat shortcuts. Turning this off closes Session Notes windows; saved Journals, clock state, and the recap prompt are kept.",
+    scope: "world",
+    config: true,
+    restricted: true,
+    type: Boolean,
+    default: false,
     onChange: enabled => Hooks.callAll(SESSION_ENABLED_HOOK, enabled)
   });
+
   game.settings.register(SESSION_MODULE, "sessionRecapPrompt", {
-    name: "Recap Prompt", scope: "world", config: false, restricted: true,
-    type: String, default: DEFAULT_RECAP_PROMPT
+    name: "Recap Prompt",
+    scope: "world",
+    config: false,
+    restricted: true,
+    type: String,
+    default: DEFAULT_RECAP_PROMPT
   });
+
   PromptEditor = class extends foundry.applications.api.DialogV2 {
     /** Builds the ordinary settings editor with explicit save and reset actions. */
     constructor() {
       requireSessionNotes();
+
       const content = document.createElement("div");
+
       content.innerHTML = `<div class="pza-session-notes"><p>Shared campaign instructions for a recap you can read aloud next session.</p>
         <textarea name="recap-prompt" rows="19" aria-label="Recap Prompt">${escapeHtml(recapPrompt())}</textarea>
         <p data-prompt-status role="status"></p></div>`;
-      super({ window: { title: "Recap Prompt" }, position: { width: 760 }, content,
-        form: { closeOnSubmit: false }, buttons: [
-          { action: "save", label: "Save", callback: async (_event, button, dialog) => {
-            try {
-              requireSessionNotes();
-              const value = button.form.querySelector("[name=recap-prompt]").value;
-              if (!value.trim()) throw new Error("Recap Prompt cannot be blank.");
-              await game.settings.set(SESSION_MODULE, "sessionRecapPrompt", value);
-              await dialog.close();
-            } catch (error) {
-              button.form.querySelector("[data-prompt-status]").textContent = error.message;
+
+      super({
+        window: { title: "Recap Prompt" },
+        position: { width: 760 },
+        content,
+        form: { closeOnSubmit: false },
+        buttons: [
+          {
+            action: "save",
+            label: "Save",
+            callback: async (_event, button, dialog) => {
+              try {
+                requireSessionNotes();
+
+                const value = button.form.querySelector("[name=recap-prompt]").value;
+
+                if (!value.trim()) throw new Error("Recap Prompt cannot be blank.");
+
+                await game.settings.set(SESSION_MODULE, "sessionRecapPrompt", value);
+                await dialog.close();
+              } catch (error) {
+                button.form.querySelector("[data-prompt-status]").textContent = error.message;
+              }
             }
-          } },
-          { action: "reset", label: "Reset to Default", callback: async (_event, button) => {
-            try {
-              requireSessionNotes();
-              await game.settings.set(SESSION_MODULE, "sessionRecapPrompt", DEFAULT_RECAP_PROMPT);
-              button.form.querySelector("[name=recap-prompt]").value = DEFAULT_RECAP_PROMPT;
-              button.form.querySelector("[data-prompt-status]").textContent = "Default prompt restored.";
-            } catch (error) { button.form.querySelector("[data-prompt-status]").textContent = error.message; }
-          } },
-          { action: "cancel", label: "Cancel", callback: async (_event, _button, dialog) => { await dialog.close(); } }
-        ] });
+          },
+          {
+            action: "reset",
+            label: "Reset to Default",
+            callback: async (_event, button) => {
+              try {
+                requireSessionNotes();
+                await game.settings.set(SESSION_MODULE, "sessionRecapPrompt", DEFAULT_RECAP_PROMPT);
+                button.form.querySelector("[name=recap-prompt]").value = DEFAULT_RECAP_PROMPT;
+                button.form.querySelector("[data-prompt-status]").textContent = "Default prompt restored.";
+              } catch (error) {
+                button.form.querySelector("[data-prompt-status]").textContent = error.message;
+              }
+            }
+          },
+          {
+            action: "cancel",
+            label: "Cancel",
+            callback: async (_event, _button, dialog) => {
+              await dialog.close();
+            }
+          }
+        ]
+      });
+
       this.addEventListener("render", () => {
-        if (!sessionNotesEnabled()) { void this.close(); return; }
+        if (!sessionNotesEnabled()) {
+          void this.close();
+
+          return;
+        }
+
         promptEditor = this;
       }, { once: true });
-      const permissionHook = Hooks.on("updateUser", () => { if (!game.user?.isGM || !sessionNotesEnabled()) void this.close(); });
-      const enabledHook = Hooks.on(SESSION_ENABLED_HOOK, () => { if (!sessionNotesEnabled()) void this.close(); });
+
+      const permissionHook = Hooks.on("updateUser", () => {
+        if (!game.user?.isGM || !sessionNotesEnabled())
+          void this.close();
+      });
+      const enabledHook = Hooks.on(SESSION_ENABLED_HOOK, () => {
+        if (!sessionNotesEnabled()) void this.close();
+      });
+
       this.addEventListener("close", () => {
         Hooks.off("updateUser", permissionHook);
         Hooks.off(SESSION_ENABLED_HOOK, enabledHook);
@@ -91,9 +164,14 @@ export function registerSessionNotesSettings() {
       }, { once: true });
     }
   };
+
   game.settings.registerMenu(SESSION_MODULE, "sessionRecapPromptEditor", {
-    name: "Recap Prompt", label: "Edit Recap Prompt", icon: "fa-solid fa-scroll",
-    hint: "Shared instructions for the next session's read-aloud recap.", type: PromptEditor, restricted: true
+    name: "Recap Prompt",
+    label: "Edit Recap Prompt",
+    icon: "fa-solid fa-scroll",
+    hint: "Shared instructions for the next session's read-aloud recap.",
+    type: PromptEditor,
+    restricted: true
   });
 }
 
@@ -107,8 +185,11 @@ function recapSettingRow(root) {
 function refreshRecapSetting(root) {
   const checkbox = root.querySelector(`input[name="${SESSION_MODULE}.${SESSION_ENABLED_SETTING}"]`);
   const row = recapSettingRow(root);
+
   if (!row) return;
+
   const enabled = sessionNotesEnabled() && (checkbox ? checkbox.checked : true);
+
   row.classList.add("pza-session-prompt-setting");
   row.hidden = !enabled;
   for (const button of row.querySelectorAll("button")) button.disabled = !enabled;
@@ -118,37 +199,59 @@ function refreshRecapSetting(root) {
 export function registerSessionNotesSettingsUI() {
   const views = new Map();
   const wired = new WeakSet();
+
   /** Reorders only this module's native rows and preserves the original controls and their values. */
   function render(application, html) {
     const root = html?.querySelector ? html : html?.[0];
+
     if (!root?.querySelector) return;
+
     const checkbox = root.querySelector(`input[name="${SESSION_MODULE}.${SESSION_ENABLED_SETTING}"]`);
     const enabledRow = checkbox?.closest(".form-group");
+
     if (!enabledRow && !recapSettingRow(root)) return;
+
     views.set(application, root);
-    if (!enabledRow) { refreshRecapSetting(root); return; }
+
+    if (!enabledRow) {
+      refreshRecapSetting(root);
+
+      return;
+    }
+
     const firstRow = root.querySelector(`[name^="${SESSION_MODULE}."], button[data-key^="${SESSION_MODULE}."]`)?.closest(".form-group");
+
     if (firstRow && firstRow !== enabledRow) firstRow.before(enabledRow);
+
     const promptRow = recapSettingRow(root);
+
     if (promptRow && enabledRow.nextElementSibling !== promptRow) enabledRow.after(promptRow);
     if (!wired.has(checkbox)) {
       checkbox.addEventListener("change", () => refreshRecapSetting(root));
       wired.add(checkbox);
     }
+
     refreshRecapSetting(root);
   }
+
   const hooks = [
     ["renderSettingsConfig", Hooks.on("renderSettingsConfig", render)],
     ["closeSettingsConfig", Hooks.on("closeSettingsConfig", application => views.delete(application))],
     [SESSION_ENABLED_HOOK, Hooks.on(SESSION_ENABLED_HOOK, () => {
       for (const [application, root] of views) {
-        if (!root.isConnected) { views.delete(application); continue; }
+        if (!root.isConnected) {
+          views.delete(application);
+          continue;
+        }
+
         refreshRecapSetting(root);
       }
     })]
   ];
+
   return () => {
     for (const [name, id] of hooks) Hooks.off(name, id);
+
     views.clear();
   };
 }

@@ -14,7 +14,12 @@ globalThis.CONST = {
 test("closed physical walls block line of effect while open doors and non-movement walls do not", () => {
   const origin = { x: 50, y: 50 };
   const target = { x: 250, y: 50 };
-  const wall = { c: [150, 0, 150, 100], move: 20, door: 0, ds: 0 };
+  const wall = {
+    c: [150, 0, 150, 100],
+    move: 20,
+    door: 0,
+    ds: 0
+  };
   const openDoor = { ...wall, door: 1, ds: 1 };
   const closedDoor = { ...wall, door: 1, ds: 0 };
   const windowOpening = { ...wall, move: 0 };
@@ -38,15 +43,25 @@ test("walls outside the path and contact at a path endpoint do not block", () =>
 
 test("emanations use the source Token center and placed areas use the shape center", () => {
   const source = { x: 0, y: 100, getSize: () => ({ width: 100, height: 100 }) };
+
   assert.deepEqual(tokenCenter(source), { x: 50, y: 150 });
   assert.deepEqual(zoneOrigin(null, { config: { mode: "emanation" } }, source), { x: 50, y: 150 });
   assert.deepEqual(
     zoneOrigin({ shapes: [{ type: "circle", x: 300, y: 400 }] }, { config: { mode: "area" } }, source),
     { x: 300, y: 400 }
   );
+
   assert.deepEqual(
     zoneOrigin(
-      { shapes: [{ type: "rectangle", x: 200, y: 300, width: 100, height: 200 }] },
+      {
+        shapes: [{
+          type: "rectangle",
+          x: 200,
+          y: 300,
+          width: 100,
+          height: 200
+        }]
+      },
       { config: { mode: "area" } },
       source
     ),

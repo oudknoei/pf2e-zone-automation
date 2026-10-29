@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 let nextId = 0;
+
 globalThis.Hooks = { on: () => 1, off: () => {} };
 globalThis.document = { addEventListener: () => {}, removeEventListener: () => {} };
 globalThis.foundry = {
@@ -11,11 +12,14 @@ globalThis.foundry = {
     setProperty: (object, path, value) => {
       const keys = path.split(".");
       let current = object;
+
       for (const key of keys.slice(0, -1)) current = current[key] ??= {};
+
       current[keys.at(-1)] = value;
     }
   }
 };
+
 globalThis._replace = (payload) => payload;
 globalThis.game = {
   actors: { contents: [] },
@@ -27,6 +31,7 @@ globalThis.game = {
 
 const { zoneRuntimeEntrypoint } = await import("../scripts/runtime.js");
 const runtime = await zoneRuntimeEntrypoint();
+
 await new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Keeps late-save tests on the real outcome and owned-item cleanup paths. */
@@ -41,23 +46,33 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
   let inside = insideAtResolution;
   const scene = { id: "scene", regions: new Map(), tokens: [] };
   const items = new Map();
+
   items.find = (predicate) => [...items.values()].find(predicate);
+
   const actor = {
     uuid: "Actor.target",
     name: "Target",
     items,
     async createEmbeddedDocuments(type, sources) {
       assert.equal(type, "Item");
+
       return await Promise.all(sources.map(async (source) => {
-        await onCreate?.(source, () => { inside = false; });
+        await onCreate?.(source, () => {
+          inside = false;
+        });
+
         const id = `item-${++nextId}`;
         const item = {
           ...source,
           id,
           parent: actor,
-          async delete() { items.delete(id); }
+          async delete() {
+            items.delete(id);
+          }
         };
+
         items.set(id, item);
+
         return item;
       }));
     }
@@ -69,7 +84,9 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
     parent: scene,
     testInsideRegion: () => inside
   };
+
   scene.tokens.push(token);
+
   const effectTemplate = {
     documentName: "Item",
     type: "effect",
@@ -123,29 +140,56 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
     parent: scene,
     behaviors: [{ name: "PF2e Zone Runtime", disabled: false }],
     getFlag: () => stored,
-    async update(changes) { stored = changes["flags.world.pf2eZone"]; }
+    async update(changes) {
+      stored = changes["flags.world.pf2eZone"];
+    }
   };
+
   scene.regions.set(region.id, region);
+
   const documents = new Map([
     [token.uuid, token],
     ["Item.exit-effect", effectTemplate],
     ["Item.zone-effect", effectTemplate]
   ]);
+
   globalThis.fromUuid = async (uuid) => documents.get(uuid) ?? null;
   game.scenes = { contents: [scene], get: (id) => id === scene.id ? scene : null };
   game.pf2e = { ConditionManager: { getCondition: () => conditionTemplate } };
+
   let damage = 0;
   let healing = 0;
-  runtime.postDamage = async () => { damage++; return true; };
-  runtime.postHealing = async () => { healing++; return true; };
+
+  runtime.postDamage = async () => {
+    damage++;
+
+    return true;
+  };
+
+  runtime.postHealing = async () => {
+    healing++;
+
+    return true;
+  };
 
   try {
     await run({
-      region, token, items, identifier,
-      setInside: (value) => { inside = value; },
-      get stored() { return stored; },
-      get damage() { return damage; },
-      get healing() { return healing; }
+      region,
+      token,
+      items,
+      identifier,
+      setInside: (value) => {
+        inside = value;
+      },
+      get stored() {
+        return stored;
+      },
+      get damage() {
+        return damage;
+      },
+      get healing() {
+        return healing;
+      }
     });
   } finally {
     game.scenes = previous.scenes;
@@ -159,13 +203,13 @@ async function withPendingSave({ insideAtResolution, onCreate = null }, run) {
 
 test("late save skips exit-bound items but keeps lasting results and damage", async () => {
   await withPendingSave({ insideAtResolution: false }, async (fixture) => {
-    const resolved = await runtime.resolvePendingSave(
-      fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid
-    );
+    const resolved = await runtime.resolvePendingSave(fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid);
+
     assert.equal(resolved, true);
     assert.deepEqual([...fixture.items.values()].map((item) => item.flags.world.pf2eZone.removal), [
       "zone-end", "zone-end"
     ]);
+
     assert.equal(fixture.damage, 1);
     assert.equal(fixture.healing, 1);
     assert.deepEqual(fixture.stored.state.pendingSaves, {});
@@ -175,17 +219,17 @@ test("late save skips exit-bound items but keeps lasting results and damage", as
 
 test("an in-zone save still applies exit-bound items until the target leaves", async () => {
   await withPendingSave({ insideAtResolution: true }, async (fixture) => {
-    const resolved = await runtime.resolvePendingSave(
-      fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid
-    );
+    const resolved = await runtime.resolvePendingSave(fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid);
+
     assert.equal(resolved, true);
     assert.deepEqual([...fixture.items.values()].map((item) => item.flags.world.pf2eZone.removal), [
       "on-exit", "zone-end", "on-exit", "zone-end"
     ]);
+
     fixture.setInside(false);
     await runtime.withState(fixture.region, (payload) =>
-      runtime.cleanupTokenOnExitUnlocked(payload, fixture.token.uuid)
-    );
+      runtime.cleanupTokenOnExitUnlocked(payload, fixture.token.uuid));
+
     assert.deepEqual([...fixture.items.values()].map((item) => item.flags.world.pf2eZone.removal), [
       "zone-end", "zone-end"
     ]);
@@ -199,13 +243,13 @@ test("an exit during asynchronous item creation leaves no exit-bound item behind
       if (source.flags.world.pf2eZone.removal === "on-exit") leave();
     }
   }, async (fixture) => {
-    const resolved = await runtime.resolvePendingSave(
-      fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid
-    );
+    const resolved = await runtime.resolvePendingSave(fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid);
+
     assert.equal(resolved, true);
     assert.deepEqual([...fixture.items.values()].map((item) => item.flags.world.pf2eZone.removal), [
       "zone-end", "zone-end"
     ]);
+
     assert.equal(fixture.damage, 1);
     assert.equal(fixture.healing, 1);
     assert.deepEqual(fixture.stored.state.applied && Object.values(fixture.stored.state.applied).map((entry) => entry.removal), [
@@ -222,6 +266,7 @@ test("an exit-bound item removed during resolution does not count as an affected
     }
   }, async (fixture) => {
     const block = fixture.stored.config.effects[0];
+
     block.outcomes.failure.conditions = [{ slug: "frightened", value: 1, removal: "on-exit" }];
     block.outcomes.failure.effects = [];
     block.damage.enabled = false;
@@ -229,13 +274,14 @@ test("an exit-bound item removed during resolution does not count as an affected
 
     const originalImmunity = runtime.applyImmunityStarts;
     let affectedResult = null;
+
     runtime.applyImmunityStarts = (_payload, _block, _token, _outcome, affected) => {
       affectedResult = affected;
     };
+
     try {
-      const resolved = await runtime.resolvePendingSave(
-        fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid
-      );
+      const resolved = await runtime.resolvePendingSave(fixture.region, "pending", fixture.identifier, "failure", fixture.token.actor.uuid);
+
       assert.equal(resolved, true);
       assert.equal(affectedResult, false);
       assert.equal(fixture.items.size, 0);

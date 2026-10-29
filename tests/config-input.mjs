@@ -26,6 +26,7 @@ test("missing legacy durations receive a default while cleared custom durations 
 
 test("line of effect defaults to respect and preserves the explicit ignore override", () => {
   const legacy = defaultConfig();
+
   delete legacy.targeting.lineOfEffect;
   assert.equal(normalizeConfig(legacy).targeting.lineOfEffect, "respect");
 
@@ -35,6 +36,7 @@ test("line of effect defaults to respect and preserves the explicit ignore overr
 
 test("unknown duration remains visible for validation while known legacy values migrate", () => {
   const config = defaultConfig();
+
   config.name = "Import";
   config.targeting.affects = "enemies";
   config.effects[0].triggers.activation = true;
@@ -42,12 +44,17 @@ test("unknown duration remains visible for validation while known legacy values 
   config.duration.type = "until-next-moon";
 
   const normalized = normalizeConfig(config);
+
   assert.equal(normalized.duration.type, "until-next-moon");
+
   const validation = validateConfig(normalized);
+
   assert.match(validation.errors.join(" "), /until-next-moon.*unavailable/);
   assert.deepEqual(validation.issues.find((issue) => issue.target?.field === "duration-type")?.target, {
-    scope: "zone", field: "duration-type"
+    scope: "zone",
+    field: "duration-type"
   });
+
   assert.throws(() => normalizeConfig(config, { strict: true }), /until-next-moon.*not supported/);
 
   config.duration.type = "until-dismissed";
@@ -56,19 +63,25 @@ test("unknown duration remains visible for validation while known legacy values 
   assert.deepEqual(normalizeConfig(config, { strict: true }).duration, { type: "custom-rounds", rounds: 1 });
   config.visibility = "gm";
   config.effects[0].repeat = "once-per-activation";
+
   const migrated = normalizeConfig(config, { strict: true });
+
   assert.equal(migrated.visibility, "creator");
   assert.equal(migrated.effects[0].repeat, "once-per-zone");
 });
 
 test("import repairs missing and duplicate Effect Block IDs without changing the first occurrence", () => {
   const config = defaultConfig();
+
   config.name = "Imported IDs";
   config.targeting.affects = "enemies";
   config.effects[0].triggers.activation = true;
   config.effects[0].chatAlert.enabled = true;
+
   const blocks = Array.from({ length: 6 }, () => structuredClone(config.effects[0]));
+
   for (const [index, block] of blocks.entries()) block.name = `Effect Block ${index + 1}`;
+
   blocks[0].id = "shared";
   blocks[1].id = " shared ";
   blocks[2].id = "reserved";
@@ -78,14 +91,18 @@ test("import repairs missing and duplicate Effect Block IDs without changing the
   config.effects = blocks;
 
   const oldFoundry = globalThis.foundry;
+
   globalThis.foundry = { utils: { randomID: () => "reserved" } };
+
   try {
     const rawErrors = validateConfig(config).errors.join(" ");
+
     assert.match(rawErrors, /shares ID 'shared'/);
     assert.match(rawErrors, /needs an ID/);
 
     const normalized = normalizeConfig(config);
     const ids = normalized.effects.map((block) => block.id);
+
     assert.equal(new Set(ids).size, ids.length);
     assert.ok(ids.every((id) => id.trim()));
     assert.equal(ids[0], "shared");
@@ -102,19 +119,39 @@ test("import repairs missing and duplicate Effect Block IDs without changing the
 
 test("unknown imported enum choices are rejected instead of changed to defaults", () => {
   const base = defaultConfig();
+
   base.name = "Import";
+
   const cases = [
-    [(config) => { config.mode = "cone"; }, /Zone type.*cone/],
-    [(config) => { config.targeting.affects = "foes"; }, /Affects.*foes/],
-    [(config) => { config.targeting.lineOfEffect = "sometimes"; }, /Line of effect.*sometimes/],
-    [(config) => { config.effects[0].repeat = "occasionally"; }, /repeat setting.*occasionally/],
-    [(config) => { config.effects[0].save.type = "luck"; }, /save type.*luck/],
-    [(config) => { config.effects[0].immunity.scope = "same-name"; }, /immunity scope.*same-name/],
-    [(config) => { config.effects[0].immunity.starts = ["after-save", "whenever"]; }, /immunity start.*whenever/],
-    [(config) => { config.effects[0].outcomes.noSave.conditions.push({ slug: "frightened", removal: "surprise" }); }, /condition removal.*surprise/]
+    [(config) => {
+      config.mode = "cone";
+    }, /Zone type.*cone/],
+    [(config) => {
+      config.targeting.affects = "foes";
+    }, /Affects.*foes/],
+    [(config) => {
+      config.targeting.lineOfEffect = "sometimes";
+    }, /Line of effect.*sometimes/],
+    [(config) => {
+      config.effects[0].repeat = "occasionally";
+    }, /repeat setting.*occasionally/],
+    [(config) => {
+      config.effects[0].save.type = "luck";
+    }, /save type.*luck/],
+    [(config) => {
+      config.effects[0].immunity.scope = "same-name";
+    }, /immunity scope.*same-name/],
+    [(config) => {
+      config.effects[0].immunity.starts = ["after-save", "whenever"];
+    }, /immunity start.*whenever/],
+    [(config) => {
+      config.effects[0].outcomes.noSave.conditions.push({ slug: "frightened", removal: "surprise" });
+    }, /condition removal.*surprise/]
   ];
+
   for (const [mutate, message] of cases) {
     const config = structuredClone(base);
+
     mutate(config);
     assert.throws(() => normalizeConfig(config), message);
   }
@@ -123,9 +160,11 @@ test("unknown imported enum choices are rejected instead of changed to defaults"
 test("activation-choice damage types use PF2e's current catalog without hiding stale presets", () => {
   const previousConfig = globalThis.CONFIG;
   const checked = [];
+
   class DamageRoll {
     static validate(formula) {
       checked.push(formula);
+
       return true;
     }
   }
@@ -133,26 +172,43 @@ test("activation-choice damage types use PF2e's current catalog without hiding s
     PF2E: { damageTypes: { fire: "PF2E.Damage.RollFlavor.fire", cold: "PF2E.Damage.RollFlavor.cold" } },
     Dice: { rolls: [DamageRoll] }
   };
+
   try {
     const config = defaultConfig();
+
     config.name = "Elemental import";
     config.targeting.affects = "enemies";
     config.activationChoices.damageType = { enabled: true, options: ["fire", "legacy-shadow"] };
+
     const block = config.effects[0];
+
     block.triggers.activation = true;
-    block.damage = { enabled: true, formula: "2d6", typeMode: "activation-choice", type: "untyped" };
+    block.damage = {
+      enabled: true,
+      formula: "2d6",
+      typeMode: "activation-choice",
+      type: "untyped"
+    };
 
     assert.throws(
       () => normalizeConfig(config),
       /legacy-shadow.*unavailable in this PF2e version.*current PF2e damage type/
     );
+
     const stale = validateConfig(config);
+
     assert.match(stale.errors.join(" "), /legacy-shadow.*unavailable in this PF2e version/);
-    assert.equal(stale.issues.find((issue) => issue.message.includes("legacy-shadow"))?.target.scope, "activation-damage-choice");
+    assert.equal(
+      stale.issues.find((issue) => issue.message.includes("legacy-shadow"))?.target.scope,
+      "activation-damage-choice"
+    );
+
     assert.deepEqual(checked, ["{(2d6)[fire]}"]);
 
     config.activationChoices.damageType.options = ["fire", "cold"];
+
     const normalized = normalizeConfig(config);
+
     assert.deepEqual(validateConfig(normalized).errors, []);
     assert.deepEqual(checked.slice(-2), ["{(2d6)[fire]}", "{(2d6)[cold]}"]);
     assert.ok(!checked.some((formula) => formula.includes("[untyped]")));
@@ -164,17 +220,25 @@ test("activation-choice damage types use PF2e's current catalog without hiding s
 
 test("unknown condition and linked-condition slugs remain intact and receive field errors", () => {
   const config = defaultConfig();
+
   config.name = "Import";
   config.targeting.affects = "enemies";
   config.effects[0].triggers.activation = true;
   config.effects[0].chatAlert.enabled = true;
   config.effects[0].outcomes.noSave.conditions.push({
-    slug: "mystery-condition", value: 2, removal: "condition-end", condition: "missing-link"
+    slug: "mystery-condition",
+    value: 2,
+    removal: "condition-end",
+    condition: "missing-link"
   });
+
   const normalized = normalizeConfig(config);
   const condition = normalized.effects[0].outcomes.noSave.conditions[0];
+
   assert.deepEqual([condition.slug, condition.value, condition.condition], ["mystery-condition", 2, "missing-link"]);
+
   const validation = validateConfig(normalized);
+
   assert.deepEqual(validation.issues.filter((issue) => issue.target?.conditionIndex === 0)
     .map((issue) => issue.target.field), ["condition-slug", "condition-link"]);
 
@@ -185,39 +249,59 @@ test("unknown condition and linked-condition slugs remain intact and receive fie
 
 test("condition-recovery immunity requires its condition in an active outcome", () => {
   const config = defaultConfig();
+
   config.name = "Recovery validation";
   config.targeting.affects = "enemies";
+
   const block = config.effects[0];
+
   block.triggers.activation = true;
   block.immunity.duration = "1-round";
   block.immunity.starts = ["condition-recovery"];
   block.immunity.recoveryCondition = "sickened";
   block.outcomes.noSave.conditions.push({
-    slug: "frightened", value: 1, removal: "normal", condition: ""
+    slug: "frightened",
+    value: 1,
+    removal: "normal",
+    condition: ""
   });
 
   const missing = validateConfig(config);
+
   assert.match(missing.errors.join(" "), /must apply recovery condition 'sickened'.*active outcome/);
-  assert.equal(missing.issues.find((issue) => issue.message.includes("must apply recovery condition"))?.target.field, "recovery-condition");
+  assert.equal(
+    missing.issues.find((issue) => issue.message.includes("must apply recovery condition"))?.target.field,
+    "recovery-condition"
+  );
 
   block.outcomes.noSave.conditions.push({
-    slug: "sickened", value: 1, removal: "normal", condition: ""
+    slug: "sickened",
+    value: 1,
+    removal: "normal",
+    condition: ""
   });
+
   assert.deepEqual(validateConfig(config).errors, []);
 });
 
 test("shared immunity groups are explicit and legacy immunity remains effect-block scoped", () => {
   const legacy = defaultConfig();
+
   delete legacy.effects[0].immunity.scope;
   delete legacy.effects[0].immunity.group;
+
   const migrated = normalizeConfig(legacy);
+
   assert.equal(migrated.effects[0].immunity.scope, "effect-block");
   assert.equal(migrated.effects[0].immunity.group, "");
 
   const config = defaultConfig();
+
   config.name = "Shared stench";
   config.targeting.affects = "enemies";
+
   const block = config.effects[0];
+
   block.triggers.enter = true;
   block.chatAlert.enabled = true;
   block.immunity.duration = "1-minute";
@@ -225,16 +309,24 @@ test("shared immunity groups are explicit and legacy immunity remains effect-blo
   block.immunity.scope = "shared-group";
 
   let validation = validateConfig(config);
+
   assert.match(validation.errors.join(" "), /choose an immunity group/i);
-  assert.equal(validation.issues.find((issue) => issue.message.includes("immunity group"))?.target.field, "immunity-group");
+  assert.equal(
+    validation.issues.find((issue) => issue.message.includes("immunity group"))?.target.field,
+    "immunity-group"
+  );
 
   block.immunity.group = "Stench: Ghonhatine";
+
   const normalized = normalizeConfig(config);
+
   assert.equal(normalized.effects[0].immunity.group, "stench:ghonhatine");
   validation = validateConfig(normalized);
   assert.deepEqual(validation.errors, []);
   block.immunity.starts = ["critical-success-only"];
+
   const criticalOnly = normalizeConfig(config);
+
   assert.deepEqual(criticalOnly.effects[0].immunity.starts, ["critical-success-only"]);
   assert.deepEqual(validateConfig(criticalOnly).errors, []);
 });

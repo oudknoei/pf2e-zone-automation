@@ -11,8 +11,10 @@ export function parseDurationRounds(value) {
   }
 
   const text = String(value ?? "").trim();
+
   if (POSITIVE_INTEGER.test(text)) {
     const rounds = Number(text);
+
     return Number.isSafeInteger(rounds) && rounds > 0
       ? { kind: "number", rounds }
       : { kind: "invalid" };
@@ -28,16 +30,19 @@ export function parseDurationRounds(value) {
 /** Preserves a valid duration for older presets while giving incomplete input a safe fallback. */
 export function normalizeDurationRounds(value, fallback = 1) {
   const parsed = parseDurationRounds(value);
+
   if (parsed.kind === "number") return parsed.rounds;
   if (parsed.kind === "formula") return parsed.formula;
 
   const text = String(value ?? "").trim();
+
   return text || fallback;
 }
 
 /** Checks Foundry's parser before a duration formula can be saved or rolled. */
 export function durationRoundsError(value, { RollClass = globalThis.Roll } = {}) {
   const parsed = parseDurationRounds(value);
+
   if (parsed.kind === "invalid") {
     return "Duration rounds must be a positive whole number or a dice formula such as 2d4.";
   }
@@ -48,6 +53,7 @@ export function durationRoundsError(value, { RollClass = globalThis.Roll } = {})
       return "Foundry does not recognize this duration formula.";
     }
   }
+
   return null;
 }
 
@@ -56,9 +62,11 @@ export async function resolveDurationRounds(duration, { RollClass = globalThis.R
   switch (duration?.type) {
     case "1-round":
       return { rounds: 1, formula: null };
+
     case "custom-rounds": {
       const parsed = parseDurationRounds(duration.rounds);
       const error = durationRoundsError(duration.rounds, { RollClass });
+
       if (error) throw new Error(error);
 
       if (parsed.kind === "number") return { rounds: parsed.rounds, formula: null };
@@ -67,6 +75,7 @@ export async function resolveDurationRounds(duration, { RollClass = globalThis.R
       }
 
       let roll;
+
       try {
         roll = await new RollClass(parsed.formula).evaluate({ async: true });
       } catch (cause) {
@@ -74,11 +83,14 @@ export async function resolveDurationRounds(duration, { RollClass = globalThis.R
       }
 
       const rounds = Number(roll?.total);
+
       if (!Number.isSafeInteger(rounds) || rounds < 1) {
         throw new Error(`Duration formula '${parsed.formula}' must produce a positive whole number of rounds.`);
       }
+
       return { rounds, formula: parsed.formula };
     }
+
     case "1-minute":
       return { rounds: 10, formula: null };
     case "10-minutes":

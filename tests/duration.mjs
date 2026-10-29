@@ -19,6 +19,7 @@ test("duration rounds accept positive integers or safe dice formulas", () => {
 
 test("duration formula is evaluated once and records its resolved round count", async () => {
   let evaluations = 0;
+
   class FixedRoll {
     constructor(formula) {
       assert.equal(formula, "2d4");
@@ -28,6 +29,7 @@ test("duration formula is evaluated once and records its resolved round count", 
     async evaluate(options) {
       assert.deepEqual(options, { async: true });
       evaluations += 1;
+
       return this;
     }
   }
@@ -52,15 +54,20 @@ test("formula durations reject non-integer or non-positive totals", async () => 
     resolveDurationRounds({ type: "custom-rounds", rounds: "1d4 / 2" }, { RollClass: FractionalRoll }),
     /positive whole number of rounds/
   );
+
   assert.deepEqual(await resolveDurationRounds({ type: "1-minute" }), { rounds: 10, formula: null });
 });
+
 test("duration formulas use Foundry's parser before they are rolled", async () => {
   const checked = [];
+
   class SyntaxRoll {
     static validate(formula) {
       checked.push(formula);
+
       return formula !== "2d4 +";
     }
+
     async evaluate() {
       assert.fail("an invalid formula must not be rolled");
     }
@@ -72,5 +79,6 @@ test("duration formulas use Foundry's parser before they are rolled", async () =
     resolveDurationRounds({ type: "custom-rounds", rounds: "2d4 +" }, { RollClass: SyntaxRoll }),
     /Foundry does not recognize/
   );
+
   assert.deepEqual(checked, ["2d4", "2d4 +", "2d4 +"]);
 });

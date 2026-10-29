@@ -37,6 +37,7 @@ export function blockSummary(block) {
 export function triggerLabels(block) {
   const triggers = block?.triggers ?? {};
   const labels = [];
+
   if (triggers.activation) labels.push("When created");
   if (triggers.enter) labels.push("When a creature enters");
   if (triggers.turnStart) labels.push("At creature turn start");
@@ -47,8 +48,10 @@ export function triggerLabels(block) {
   if (triggers.hpThreshold) labels.push(`When HP drops to ${block?.hitPoints?.threshold ?? "?"} or less`);
   if (triggers.traitUse) {
     const watchedTraits = watchedTraitSlugs(block?.traitUse);
+
     labels.push(`When ${watchedTraits.length ? watchedTraits.map(titleCase).join(" or ") : "a selected trait"} is used`);
   }
+
   return labels;
 }
 
@@ -70,26 +73,56 @@ export function renderEffectRow(effect, blockId, outcomeKey, index) {
 /** Condenses validation into a review dialog while preserving warnings that do not block creation. */
 export function validationMessage({ errors, warnings }) {
   if (!errors.length && !warnings.length) return "Configuration is valid.";
+
   const parts = [];
+
   if (errors.length) parts.push(`Errors:\n• ${errors.join("\n• ")}`);
   if (warnings.length) parts.push(`Warnings:\n• ${warnings.join("\n• ")}`);
+
   return parts.join("\n\n");
 }
 
 /** Renders editor and preview markup from an explicit snapshot without reading or changing Foundry state. */
-export function createBuilderView({ state, sourceActor, sourceToken, loadedPreset, conditionChoices, damageChoices, dcChoices, sourceMatches, canOverwrite }) {
+export function createBuilderView({
+  state,
+  sourceActor,
+  sourceToken,
+  loadedPreset,
+  conditionChoices,
+  damageChoices,
+  dcChoices,
+  sourceMatches,
+  canOverwrite
+}) {
   /** Uses only the condition catalog supplied with this rendering snapshot. */
-  function getConditionChoices() { return conditionChoices; }
+  function getConditionChoices() {
+    return conditionChoices;
+  }
+
   /** Uses only the damage catalog supplied with this rendering snapshot. */
-  function getDamageChoices() { return damageChoices; }
+  function getDamageChoices() {
+    return damageChoices;
+  }
+
   /** Supplies statistic choices captured by the operation controller. */
-  function getDcChoices() { return dcChoices; }
+  function getDcChoices() {
+    return dcChoices;
+  }
+
   /** Preserves unknown condition values against the supplied catalog. */
-  function conditionSlugs() { return conditionChoices.map(choice => choice.slug); }
+  function conditionSlugs() {
+    return conditionChoices.map(choice => choice.slug);
+  }
+
   /** Renders a selection warning from the controller's current source check. */
-  function selectionStillMatchesSource() { return sourceMatches; }
+  function selectionStillMatchesSource() {
+    return sourceMatches;
+  }
+
   /** Renders preset access from the controller's current ownership check. */
-  function canOverwritePreset() { return canOverwrite; }
+  function canOverwritePreset() {
+    return canOverwrite;
+  }
 
   /** Keeps the save UI aligned with the source actor that is currently selected. */
   function dcOptionsHtml(selectedDc) {
@@ -98,15 +131,18 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
     const selectedStat = selectedDc?.statistic ?? "";
 
     let html = `<option value="custom" ${selectedMode === "custom" ? "selected" : ""}>Custom DC</option>`;
+
     for (const option of choices) {
       const value = `stat:${option.statistic}`;
       const selected = selectedMode === "actorStatistic" && selectedStat === option.statistic;
+
       html += `<option value="${esc(value)}" ${selected ? "selected" : ""}>${esc(option.label)} — DC ${option.dc}</option>`;
     }
 
     if (selectedMode === "actorStatistic" && !choices.some((x) => x.statistic === selectedStat)) {
       html += `<option value="stat:${esc(selectedStat)}" selected>Unavailable on ${esc(sourceActor.name)}: ${esc(selectedStat)}</option>`;
     }
+
     return html;
   }
 
@@ -117,16 +153,15 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
     const unavailable = choices.some((choice) => choice.slug === slug)
       ? ""
       : `<option value="${esc(slug)}" selected>${slug ? `Unavailable condition: ${esc(slug)}` : "Choose a condition"}</option>`;
+
     return unavailable + choices.map(({ slug: choiceSlug, label }) =>
-      `<option value="${esc(choiceSlug)}" ${choiceSlug === slug ? "selected" : ""}>${esc(label)}</option>`
-    ).join("");
+      `<option value="${esc(choiceSlug)}" ${choiceSlug === slug ? "selected" : ""}>${esc(label)}</option>`).join("");
   }
 
   /** Keeps damage-type dropdowns consistent with the current PF2e catalog. */
   function damageOptions(selected) {
     return getDamageChoices().map(({ slug, label }) =>
-      `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`
-    ).join("");
+      `<option value="${esc(slug)}" ${slug === selected ? "selected" : ""}>${esc(label)}</option>`).join("");
   }
 
   /** Keeps condition controls and their removal choices together so outcomes remain legible. */
@@ -134,6 +169,7 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
     const valued = isValuedCondition(condition.slug) || (!conditionSlugs().includes(condition.slug) && condition.value != null);
     const value = valued ? (condition.value ?? 1) : "";
     const linkedCondition = String(condition.condition ?? "");
+
     return `
       <div class="zb-subrow zb-condition-row" data-condition-index="${index}">
         <select data-field="condition-slug">${conditionOptions(condition.slug)}</select>
@@ -159,6 +195,7 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
     const outcome = block.outcomes[key] ?? emptyOutcome(key);
     const isNoSave = key === "noSave";
     const basicLocked = block.save.enabled && block.save.basic && !isNoSave;
+
     return `
       <section class="zb-outcome" data-outcome="${key}">
         <div class="zb-outcome-head">
@@ -166,8 +203,8 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
           <label class="zb-inline zb-damage-multiplier">Damage / Healing ×
             <select data-field="damage-multiplier" ${basicLocked ? "disabled" : ""}>
               ${[
-                [0, "0 (none)"], [0.5, "½"], [1, "1×"], [2, "2×"]
-              ].map(([value, text]) => `<option value="${value}" ${Number(outcome.damageMultiplier) === value ? "selected" : ""}>${text}</option>`).join("")}
+      [0, "0 (none)"], [0.5, "½"], [1, "1×"], [2, "2×"]
+    ].map(([value, text]) => `<option value="${value}" ${Number(outcome.damageMultiplier) === value ? "selected" : ""}>${text}</option>`).join("")}
             </select>
           </label>
         </div>
@@ -289,10 +326,10 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
                 <div class="zb-subhead">Allowed saves</div>
                 <div class="zb-check-grid">
                   ${[
-                    ["fortitude", "Fortitude"],
-                    ["reflex", "Reflex"],
-                    ["will", "Will"]
-                  ].map(([slug, label]) => `<label class="zb-check"><input type="checkbox" data-save-choice="${slug}" ${(block.save.choices ?? []).includes(slug) ? "checked" : ""}> ${label}</label>`).join("")}
+      ["fortitude", "Fortitude"],
+      ["reflex", "Reflex"],
+      ["will", "Will"]
+    ].map(([slug, label]) => `<label class="zb-check"><input type="checkbox" data-save-choice="${slug}" ${(block.save.choices ?? []).includes(slug) ? "checked" : ""}> ${label}</label>`).join("")}
                 </div>
                 <div class="notes">The affected creature chooses one of these saves when the request is posted.</div>
               </div>
@@ -373,13 +410,13 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
               <div class="zb-subhead">Immunity begins when</div>
               <div class="zb-immunity-options">
                 ${[
-                  ["after-save", "After any save"],
-                  ["success-or-better", "On success or better"],
-                  ["critical-success-only", "On critical success only"],
-                  ["failure-or-worse", "On failure or worse"],
-                  ["affected", "When actually affected"],
-                  ["condition-recovery", "After recovering from condition"]
-                ].map(([value, label]) => `<label class="zb-check"><input type="checkbox" data-immunity-start="${value}" ${block.immunity.starts.includes(value) ? "checked" : ""}> ${label}</label>`).join("")}
+      ["after-save", "After any save"],
+      ["success-or-better", "On success or better"],
+      ["critical-success-only", "On critical success only"],
+      ["failure-or-worse", "On failure or worse"],
+      ["affected", "When actually affected"],
+      ["condition-recovery", "After recovering from condition"]
+    ].map(([value, label]) => `<label class="zb-check"><input type="checkbox" data-immunity-start="${value}" ${block.immunity.starts.includes(value) ? "checked" : ""}> ${label}</label>`).join("")}
               </div>
               <div class="notes">Choose at least one start condition when immunity duration is not None.</div>
             </div>
@@ -456,8 +493,8 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
               <label>Duration
                 <select data-zone="duration-type">
                   ${!["custom-rounds", "1-minute", "10-minutes", "unlimited"].includes(state.duration.type)
-                    ? `<option value="${esc(state.duration.type)}" selected>Unavailable duration: ${esc(state.duration.type)}</option>`
-                    : ""}
+      ? `<option value="${esc(state.duration.type)}" selected>Unavailable duration: ${esc(state.duration.type)}</option>`
+      : ""}
                   <option value="custom-rounds" ${state.duration.type === "custom-rounds" ? "selected" : ""}>X rounds</option>
                   <option value="1-minute" ${state.duration.type === "1-minute" ? "selected" : ""}>1 minute</option>
                   <option value="10-minutes" ${state.duration.type === "10-minutes" ? "selected" : ""}>10 minutes</option>
@@ -558,6 +595,7 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
       const damageText = block.damage.enabled ? `${esc(block.damage.formula)} ${esc(damageTypeText)}` : "None";
       const healingText = block.healing?.enabled ? esc(block.healing.formula) : "None";
       const alertText = block.chatAlert?.enabled ? "Yes" : "No";
+
       return `<li><b>${esc(block.name)}</b>: ${esc(triggerLabels(block).join(", "))}<br><span class="zb-preview-details">Save: ${saveText}; Damage: ${damageText}; Healing: ${healingText}; Chat Alert: ${alertText}; Immunity: ${esc(titleCase(block.immunity.duration))}</span></li>`;
     }).join("");
 
@@ -585,6 +623,7 @@ export function createBuilderView({ state, sourceActor, sourceToken, loadedPrese
 export function renderSavedZones(records, { isGM, userId }) {
   const rows = records.map((record) => {
     const canDelete = isGM || record.createdBy?.userId === userId;
+
     return `<div class="pza-saved-row" data-record-id="${esc(record.id)}">
         <div>
           <b>${esc(presetLabel(record))}</b>
@@ -593,17 +632,29 @@ export function renderSavedZones(records, { isGM, userId }) {
         ${canDelete ? `<button type="button" data-action="delete" class="danger"><i class="fa-solid fa-trash"></i> Delete</button>` : `<span></span>`}
       </div>`;
   }).join("");
+
   return `<div class="pza-saved-list">${rows}</div>`;
 }
 
 /** Renders the manager from display data while keeping permission checks and document operations in its controller. */
 export function renderManagedZones(zones) {
-  const rows = zones.map(({ id, name, config: cfg, createdByName, canMove, canEnd, cleanupPending, pendingRows }) => {
+  const rows = zones.map(({
+    id,
+    name,
+    config: cfg,
+    createdByName,
+    canMove,
+    canEnd,
+    cleanupPending,
+    pendingRows
+  }) => {
     const pendingMarkup = pendingRows.length
       ? `<div class="pza-pending-list"><b class="pza-pending-count">Pending saves (${pendingRows.length})</b>${pendingRows.map(({ pendingId, targetName, blockName, saveTypes, dc }) => `<div class="pza-pending-row" data-pending-id="${esc(pendingId)}">
             <span>${esc(targetName)} — ${esc(blockName)} · ${esc(saveTypes)} DC ${esc(dc)}</span>
             <button type="button" data-action="cancel-save" data-pending-id="${esc(pendingId)}">Cancel request</button>
-          </div>`).join("")}</div>` : "";
+          </div>`).join("")}</div>`
+      : "";
+
     return `<div class="pza-zone-entry" data-region-id="${esc(id)}">
         <div class="pza-zone-row">
           <div><b>${esc(name)}</b><div class="pza-zone-meta">Created by ${esc(createdByName)} · ${esc(cfg.mode === "area" && cfg.areaShape === "square" ? `${cfg.sideLength}-foot square` : `${cfg.radius}-foot ${cfg.mode === "emanation" ? "emanation" : "circle"}`)} · ${esc(titleCase(cfg.duration?.type))}${cleanupPending ? " · Cleanup pending" : ""}</div></div>
@@ -615,6 +666,7 @@ export function renderManagedZones(zones) {
         ${pendingMarkup}
       </div>`;
   }).join("");
+
   return `<div class="pza-manage">${rows}</div>`;
 }
 
@@ -636,6 +688,7 @@ export function renderJsonImport(sourceName) {
 export function renderValidationDialog(result) {
   const errors = result.errors.map((message) => `<li>${esc(message)}</li>`).join("");
   const warnings = result.warnings.map((message) => `<li>${esc(message)}</li>`).join("");
+
   return `${result.errors.length ? `<h3>Errors</h3><ul>${errors}</ul>` : `<p><i class="fa-solid fa-circle-check"></i> No validation errors.</p>`}
       ${result.warnings.length ? `<h3>Warnings</h3><ul>${warnings}</ul>` : `<p><i class="fa-solid fa-circle-check"></i> No warnings.</p>`}`;
 }
@@ -643,6 +696,7 @@ export function renderValidationDialog(result) {
 /** Presents the available shared damage types without choosing or storing an activation result. */
 export function renderActivationDamageChoice(choices) {
   const options = choices.map((slug) => `<option value="${esc(slug)}">${esc(titleCase(slug))}</option>`).join("");
+
   return `<p>Choose the shared damage type for this zone activation.</p><label>Damage type<select name="damageType">${options}</select></label>`;
 }
 

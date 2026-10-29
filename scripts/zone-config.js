@@ -8,13 +8,14 @@ import { editableHpThreshold } from "./hp-threshold.js";
 import { localize, randomId, titleCase } from "./utils.js";
 
 export const SCHEMA_VERSION = 16;
+
 /** Gives unsaved blocks stable identities so UI edits can target the intended block. */
 const newId = () => randomId(8);
-
 
 /** Keeps checkbox and custom trait input portable as normalized PF2e slugs. */
 function normalizeTraitSlugs(values) {
   const list = Array.isArray(values) ? values : [values];
+
   return [...new Set(list
     .flatMap((value) => Array.isArray(value) ? value : [value])
     .flatMap((value) => String(value ?? "").split(","))
@@ -26,7 +27,6 @@ function normalizeTraitSlugs(values) {
 function watchedTraitSlugs(traitUse) {
   return normalizeTraitSlugs([traitUse?.traits ?? [], traitUse?.trait ?? ""]);
 }
-
 
 // These are the condition choices supported even when PF2e has not populated CONFIG yet.
 const FALLBACK_CONDITIONS = [
@@ -41,6 +41,7 @@ const FALLBACK_CONDITIONS = [
 /** Uses the same PF2e condition catalog for builder choices and creation checks. */
 function conditionSlugs() {
   const configured = Object.keys(globalThis.CONFIG?.PF2E?.conditionTypes ?? {});
+
   return [...new Set([...FALLBACK_CONDITIONS, ...configured])]
     .filter((slug) => slug !== "persistent-damage");
 }
@@ -48,12 +49,14 @@ function conditionSlugs() {
 /** Follows PF2e's installed damage catalog while retaining its supported untyped roll annotation. */
 function damageTypeSlugs() {
   const configured = Object.keys(globalThis.CONFIG?.PF2E?.damageTypes ?? {});
+
   return [...new Set([...configured, "untyped"])];
 }
 
 /** Defers catalog checks only in non-Foundry contexts where PF2e has not populated CONFIG yet. */
 function damageTypeAvailable(slug) {
   const configured = Object.keys(globalThis.CONFIG?.PF2E?.damageTypes ?? {});
+
   return !configured.length || slug === "untyped" || configured.includes(slug);
 }
 
@@ -88,17 +91,17 @@ const BASIC_MULTIPLIERS = {
   noSave: 1
 };
 
-
 /** Prevents the UI from asking for meaningless numeric values on binary conditions. */
 function isValuedCondition(slug) {
   return VALUED_CONDITIONS.has(String(slug ?? ""));
 }
 
-
 /** Retains system-provided statistic labels without making a missing translation block the builder. */
 function statLabel(stat, fallback) {
   const label = stat?.label;
+
   if (typeof label === "string") return localize(label, label) || fallback;
+
   return fallback;
 }
 
@@ -113,12 +116,17 @@ function getDcChoices(actor) {
   /** Filters incomplete actor statistics so invalid preparation data cannot become a selectable DC. */
   const add = (statistic, label, dc) => {
     if (!statistic || seen.has(statistic) || !Number.isFinite(dc) || dc <= 0) return;
+
     seen.add(statistic);
     found.push({ statistic, label, dc });
   };
 
   try {
-    add("class-dc", `${statLabel(actor?.classDC, "Primary Class DC")} (Primary Class DC)`, actorStatisticDc(actor, "class-dc"));
+    add(
+      "class-dc",
+`${statLabel(actor?.classDC, "Primary Class DC")} (Primary Class DC)`,
+actorStatisticDc(actor, "class-dc")
+    );
   } catch (_err) { /* actor type may not expose classDC */ }
 
   try {
@@ -137,7 +145,6 @@ function getDcChoices(actor) {
   // Avoid duplicate primary class choices that resolve to exactly the same slug/DC.
   return found.sort((a, b) => b.dc - a.dc || a.label.localeCompare(b.label));
 }
-
 
 /** Provides an explicit result shape so every degree of success can be edited safely. */
 function emptyOutcome(key) {
@@ -234,31 +241,33 @@ function defaultConfig() {
 /** Repairs incomplete imported result data so presets from older versions remain editable. */
 function ensureOutcome(outcome, key) {
   const base = emptyOutcome(key);
+
   return {
     damageMultiplier: Number.isFinite(Number(outcome?.damageMultiplier))
       ? Number(outcome.damageMultiplier)
       : base.damageMultiplier,
     conditions: Array.isArray(outcome?.conditions)
       ? outcome.conditions.map((c) => {
-          const slug = String(c?.slug ?? "");
-          const removal = c?.removal == null ? "normal" : String(c.removal);
-          return {
-            slug,
-            value: isValuedCondition(slug)
-              ? Math.max(1, Math.floor(Number(c?.value) || 1))
-              : conditionSlugs().includes(slug) ? null : (Number.isFinite(Number(c?.value)) && c?.value != null ? Number(c.value) : null),
-            removal,
-            condition: removal === "condition-end"
-              ? String(c?.condition ?? "")
-              : null
-          };
-        })
+        const slug = String(c?.slug ?? "");
+        const removal = c?.removal == null ? "normal" : String(c.removal);
+
+        return {
+          slug,
+          value: isValuedCondition(slug)
+            ? Math.max(1, Math.floor(Number(c?.value) || 1))
+            : conditionSlugs().includes(slug) ? null : (Number.isFinite(Number(c?.value)) && c?.value != null ? Number(c.value) : null),
+          removal,
+          condition: removal === "condition-end"
+            ? String(c?.condition ?? "")
+            : null
+        };
+      })
       : [],
     effects: Array.isArray(outcome?.effects)
       ? outcome.effects.map((e) => ({
-          uuid: String(e?.uuid ?? "").trim(),
-          removal: e?.removal == null ? "item-duration" : String(e.removal)
-        }))
+        uuid: String(e?.uuid ?? "").trim(),
+        removal: e?.removal == null ? "item-duration" : String(e.removal)
+      }))
       : []
   };
 }
@@ -271,38 +280,60 @@ function validateSuppliedChoices(cfg) {
       throw new Error(`${label} '${String(value)}' is not supported.`);
     }
   };
+
   check(cfg.mode, ["area", "emanation"], "Zone type");
   check(cfg.areaShape, ["circle", "square"], "Area shape");
   check(cfg.visibility, ["all", "creator", "gm"], "Visibility");
   check(cfg.targeting?.affects, ["enemies", "allies", "both", "none"], "Affects");
   check(cfg.targeting?.lineOfEffect, ["respect", "ignore"], "Line of effect");
+
   for (const option of (Array.isArray(cfg.activationChoices?.damageType?.options)
     ? cfg.activationChoices.damageType.options
     : [])) {
     const slug = String(option ?? "").trim();
+
     if (slug && !damageTypeAvailable(slug)) throw new Error(unavailableDamageTypeMessage(slug));
   }
+
   for (const [index, block] of (Array.isArray(cfg.effects) ? cfg.effects : []).entries()) {
     const prefix = `Effect Block ${index + 1}`;
+
     check(block?.repeat, ["every", "once-per-round", "once-per-zone", "once-per-activation"], `${prefix} repeat setting`);
     check(block?.save?.type, ["fortitude", "reflex", "will", "choice"], `${prefix} save type`);
     check(block?.save?.dc?.mode, ["custom", "actorStatistic"], `${prefix} DC source`);
     check(block?.damage?.typeMode, ["fixed", "activation-choice"], `${prefix} damage type source`);
     check(block?.immunity?.duration, ["none", "1-round", "1-minute", "10-minutes"], `${prefix} immunity duration`);
     check(block?.immunity?.scope, ["effect-block", "shared-group"], `${prefix} immunity scope`);
+
     for (const start of (Array.isArray(block?.immunity?.starts) ? block.immunity.starts : [])) {
-      check(start, ["after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"], `${prefix} immunity start`);
+      check(
+        start,
+        ["after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"],
+`${prefix} immunity start`
+      );
     }
+
     for (const save of (Array.isArray(block?.save?.choices) ? block.save.choices : [])) {
       check(save, ["fortitude", "reflex", "will"], `${prefix} allowed save`);
     }
+
     for (const [outcomeKey] of OUTCOMES) {
       const outcome = block?.outcomes?.[outcomeKey];
+
       for (const condition of (Array.isArray(outcome?.conditions) ? outcome.conditions : [])) {
-        check(condition?.removal, ["normal", "on-exit", "zone-end", "condition-end"], `${prefix} ${titleCase(outcomeKey)} condition removal`);
+        check(
+          condition?.removal,
+          ["normal", "on-exit", "zone-end", "condition-end"],
+`${prefix} ${titleCase(outcomeKey)} condition removal`
+        );
       }
+
       for (const effect of (Array.isArray(outcome?.effects) ? outcome.effects : [])) {
-        check(effect?.removal, ["item-duration", "on-exit", "zone-end"], `${prefix} ${titleCase(outcomeKey)} Effect Item removal`);
+        check(
+          effect?.removal,
+          ["item-duration", "on-exit", "zone-end"],
+`${prefix} ${titleCase(outcomeKey)} Effect Item removal`
+        );
       }
     }
   }
@@ -312,10 +343,13 @@ function validateSuppliedChoices(cfg) {
 function uniqueEffectBlockIds(effects) {
   const reserved = new Set(effects.map((block) => String(block?.id ?? "").trim()).filter(Boolean));
   const used = new Set();
+
   return effects.map((block) => {
     const original = String(block?.id ?? "").trim();
+
     if (original && !used.has(original)) {
       used.add(original);
+
       return original;
     }
 
@@ -323,8 +357,11 @@ function uniqueEffectBlockIds(effects) {
     const base = String(newId()).trim() || "effect";
     let replacement = base;
     let suffix = 1;
+
     while (reserved.has(replacement) || used.has(replacement)) replacement = `${base}-${suffix++}`;
+
     used.add(replacement);
+
     return replacement;
   });
 }
@@ -333,8 +370,11 @@ function uniqueEffectBlockIds(effects) {
 function normalizeConfig(input, { strict = false } = {}) {
   const base = defaultConfig();
   const cfg = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+
   validateSuppliedChoices(cfg);
+
   const suppliedDuration = cfg.duration?.type;
+
   if (strict) {
     if (!String(cfg.name ?? "").trim()) throw new Error("Zone name is required.");
     if (suppliedDuration != null && !DURATION_TYPES.has(suppliedDuration) && !LEGACY_DURATION_TYPES.has(suppliedDuration)) {
@@ -391,6 +431,7 @@ function normalizeConfig(input, { strict = false } = {}) {
 
   const effects = Array.isArray(cfg.effects) && cfg.effects.length ? cfg.effects : base.effects;
   const effectIds = uniqueEffectBlockIds(effects);
+
   result.effects = effects.map((block, index) => {
     const saveMode = block?.save?.dc?.mode === "actorStatistic" ? "actorStatistic" : "custom";
     const rawCustomDc = block?.save?.dc?.value;
@@ -404,6 +445,7 @@ function normalizeConfig(input, { strict = false } = {}) {
       : { mode: "custom", value: customDc };
 
     const outcomes = {};
+
     for (const [key] of OUTCOMES) outcomes[key] = ensureOutcome(block?.outcomes?.[key], key);
 
     return {
@@ -463,8 +505,8 @@ function normalizeConfig(input, { strict = false } = {}) {
           : "none",
         starts: Array.isArray(block?.immunity?.starts)
           ? [...new Set(block.immunity.starts.filter((x) => [
-              "after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"
-            ].includes(x)))]
+            "after-save", "success-or-better", "critical-success-only", "failure-or-worse", "affected", "condition-recovery"
+          ].includes(x)))]
           : [],
         recoveryCondition: String(block?.immunity?.recoveryCondition ?? "sickened"),
         scope: block?.immunity?.scope === "shared-group" ? "shared-group" : "effect-block",
@@ -491,12 +533,13 @@ function normalizeConfig(input, { strict = false } = {}) {
   return result;
 }
 
-
 /** Lets validation distinguish an intentionally empty block from one with an actual result. */
 function getPayloadCount(block) {
   const keys = activeOutcomeKeys(block);
+
   return keys.reduce((count, key) => {
     const outcome = block.outcomes[key];
+
     return count + outcome.conditions.length + outcome.effects.length;
   }, 0);
 }
@@ -508,56 +551,83 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
   const issues = [];
   const dcChoices = getDcChoices(sourceActor);
   const supportedConditions = new Set(conditionSlugs());
+
   /** Keeps validation errors tied to their field so the UI can explain how to fix them. */
   const error = (message, target = null) => {
     errors.push(message);
     if (target) issues.push({ message, target });
   };
+
   /** Provides a stable location for errors in a block list whose rows can be added or removed. */
-  const blockTarget = (index, field, extra = {}) => ({ scope: "block", index, field, ...extra });
+  const blockTarget = (index, field, extra = {}) => ({
+    scope: "block",
+    index,
+    field,
+    ...extra
+  });
 
   if (requireCurrentSource && !currentSourceMatches) {
     error("The controlled token has changed. Click 'Use Current Selection' before continuing.", { scope: "source" });
   }
   if (!cfg.name) error("Zone name is required.", { scope: "zone", field: "name" });
   if (cfg.mode !== "area" || cfg.areaShape === "circle") {
-    if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000) error("Radius must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "radius" });
+    if (!Number.isFinite(cfg.radius) || cfg.radius <= 0 || cfg.radius > 1000)
+      error("Radius must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "radius" });
   } else if (!Number.isFinite(cfg.sideLength) || cfg.sideLength <= 0 || cfg.sideLength > 1000) {
     error("Side length must be greater than 0 and no more than 1,000 feet.", { scope: "zone", field: "side-length" });
   }
-  if (!hasTargetSelection(cfg.targeting)) error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
+  if (!hasTargetSelection(cfg.targeting))
+    error("Select at least one target: Allies, Enemies, or Self (Source Actor).", { scope: "zone", field: "targeting" });
   if (!["respect", "ignore"].includes(cfg.targeting?.lineOfEffect)) {
     error("Choose whether the zone respects or ignores line of effect.", { scope: "zone", field: "line-of-effect" });
   }
   if (!DURATION_TYPES.has(cfg.duration?.type)) {
-    error(`Duration type '${String(cfg.duration?.type ?? "")}' is unavailable. Choose a supported duration.`, { scope: "zone", field: "duration-type" });
+    error(
+`Duration type '${String(cfg.duration?.type ?? "")}' is unavailable. Choose a supported duration.`,
+{ scope: "zone", field: "duration-type" }
+    );
   } else if (cfg.duration.type === "custom-rounds") {
     const durationError = durationRoundsError(cfg.duration.rounds);
+
     if (durationError) error(durationError, { scope: "zone", field: "duration-rounds" });
   }
   if (!cfg.effects.length) error("At least one effect block is required.", { scope: "blocks" });
+
   const blockIdIndexes = new Map();
+
   cfg.effects.forEach((block, index) => {
     const id = String(block?.id ?? "").trim();
+
     if (!id) {
-      error(`Effect Block ${index + 1} needs an ID. Reopen or re-import this configuration to generate one.`, blockTarget(index, "block-id"));
+      error(
+`Effect Block ${index + 1} needs an ID. Reopen or re-import this configuration to generate one.`,
+blockTarget(index, "block-id")
+      );
     } else if (blockIdIndexes.has(id)) {
-      error(`Effect Block ${index + 1} shares ID '${id}' with Effect Block ${blockIdIndexes.get(id) + 1}. Reopen or re-import this configuration to assign a new ID.`, blockTarget(index, "block-id"));
+      error(
+`Effect Block ${index + 1} shares ID '${id}' with Effect Block ${blockIdIndexes.get(id) + 1}. Reopen or re-import this configuration to assign a new ID.`,
+blockTarget(index, "block-id")
+      );
     } else {
       blockIdIndexes.set(id, index);
     }
   });
 
   const sharedDamageChoice = cfg.activationChoices?.damageType;
+
   if (sharedDamageChoice?.enabled) {
     if (!sharedDamageChoice.options.length) {
-      error("Shared activation damage type is enabled but no allowed damage types are selected.", { scope: "activation-damage-choice" });
+      error(
+        "Shared activation damage type is enabled but no allowed damage types are selected.",
+        { scope: "activation-damage-choice" }
+      );
     } else {
       for (const slug of sharedDamageChoice.options) {
         if (!damageTypeAvailable(slug)) {
           error(unavailableDamageTypeMessage(slug), { scope: "activation-damage-choice" });
         }
       }
+
       if (sharedDamageChoice.options.length === 1) {
         warnings.push("Shared activation damage type has only one allowed type; a fixed damage type may be simpler.");
       }
@@ -566,6 +636,7 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
 
   cfg.effects.forEach((block, index) => {
     const prefix = `${block.name || `Effect Block ${index + 1}`}:`;
+
     if (!Object.values(block.triggers).some(Boolean)) {
       error(`${prefix} select at least one trigger.`, blockTarget(index, "triggers"));
     }
@@ -577,7 +648,10 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
         error(`${prefix} enter a whole-number Hit Point threshold of 0 or higher.`, blockTarget(index, "hp-threshold"));
       }
       if (Object.entries(block.triggers).some(([key, enabled]) => key !== "hpThreshold" && enabled)) {
-        error(`${prefix} the Hit Point trigger needs its own Effect Block so its repeat limit does not hide another trigger.`, blockTarget(index, "triggers"));
+        error(
+`${prefix} the Hit Point trigger needs its own Effect Block so its repeat limit does not hide another trigger.`,
+blockTarget(index, "triggers")
+        );
       }
     }
     if (block.chatAlert?.enabled && !block.chatAlert?.text) {
@@ -585,7 +659,10 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
     }
 
     if (block.save.enabled && block.triggers.continuous) {
-      error(`${prefix} "While a creature is inside" cannot require a saving throw. Use a separate Effect Block for ongoing No Save effects and another for save triggers.`, blockTarget(index, "save-enabled"));
+      error(
+`${prefix} "While a creature is inside" cannot require a saving throw. Use a separate Effect Block for ongoing No Save effects and another for save triggers.`,
+blockTarget(index, "save-enabled")
+      );
     }
 
     if (block.save.enabled) {
@@ -600,8 +677,12 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
         const statistic = block.save.dc.statistic;
         const choice = dcChoices.find((x) => x.statistic === statistic);
         const resolved = actorStatisticDc(sourceActor, statistic);
+
         if (!choice || !(resolved > 0)) {
-          error(`${prefix} DC statistic '${statistic}' is not available on ${sourceActor?.name ?? "the source Actor"}.`, blockTarget(index, "dc-source"));
+          error(
+`${prefix} DC statistic '${statistic}' is not available on ${sourceActor?.name ?? "the source Actor"}.`,
+blockTarget(index, "dc-source")
+          );
         }
       }
     }
@@ -610,24 +691,33 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       const types = block.damage.typeMode === "activation-choice"
         ? (sharedDamageChoice?.options ?? []).filter((slug) => damageTypeAvailable(slug))
         : [block.damage.type ?? "untyped"];
+
       for (const type of (types.length ? types : ["untyped"])) {
         const formulaError = pf2eFormulaError(block.damage.formula, type);
+
         if (!formulaError) continue;
+
         const selectedType = block.damage.typeMode === "activation-choice" ? ` for '${type}'` : "";
+
         error(`${prefix} damage${selectedType}: ${formulaError}`, blockTarget(index, "damage-formula"));
         break;
       }
     }
     if (block.healing?.enabled) {
       const formulaError = pf2eFormulaError(block.healing.formula, "healing");
+
       if (formulaError) error(`${prefix} healing: ${formulaError}`, blockTarget(index, "healing-formula"));
     }
     if (block.damage.enabled && block.damage.typeMode === "activation-choice" && !sharedDamageChoice?.enabled) {
-      error(`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`, blockTarget(index, "damage-type-mode"));
+      error(
+`${prefix} uses the shared activation damage type, but that zone-level choice is not enabled.`,
+blockTarget(index, "damage-type-mode")
+      );
     }
 
     for (const outcomeKey of activeOutcomeKeys(block)) {
       const outcome = block.outcomes[outcomeKey];
+
       for (const [conditionIndex, condition] of (outcome?.conditions ?? []).entries()) {
         if (!supportedConditions.has(condition.slug)) {
           error(
@@ -655,9 +745,13 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
 
     for (const key of activeOutcomeKeys(block)) {
       const outcome = block.outcomes[key];
+
       outcome.effects.forEach((effect, effectIndex) => {
         if (!effect.uuid) {
-          error(`${prefix} ${titleCase(key)} Effect Item ${effectIndex + 1} has no UUID.`, blockTarget(index, "effect-uuid", { outcomeKey: key, effectIndex }));
+          error(
+`${prefix} ${titleCase(key)} Effect Item ${effectIndex + 1} has no UUID.`,
+blockTarget(index, "effect-uuid", { outcomeKey: key, effectIndex })
+          );
         }
       });
     }
@@ -673,7 +767,10 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       if (!block.immunity.group) {
         error(`${prefix} choose an immunity group for shared immunity.`, blockTarget(index, "immunity-group"));
       } else if (block.immunity.group.length > 100 || !/^[a-z0-9][a-z0-9._:-]*$/.test(block.immunity.group)) {
-        error(`${prefix} immunity group must use letters, numbers, periods, colons, underscores, or hyphens.`, blockTarget(index, "immunity-group"));
+        error(
+`${prefix} immunity group must use letters, numbers, periods, colons, underscores, or hyphens.`,
+blockTarget(index, "immunity-group")
+        );
       }
     }
     if (block.immunity.starts.includes("after-save") && !block.save.enabled) {
@@ -683,11 +780,16 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
       if (!block.immunity.recoveryCondition) {
         error(`${prefix} choose a recovery condition for condition-based immunity.`, blockTarget(index, "recovery-condition"));
       } else if (!supportedConditions.has(block.immunity.recoveryCondition)) {
-        error(`${prefix} recovery condition '${block.immunity.recoveryCondition}' is unavailable. Choose a supported PF2e condition.`, blockTarget(index, "recovery-condition"));
+        error(
+`${prefix} recovery condition '${block.immunity.recoveryCondition}' is unavailable. Choose a supported PF2e condition.`,
+blockTarget(index, "recovery-condition")
+        );
       } else if (!activeOutcomeKeys(block).some((key) =>
-        (block.outcomes[key]?.conditions ?? []).some((condition) => condition.slug === block.immunity.recoveryCondition)
-      )) {
-        error(`${prefix} must apply recovery condition '${block.immunity.recoveryCondition}' in at least one active outcome.`, blockTarget(index, "recovery-condition"));
+        (block.outcomes[key]?.conditions ?? []).some((condition) => condition.slug === block.immunity.recoveryCondition))) {
+        error(
+`${prefix} must apply recovery condition '${block.immunity.recoveryCondition}' in at least one active outcome.`,
+blockTarget(index, "recovery-condition")
+        );
       }
     }
     if (block.triggers.continuous && (block.damage.enabled || block.healing?.enabled)) {
@@ -697,7 +799,6 @@ function validateConfig(cfg, { sourceActor, requireCurrentSource = false, curren
 
   return { errors, warnings, issues };
 }
-
 
 export {
   OUTCOMES, BASIC_MULTIPLIERS, newId, normalizeTraitSlugs, watchedTraitSlugs,

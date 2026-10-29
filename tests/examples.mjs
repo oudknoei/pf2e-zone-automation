@@ -18,9 +18,12 @@ const expectedFiles = [
 
 test("each JSON template is available as a standalone import example", () => {
   const files = readdirSync(examples).filter((name) => name.endsWith(".json")).sort();
+
   assert.deepEqual(files, expectedFiles);
+
   for (const file of files) {
     const config = JSON.parse(readFileSync(join(examples, file), "utf8"));
+
     assert.ok(Number.isInteger(config.schemaVersion), `${file} needs a schema version`);
     assert.match(config.name, /\S/, `${file} needs a name`);
     assert.ok(["area", "emanation"].includes(config.mode), `${file} has an invalid mode`);

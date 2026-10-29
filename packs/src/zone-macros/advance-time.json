@@ -1,0 +1,14 @@
+{
+  "name": "Advance Time",
+  "type": "script",
+  "scope": "global",
+  "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.promptAdvanceSessionTime) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  await zoneModule.api.promptAdvanceSessionTime();\n}\n",
+  "author": null,
+  "img": "icons/svg/clockwork.svg",
+  "folder": null,
+  "sort": 6,
+  "ownership": { "default": 0 },
+  "flags": {},
+  "_id": "pzaAdvanceTime01",
+  "_key": "!macros!pzaAdvanceTime01"
+}
