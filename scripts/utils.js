@@ -35,6 +35,13 @@ export function titleCase(value) {
   return String(value ?? "").replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+/** Appends the installed module version to a dialog title using the Zone Creator's format. */
+export function moduleDialogTitle(title) {
+  const version = game.modules?.get("pf2e-zone-automation")?.version ?? "unknown";
+
+  return `${title} v${version}`;
+}
+
 /** Uses system translations when available and preserves the caller's fallback for custom content. */
 export function localize(key, fallback) {
   if (typeof key !== "string") return fallback;

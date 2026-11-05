@@ -148,6 +148,7 @@ async function reset(actors = []) {
   assert.equal(userHooks.size, 0, "Closed dialogs release their reminder hooks");
   assert.equal(actorHooks.size, 0, "Closed dialogs release their Actor hooks");
   dialogs.length = notices.length = messages.length = writes.length = reminderWrites.length = 0;
+  game.modules = new Map([["pf2e-zone-automation", { version: "9.8.7" }]]);
   game.actors = actors;
   game.actors.get = (id) => game.actors.find((entry) => entry.id === id);
   game.user = {
@@ -647,7 +648,7 @@ test("one dropdown guides selection, previews Give/Spend/Set, validates the choi
   const dialog = await promptSetHeroPoints();
   const root = dialog.element;
 
-  assert.equal(dialog.options.window.title, "Set Hero Points");
+  assert.equal(dialog.options.window.title, "Set Hero Points v9.8.7");
   assert.equal(dialog.options.content.attributes.length, 0);
   assert.ok(root.querySelector(".pza-hero-points"), "Styled content survives Foundry's wrapper serialization");
   assert.equal(dialog.options.form.closeOnSubmit, false);

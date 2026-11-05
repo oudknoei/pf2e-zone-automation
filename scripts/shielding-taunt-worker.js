@@ -191,9 +191,9 @@ function otherTauntsRemain(guardian, replacement) {
   )));
 }
 
-/** Reads a numeric TokenDocument source value without requiring a rendered Token. */
+/** Reads prepared TokenDocument geometry before stored data, without requiring a rendered Token. */
 function tokenNumber(token, property, fallback = null) {
-  const value = Number(token?._source?.[property] ?? token?.[property] ?? fallback);
+  const value = Number(token?.[property] ?? token?._source?.[property] ?? fallback);
 
   return Number.isFinite(value) ? value : NaN;
 }
@@ -275,6 +275,15 @@ function tokenBounds(token, scene) {
   };
 }
 
+/** Matches PF2e's token depth, falling back to legacy actor height when depth is absent. */
+function tokenDepthPixels(token, sceneSize, sceneDistance) {
+  const depth = token?.depth ?? token?._source?.depth;
+
+  return depth != null
+    ? Math.floor(Number(depth) * sceneSize)
+    : Math.floor(Number(token?.actor?.dimensions?.height) / sceneDistance * sceneSize);
+}
+
 /** Measures vertical separation between creature volumes in scene pixels. */
 function elevationSeparation(sourceToken, targetToken, sourceBounds, targetBounds, scene, gridWidth) {
   const sourceElevation = tokenNumber(sourceToken, "elevation", 0);
@@ -284,20 +293,18 @@ function elevationSeparation(sourceToken, targetToken, sourceBounds, targetBound
 
   const sceneSize = Number(scene.dimensions?.size ?? scene.grid.size);
   const sceneDistance = Number(scene.dimensions?.distance ?? scene.grid.distance);
-  const sourceHeight = Number(sourceToken.actor.dimensions?.height);
-  const targetHeight = Number(targetToken.actor.dimensions?.height);
   const sourceVerticalBounds = {
     x: sourceBounds.x,
     y: Math.floor(sourceElevation / sceneDistance * sceneSize),
     width: sourceBounds.width,
-    height: Math.floor(sourceHeight / sceneDistance * sceneSize)
+    height: tokenDepthPixels(sourceToken, sceneSize, sceneDistance)
     ,
   };
   const targetVerticalBounds = {
     x: targetBounds.x,
     y: Math.floor(targetElevation / sceneDistance * sceneSize),
     width: targetBounds.width,
-    height: Math.floor(targetHeight / sceneDistance * sceneSize)
+    height: tokenDepthPixels(targetToken, sceneSize, sceneDistance)
     ,
   };
   const verticalOverlap = targetVerticalBounds.y + targetVerticalBounds.height > sourceVerticalBounds.y

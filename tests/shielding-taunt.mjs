@@ -205,6 +205,56 @@ for (const [name, change] of [
   });
 }
 
+for (const { name, sourceElevation, targetElevation, sourceDepth, targetDepth, expected } of [
+  { name: "a target on a nearby elevation", sourceElevation: 0, targetElevation: 5, sourceDepth: 1, targetDepth: 2, expected: 30 },
+  { name: "a target above normal reach", sourceElevation: 0, targetElevation: 15, sourceDepth: 1, targetDepth: 2, expected: 35 },
+  { name: "a deeper source token", sourceElevation: 0, targetElevation: 15, sourceDepth: 3, targetDepth: 2, expected: 30 },
+  { name: "a deeper target token", sourceElevation: 15, targetElevation: 0, sourceDepth: 1, targetDepth: 3, expected: 30 },
+  { name: "a target below normal reach", sourceElevation: 15, targetElevation: 0, sourceDepth: 1, targetDepth: 1, expected: 35 }
+]) {
+  test(`Shielding Taunt uses PF2e 8.7 token depth for ${name} without actor.dimensions`, async () => {
+    const f = setupTauntRecovery();
+
+    try {
+      const [source, target] = f.tokens;
+
+      delete source.actor.dimensions;
+      delete target.actor.dimensions;
+      Object.assign(source, { elevation: sourceElevation, depth: sourceDepth });
+      Object.assign(target, { x: 600, elevation: targetElevation, depth: targetDepth });
+
+      if (expected > 30) {
+        await assert.rejects(executeShieldingTaunt(f.request), new RegExp(`Target is ${expected} feet away; maximum Taunt range is 30 feet`));
+        assert.deepEqual(f.events, [], "An out-of-range Taunt must not change effects");
+      } else {
+        assert.equal((await executeShieldingTaunt(f.request)).distance, expected);
+      }
+    } finally {
+      f.restore();
+    }
+  });
+}
+
+test("Shielding Taunt measures prepared token dimensions before stored source values", async () => {
+  const f = setupTauntRecovery();
+
+  try {
+    const [source, target] = f.tokens;
+
+    // Prepared dimensions can differ from stored data after PF2e's token overrides.
+    source._source = { x: 0, y: 0, width: 1, height: 1, depth: 1, elevation: 0 };
+    target._source = { x: 700, y: 0, width: 1, height: 1, depth: 1, elevation: 0 };
+    Object.assign(source, { width: 3, height: 3, depth: 3 });
+    Object.assign(target, { x: 800, elevation: 15, depth: 1 });
+    delete source.actor.dimensions;
+    delete target.actor.dimensions;
+
+    assert.equal((await executeShieldingTaunt(f.request)).distance, 30);
+  } finally {
+    f.restore();
+  }
+});
+
 for (const legacy of [false, true]) {
   test(`Shielding Taunt reuses a GM completion after refresh without reverting a newer target${legacy ? " with a legacy author" : ""}`, async () => {
     const f = setupTauntRecovery();

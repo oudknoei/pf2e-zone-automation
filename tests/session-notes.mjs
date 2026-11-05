@@ -271,6 +271,7 @@ async function reset() {
       isGM: false
     }]]),
     system: { id: "pf2e" },
+    modules: new Map([[M, { version: "9.8.7" }]]),
     world: { id: "session-test" },
     journal: new Collection(),
     folders: new Collection(),
@@ -764,6 +765,7 @@ test("Advance Time focuses one window, previews blocks and custom travel, and cl
   const { journal } = await start({ day: 42, time: "09:10" });
   const [dialog, same] = await Promise.all([promptAdvanceSessionTime(), promptAdvanceSessionTime()]);
 
+  assert.equal(dialog.options.window.title, "Advance Time v9.8.7");
   assert.equal(same, dialog);
   assert.equal(dialogs.filter(entry => entry.rendered).length, 1);
   field(dialog, "blocks").value = "3";
@@ -900,6 +902,7 @@ test("historical time corrections change only the chosen event label, preserve n
   const anchor = structuredClone(sessionClockState().anchor);
   const dialog = await promptAdvanceSessionTime({ mode: "event", journalId: journal.id });
 
+  assert.equal(dialog.options.window.title, "Correct Event Time v9.8.7");
   assert.equal(field(dialog, "day").value, "42");
   assert.equal(field(dialog, "time").value, "15:40");
   field(dialog, "day").value = "41";
@@ -1277,7 +1280,7 @@ test("Journal controls copy current notes and edit the clock with validation, ex
     const clockButton = root.querySelector('[data-session-journal-action="clock"]');
 
     clockButton.click();
-    await waitUntil(() => dialogs.some(dialog => dialog.options.window.title === "Set Day/Time"));
+    await waitUntil(() => dialogs.some(dialog => dialog.options.window.title === "Set Day/Time v9.8.7"));
 
     const clock = dialogs.at(-1);
 
@@ -1343,7 +1346,7 @@ test("an ended Journal offers Copy Notes and Add Addendum while leaving the curr
     assert.equal(root.querySelector('[data-session-journal-action="clock"]'), null);
     assert.ok(root.querySelector('[data-session-journal-action="copy"]'));
     root.querySelector('[data-session-journal-action="addendum"]').click();
-    await waitUntil(() => dialogs.some(dialog => dialog.rendered && dialog.options.window.title === "Quick Note — Addendum"));
+    await waitUntil(() => dialogs.some(dialog => dialog.rendered && dialog.options.window.title === "Quick Note — Addendum v9.8.7"));
 
     const addendum = dialogs.at(-1);
 
@@ -1533,6 +1536,7 @@ test("Quick Note focuses one draft, preserves Enter newlines, and OK closes afte
   const dialog = await openQuickNote();
   const area = field(dialog, "note");
 
+  assert.equal(dialog.options.window.title, "Quick Note v9.8.7");
   area.value = "First line\nSecond line";
   assert.equal(await openQuickNote(), dialog);
   assert.equal(document.activeElement, area);
@@ -1763,6 +1767,7 @@ test("the dashboard shows only setup, active actions, or paused actions as the s
 
   const dialog = await openSessionNotes();
 
+  assert.equal(dialog.options.window.title, "Session Notes v9.8.7");
   assert.equal(field(dialog, "session"), null);
   assert.equal(dialog.element.querySelector("details"), null);
   assert.equal(dialog.element.querySelector('[data-session-action="pause"]'), null);

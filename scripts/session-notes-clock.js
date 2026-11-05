@@ -1,4 +1,4 @@
-import { escapeHtml as esc, newOperationId } from "./utils.js";
+import { escapeHtml as esc, newOperationId, moduleDialogTitle } from "./utils.js";
 import { requestGMWorker } from "./transport.js";
 import {
   SESSION_MODULE,
@@ -188,7 +188,9 @@ async function openClockDialog({ mode, journalId } = {}) {
   wrapper.innerHTML = clockHtml(mode, journalId);
 
   const dialog = new foundry.applications.api.DialogV2({
-    window: { title: mode === "set" ? "Set Day/Time" : mode === "event" ? "Correct Event Time" : "Advance Time" },
+    window: {
+      title: moduleDialogTitle(mode === "set" ? "Set Day/Time" : mode === "event" ? "Correct Event Time" : "Advance Time")
+    },
     position: { width: 570 },
     content: wrapper,
     form: { closeOnSubmit: false },

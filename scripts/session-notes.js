@@ -1,4 +1,4 @@
-import { escapeHtml as esc, newOperationId, readDocumentFlag } from "./utils.js";
+import { escapeHtml as esc, newOperationId, readDocumentFlag, moduleDialogTitle } from "./utils.js";
 import { requestGMWorker } from "./transport.js";
 import {
   SESSION_MODULE,
@@ -143,7 +143,7 @@ export async function openSessionNotes() {
   let pending = null;
   let busy = false;
   const dialog = new foundry.applications.api.DialogV2({
-    window: { title: "Session Notes" },
+    window: { title: moduleDialogTitle("Session Notes") },
     position: { width: 620 },
     content: content(dashboardHtml(journal)),
     form: { closeOnSubmit: false },
@@ -384,7 +384,7 @@ export async function openQuickNote({ journalId, addendum = false } = {}) {
   let saving = false;
   const hooks = [];
   const dialog = new foundry.applications.api.DialogV2({
-    window: { title: addendum ? "Quick Note — Addendum" : "Quick Note" },
+    window: { title: moduleDialogTitle(addendum ? "Quick Note — Addendum" : "Quick Note") },
     position: { width: 840 },
     content: content(quickNoteHtml(journal, addendum)),
     form: { closeOnSubmit: false },

@@ -12,7 +12,7 @@ import {
   validateHeroPointChange
 } from "./hero-points-rules.js";
 import { requestGMWorker } from "./transport.js";
-import { newOperationId } from "./utils.js";
+import { newOperationId, moduleDialogTitle } from "./utils.js";
 
 let heroPointsDialog = null;
 const HERO_POINT_CHOICES = [
@@ -213,7 +213,7 @@ export async function promptSetHeroPoints() {
   let pendingPlan = null;
   let pendingRequest = null;
   const dialog = new foundry.applications.api.DialogV2({
-    window: { title: "Set Hero Points" },
+    window: { title: moduleDialogTitle("Set Hero Points") },
     position: { width: 520 },
     content,
     form: { closeOnSubmit: false },
