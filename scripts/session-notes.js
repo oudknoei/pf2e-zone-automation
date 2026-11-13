@@ -19,7 +19,6 @@ import {
 } from "./session-notes-data.js";
 import { currentCampaign, CLOCK_CHANGED_HOOK } from "./session-clock-data.js";
 import { promptAdvanceSessionTime } from "./session-notes-clock.js";
-import { recapPrompt } from "./session-notes-settings.js";
 
 let dashboard = null;
 let quickNote = null;
@@ -60,7 +59,7 @@ export async function requestSessionNotes(details) {
 
 /** Uses a real dialog as a clipboard fallback without exposing private text to players or chat. */
 async function copyNotes(journal) {
-  const text = sessionNotesPackage(journal, recapPrompt());
+  const text = sessionNotesPackage(journal);
 
   try {
     await navigator.clipboard.writeText(text);

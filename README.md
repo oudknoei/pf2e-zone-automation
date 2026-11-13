@@ -15,7 +15,7 @@ PF2e Zone Automation creates Foundry VTT Regions for Pathfinder Second Edition s
 - Use **Set Hero Points** to give, spend, or set points and create personal reminders. Players manage only characters they own; GMs manage all player characters.
 - Optionally extend Automatic Bonus Progression's attack potency to spell attack rolls through a miscellaneous module setting.
 - Equip homebrew **Spell Potency Rings (+1, +2, +3)** from the supplied Equipment compendium for item bonuses to spell attack rolls, without investment.
-- Keep GM-only Session Notes in editable Journals, add Quick Notes with portrait-based name insertion, and copy notes with a shared read-aloud recap prompt.
+- Keep GM-only Session Notes in editable Journals, add Quick Notes with portrait-based name insertion, and copy notes with a built-in read-aloud recap prompt.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ After installation, restart the Foundry server from **Games Configuration** if i
 
 ### Session Notes, Quick Note, and Advance Time
 
-Session Notes is **off by default**. **Enable Session Notes** is the first option under **Configure Settings → PF2e Zone Automation**. The world setting takes effect immediately for connected clients. Turning it off removes the chat shortcuts, closes the session windows and recap editor, and blocks the macros, runtime API calls, and new worker writes. Existing Journals, saved session state, and the recap prompt are retained. **Recap Prompt** appears below the activation option only while Session Notes is enabled; save activation before opening its editor.
+Session Notes is **off by default**. **Enable Session Notes** is the first option under **Configure Settings → PF2e Zone Automation**. The world setting takes effect immediately for connected clients. Turning it off removes the chat shortcuts, closes the session windows, and blocks the macros, runtime API calls, and new worker writes. Existing Journals and saved session state are retained.
 
 GMs can use the **Session Notes**, **Quick Note**, and **Advance Time** buttons immediately above the chat input controls (the globe/whisper icon row), including in a popped-out chat window, or the macros from the supplied compendium. The shortcuts follow the message editor rather than scrolling with message history. Import the macros onto the hotbar as needed; each entry point calls the installed module. An active GM must be online to save changes.
 
@@ -50,7 +50,7 @@ GMs can use the **Session Notes**, **Quick Note**, and **Advance Time** buttons 
 3. While active, **Session Notes** shows the session name/number with **Pause** and **End Session**. While paused, it shows **Continue** and **End Session**. A compact panel shows the current **Day and time of day** with access to **Advance Time**. Pause records a real-world break; Continue resumes the same session. Manual notes remain available during a break. Neither action changes the campaign clock. Setup fields and past-session navigation are hidden during a session.
 4. Use **Advance Time** for ten-minute blocks, one-minute/one-hour/eight-hour presets, a custom duration, or **Advance Until** a target Day/time. Choose an activity and review the resulting Day/time before applying. Simultaneous tasks share one interval; their durations are not added together. This advances Foundry's shared world clock and saves one explained Journal event. Existing combat/time integrations continue to advance their own clock; their exact seconds are observed once. Roleplaying time is assigned by the GM, and labels do not automate PF2e activities or declare success.
 5. **End Session** saves the ending Day/time and returns the dialog to setup, carrying forward the clock and Party selection. Previous sessions stay in the Journal directory. An ended Journal offers **Add Addendum** for a late note with a chosen occurrence Day/time.
-6. Set your shared **Recap Prompt** under **Configure Settings → PF2e Zone Automation → Recap Prompt**. Use **Copy Notes** in the session's Journal status panel to combine that prompt with current Journal text for your preferred external LLM. Paste the result into the Journal's **Recap** page.
+6. Use **Copy Notes** in the session's Journal status panel to combine the built-in recap prompt with current Journal text for your preferred external LLM. Paste the result into the Journal's **Recap** page.
 
 Session Journals are created in the **Session Notes** folder and are private to GMs. **Marked player-safe** is a review marker and does not share a page. Copy Notes creates a GM package that can contain secrets; review it before giving it to players or an external service. A failed clipboard write opens a selectable copy window. Notes marked **Exclude from recap** and the finished Recap page are omitted.
 

@@ -1157,11 +1157,6 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
   opacity: .55;
 }
 
-#client-settings .form-group.pza-session-prompt-setting[hidden],
-.form-group.pza-session-prompt-setting[hidden] {
-  display: none;
-}
-
 #client-settings .form-group.pza-abp-spell-attacks-setting > label,
 .form-group.pza-abp-spell-attacks-setting > label {
   flex: 1 1 auto;

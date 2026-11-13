@@ -11,7 +11,6 @@ globalThis.Event = dom.window.Event;
 const notices = [];
 const dialogs = [];
 const registrations = new Map();
-const menus = new Map();
 const values = new Map();
 const callbacks = new Map();
 const writes = [];
@@ -237,9 +236,9 @@ globalThis.CONFIG = {
 
 const M = "pf2e-zone-automation";
 const { executeSessionNotes } = await import("../scripts/session-notes-repository.js");
-const { sessionData, sessionJournals, sessionNotesPackage, visibleNoteActors, appendActorName } = await import("../scripts/session-notes-data.js");
+const { sessionData, sessionJournals, sessionNotesPackage, visibleNoteActors, appendActorName, DEFAULT_RECAP_PROMPT } = await import("../scripts/session-notes-data.js");
 const { openSessionNotes, openQuickNote, registerSessionNotesHooks } = await import("../scripts/session-notes.js");
-const { registerSessionNotesSettings, registerSessionNotesSettingsUI, DEFAULT_RECAP_PROMPT, openRecapPrompt } = await import("../scripts/session-notes-settings.js");
+const { registerSessionNotesSettings, registerSessionNotesSettingsUI } = await import("../scripts/session-notes-settings.js");
 const { registerSessionClockHooks, promptAdvanceSessionTime } = await import("../scripts/session-notes-clock.js");
 const { sessionClockState, currentCampaign, campaignAt, campaignLabel, previewAdvance } = await import("../scripts/session-clock-data.js");
 
@@ -249,7 +248,6 @@ async function reset() {
   assert.equal(callbacks.size, 0, "Closed Quick Note windows release every listener");
   dialogs.length = notices.length = writes.length = 0;
   registrations.clear();
-  menus.clear();
   values.clear();
   failBeforePage = failAfterPage = failCompletion = failJournalAck = false;
   advanceFailure = null;
@@ -307,9 +305,6 @@ async function reset() {
     settings: {
       register(scope, key, config) {
         registrations.set(`${scope}.${key}`, config);
-      },
-      registerMenu(scope, key, config) {
-        menus.set(`${scope}.${key}`, config);
       },
       get(scope, key) {
         return values.get(`${scope}.${key}`) ?? registrations.get(`${scope}.${key}`)?.default;
@@ -411,6 +406,12 @@ test("clock arithmetic preserves campaign numbering, exact seconds, midnight rol
   assert.deepEqual(campaignAt({ day: 0, time: "09:10", worldTime: 100 }, 706), { day: 0, time: "09:20", second: 6 });
   assert.match(campaignLabel(campaignAt(anchor, 106)), /11:50:06 PM/);
   assert.equal(previewAdvance({ anchor }, 100, { mode: "until", day: 43, time: "07:50" }).seconds, 28800);
+  const legacyAnchor = { ...anchor, worldTime: 100.5 };
+  const until = previewAdvance({ anchor: legacyAnchor }, 101, { mode: "until", day: 42, time: "23:51" });
+
+  assert.equal(until.seconds, 60, "Reach the requested minute even with a legacy fractional anchor");
+  assert.equal(until.worldEnd, 161);
+  assert.deepEqual(until.end, { day: 42, time: "23:51", second: 0.5 });
   assert.throws(
     () => previewAdvance({ anchor }, 100, { mode: "until", day: 42, time: "10:00" }),
     /positive duration or a future/
@@ -797,6 +798,34 @@ test("Advance Time focuses one window, previews blocks and custom travel, and cl
   assert.equal(callbacks.size, 0);
 });
 
+test("Advance Time previews and records whole seconds with Foundry's integer clock", async () => {
+  await reset();
+
+  const { journal } = await start({ day: 42, time: "09:10" });
+  const advance = game.time.advance.bind(game.time);
+
+  game.time.advance = (seconds, options) => {
+    assert.ok(Number.isInteger(seconds), "Foundry 14.370 accepts only whole seconds");
+
+    return advance(seconds, options);
+  };
+
+  const dialog = await promptAdvanceSessionTime({ mode: "custom" });
+
+  field(dialog, "custom-duration").value = "10.6";
+  field(dialog, "custom-unit").value = "1";
+  field(dialog, "custom-duration").dispatchEvent(new Event("input", { bubbles: true }));
+  assert.match(dialog.element.querySelector("[data-clock-preview]").textContent, /9:10:11 AM.*11 seconds/);
+
+  await dialog.submit("save");
+
+  assert.equal(dialog.rendered, false);
+  assert.equal(advanceCalls[0].seconds, 11);
+  assert.equal(game.time.worldTime, 1245);
+  assert.equal(sessionClockState().pending, null);
+  assert.equal(clockEvents(journal)[0].getFlag(M, "sessionNotes").clock.seconds, 11);
+});
+
 test("Advance Until rejects a past target and permits a corrected preview; external updates preserve the activity draft", async () => {
   await reset();
   await start({ day: 42, time: "23:50" });
@@ -1045,7 +1074,6 @@ test("F1 creates private, versioned session Journals with exactly the three stan
   assert.equal(sessionData(journal).campaign.time, "15:40");
   assert.equal(sessionData(journal).party[0].name, "Mira");
   assert.equal(game.folders.size, 1);
-  assert.equal(game.settings.get(M, "sessionRecapPrompt"), DEFAULT_RECAP_PROMPT);
 });
 
 test("concurrent session starts, late retries, and repository reloads cannot create a second active session", async () => {
@@ -1661,38 +1689,13 @@ test("Quick Note without an active session keeps its draft when a session is sub
   assert.equal(dialog.rendered, false);
 });
 
-test("prompt settings are world-scoped, shared, editable, resettable, and separate from Journals", async () => {
-  await reset();
-  assert.equal(registrations.get(`${M}.sessionRecapPrompt`).scope, "world");
-  assert.equal(menus.get(`${M}.sessionRecapPromptEditor`).restricted, true);
-
-  let editor = await openRecapPrompt();
-
-  field(editor, "recap-prompt").value = "  ";
-  await editor.submit("save");
-  assert.equal(editor.rendered, true);
-  assert.equal(game.settings.get(M, "sessionRecapPrompt"), DEFAULT_RECAP_PROMPT);
-  field(editor, "recap-prompt").value = "A custom spoken recap.";
-  await editor.submit("save");
-  assert.equal(editor.rendered, false);
-  game.user = { id: "otherGM", isGM: true };
-  editor = await openRecapPrompt();
-  assert.equal(field(editor, "recap-prompt").value, "A custom spoken recap.");
-  await editor.submit("reset");
-  assert.equal(game.settings.get(M, "sessionRecapPrompt"), DEFAULT_RECAP_PROMPT);
-  await editor.submit("cancel");
-  assert.equal(editor.rendered, false);
-  assert.equal(game.journal.size, 0);
-});
-
-test("native Settings puts activation first and exposes the recap menu only after activation is saved", async () => {
+test("native Settings puts activation first without changing other settings", async () => {
   await reset();
   await game.settings.set(M, "sessionNotesEnabled", false);
 
   const root = document.createElement("form");
 
   root.innerHTML = `<div class="form-group" id="other-setting"><input name="other-module.setting"></div>
-    <div class="form-group" id="prompt-setting"><label>Recap Prompt</label><button type="button" data-key="${M}.sessionRecapPromptEditor">Edit Recap Prompt</button></div>
     <div class="form-group" id="abp-setting"><label>Apply ABP attack potency to spell attacks</label><div class="form-fields"><input type="checkbox" name="${M}.abpSpellAttacks" checked></div></div>
     <div class="form-group" id="enable-setting"><label>Enable Session Notes</label><div class="form-fields"><input type="checkbox" name="${M}.sessionNotesEnabled"></div></div>`;
 
@@ -1702,64 +1705,22 @@ test("native Settings puts activation first and exposes the recap menu only afte
   const stop = registerSessionNotesSettingsUI();
 
   try {
-    const toggle = root.querySelector(`#enable-setting input`);
     const abp = root.querySelector(`#abp-setting input`);
-    const row = root.querySelector("#prompt-setting");
-    const button = row.querySelector("button");
 
     emit("renderSettingsConfig", application, root);
     assert.deepEqual(
       [...root.children].map(row => row.id),
-      ["other-setting", "enable-setting", "prompt-setting", "abp-setting"]
+      ["other-setting", "enable-setting", "abp-setting"]
     );
 
-    assert.equal(row.hidden, true);
-    assert.equal(button.disabled, true);
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    assert.equal(row.hidden, true, "An unsaved check does not bypass the disabled feature");
-    await game.settings.set(M, "sessionNotesEnabled", true);
-    assert.equal(row.hidden, false);
-    assert.equal(button.disabled, false);
     emit("renderSettingsConfig", application, root);
     assert.equal(root.querySelectorAll("#enable-setting").length, 1);
     assert.equal(root.querySelector(`#abp-setting input`), abp);
     assert.equal(abp.checked, true);
-    toggle.checked = false;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    assert.equal(row.hidden, true);
-    assert.equal(button.disabled, true);
-    emit("closeSettingsConfig", application);
   } finally {
     stop();
     root.remove();
   }
-});
-
-test("disabling Session Notes closes the recap editor and blocks opening, saving, and resetting through retained references", async () => {
-  await reset();
-  await game.settings.set(M, "sessionRecapPrompt", "Keep this saved prompt.");
-
-  const editor = await openRecapPrompt();
-
-  field(editor, "recap-prompt").value = "Unsaved replacement";
-
-  const Editor = menus.get(`${M}.sessionRecapPromptEditor`).type;
-
-  await game.settings.set(M, "sessionNotesEnabled", false);
-  await waitUntil(() => !editor.rendered);
-  await assert.rejects(openRecapPrompt(), /Enable Session Notes/);
-  assert.throws(() => new Editor(), /Enable Session Notes/);
-  await editor.submit("save");
-  await editor.submit("reset");
-  assert.equal(game.settings.get(M, "sessionRecapPrompt"), "Keep this saved prompt.");
-  assert.equal(callbacks.size, 0);
-  await game.settings.set(M, "sessionNotesEnabled", true);
-
-  const reopened = await openRecapPrompt();
-
-  assert.equal(field(reopened, "recap-prompt").value, "Keep this saved prompt.");
-  await reopened.close();
 });
 
 test("the dashboard shows only setup, active actions, or paused actions as the session progresses", async () => {
@@ -1962,12 +1923,11 @@ test("Party Select All checks every listed character without saving until Start 
   await dialog.close();
 });
 
-test("player access is rejected before dashboards, settings editors, or draft text are built", async () => {
+test("player access is rejected before dashboards or draft text are built", async () => {
   await reset();
   game.user = game.users.get("player");
   await assert.rejects(openSessionNotes(), /Only a GM/);
   await assert.rejects(openQuickNote(), /Only a GM/);
-  await assert.rejects(openRecapPrompt(), /Only a GM/);
   assert.equal(dialogs.length, 0);
 });
 
@@ -1978,17 +1938,16 @@ test("a stale explicit Quick Note Journal ID never falls back to a different act
   assert.equal(dialogs.length, 0);
 });
 
-test("permission loss closes open private dashboards, prompt editors and Quick Note", async () => {
+test("permission loss closes open private dashboards and Quick Note", async () => {
   await reset();
   await start();
 
   const dashboard = await openSessionNotes();
   const noteDialog = await openQuickNote();
-  const editor = await openRecapPrompt();
 
   game.user.isGM = false;
   emit("updateUser", game.user);
-  await waitUntil(() => !dashboard.rendered && !noteDialog.rendered && !editor.rendered);
+  await waitUntil(() => !dashboard.rendered && !noteDialog.rendered);
   assert.equal(callbacks.size, 0);
 });
 
@@ -2019,14 +1978,13 @@ test("Session Notes defaults off and denies runtime APIs and worker writes until
   assert.ok(journal);
 });
 
-test("disabling closes runtime windows while preserving saved Journals, session state, text, and custom prompts", async () => {
+test("disabling closes runtime windows while preserving saved Journals, session state, and text", async () => {
   await reset();
 
   const { journal } = await start();
   const request = note(journal);
 
   await executeSessionNotes(request);
-  await game.settings.set(M, "sessionRecapPrompt", "My custom recap voice.");
 
   const savedState = structuredClone(sessionData(journal));
   const savedText = [...journal.pages].map(page => page.text.content);
@@ -2039,7 +1997,6 @@ test("disabling closes runtime windows while preserving saved Journals, session 
   assert.equal(callbacks.size, 0);
   assert.deepEqual(sessionData(journal), savedState);
   assert.deepEqual([...journal.pages].map(page => page.text.content), savedText);
-  assert.equal(game.settings.get(M, "sessionRecapPrompt"), "My custom recap voice.");
   assert.throws(() => sessionNotesPackage(journal, ""), /Enable Session Notes/);
   await assert.rejects(
     async () => executeSessionNotes(request),

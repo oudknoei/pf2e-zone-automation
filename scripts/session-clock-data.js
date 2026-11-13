@@ -89,23 +89,29 @@ export function durationLabel(seconds) {
   return sign + parts.join(" ");
 }
 
-/** Previews one shared interval, including custom durations or an explicit future Day/time target. */
+/** Previews the whole seconds that will be sent to Foundry's world clock. */
 export function previewAdvance(state, worldTime, request) {
   if (!state) throw new Error("Set the campaign Day/time before advancing time.");
 
-  let seconds = Number(request.seconds);
+  let seconds = Math.round(Number(request.seconds));
+  if (request.mode === "until") {
+    const target = campaignSeconds(campaignTime(request.day, request.time));
+    const current = campaignSeconds(campaignAt(state.anchor, worldTime));
 
-  if (request.mode === "until")
-    seconds = campaignSeconds(campaignTime(request.day, request.time)) - campaignSeconds(campaignAt(state.anchor, worldTime));
-  if (!Number.isFinite(seconds) || seconds <= 0 || worldTime + seconds <= worldTime || seconds > Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(Math.trunc(worldTime + seconds))) {
-    throw new Error("Enter a positive duration or a future Day/time. Use Set Day/Time for corrections.");
+    // A saved anchor from before 14.370 can still put the campaign clock between seconds.
+    seconds = Math.ceil(target - current);
+  }
+
+  const worldEnd = worldTime + seconds;
+  if (!Number.isSafeInteger(seconds) || seconds <= 0 || worldEnd <= worldTime || !Number.isSafeInteger(Math.trunc(worldEnd))) {
+    throw new Error("Enter a positive duration or a future Day/time. An advance must be at least one second. Use Set Day/Time for corrections.");
   }
 
   return {
     seconds,
     worldStart: worldTime,
-    worldEnd: worldTime + seconds,
+    worldEnd,
     start: campaignAt(state.anchor, worldTime),
-    end: campaignAt(state.anchor, worldTime + seconds)
+    end: campaignAt(state.anchor, worldEnd)
   };
 }
