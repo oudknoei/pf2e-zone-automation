@@ -91,10 +91,11 @@ test("Recognize Spell changes rarity on the GM card without rolling again", asyn
     create: async (data) => data
   };
   const effectUuid = "Compendium.pf2e-zone-automation.zone-effects.Item.pzaRecognCrit001";
+  const effectLabel = "Effect: Critical Success";
   globalThis.foundry = { applications: { ux: { TextEditor: { implementation: {
     async enrichHTML(text) {
-      assert.equal(text, `@UUID[${effectUuid}]{Recognize Spell Critical Success}`);
-      return `<a class="content-link" draggable="true" data-uuid="${effectUuid}">Recognize Spell Critical Success</a>`;
+      assert.equal(text, `@UUID[${effectUuid}]{${effectLabel}}`);
+      return `<a class="content-link" draggable="true" data-uuid="${effectUuid}">${effectLabel}</a>`;
     }
   } } } } };
 
@@ -103,7 +104,9 @@ test("Recognize Spell changes rarity on the GM card without rolling again", asyn
   assert.deepEqual(message.whisper, ["gm"]);
 
   const { document } = new JSDOM(message.content).window;
-  assert.equal(document.querySelector("a.content-link[draggable='true']").dataset.uuid, effectUuid);
+  const effectLink = document.querySelector("a.content-link[draggable='true']");
+  assert.equal(effectLink.dataset.uuid, effectUuid);
+  assert.equal(effectLink.textContent, effectLabel);
   assert.match(document.body.textContent, /\+1 circumstance bonus to AC or your saving throw/);
   const [common, uncommon, rare] = document.querySelectorAll("button");
   const tableBody = document.querySelector("tbody");
