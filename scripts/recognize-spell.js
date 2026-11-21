@@ -77,13 +77,17 @@ export async function recognizeSpell() {
   const controlled = canvas.tokens?.controlled ?? [];
   const token = controlled[0]?.document;
   const actor = token?.actor;
-  if (controlled.length !== 1 || actor?.type !== "character") {
-    ui.notifications.warn("Select one player character token to roll Recognize Spell.");
+  if (controlled.length !== 1 || !["character", "npc"].includes(actor?.type)) {
+    ui.notifications.warn("Select one PC or NPC token to roll Recognize Spell.");
     return;
   }
 
-  const skills = TRADITION_SKILLS.map((slug) => actor.getStatistic(slug))
-    .filter((skill) => skill?.rank > 0);
+  const skills = TRADITION_SKILLS.map((slug) => {
+    const skill = actor.skills[slug];
+    // PF2e marks listed NPC skills as proficient and typically leaves their rank unset.
+    const rank = skill?.rank ?? (actor.type === "npc" && skill?.proficient ? 1 : 0);
+    return { skill, rank };
+  }).filter(({ rank }) => rank > 0);
   if (!skills.length) {
     ui.notifications.warn(`${actor.name} has no trained skills for Recognize Spell.`);
     return;
@@ -94,9 +98,9 @@ export async function recognizeSpell() {
 
   const rollOptions = { extraRollOptions: ["action:recognize-spell", "self:action:slug:recognize-spell", "secret"] };
   const die = (await new Roll("1d20").evaluate({ allowInteractive: false })).total;
-  const checks = skills.map((skill) => ({
+  const checks = skills.map(({ skill, rank }) => ({
     label: skill.label,
-    autoRank: AUTO_RECOGNIZE_RANK[skill.rank],
+    autoRank: AUTO_RECOGNIZE_RANK[rank],
     total: die + skill.withRollOptions(rollOptions).check.mod
   }));
 
@@ -123,7 +127,7 @@ export async function recognizeSpell() {
       <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it: ${effectLink}.</p>
       <p><strong>Success</strong> You recognize the spell</p>
       <p><strong>Failure</strong> You fail to recognize the spell.</p>
-      <p><strong>Critical Failure</strong> You misidentify the spell as another spell entirely, of the GM’s choice.</p>
+      <p><strong>Critical Failure</strong> You misidentify the spell as another spell entirely (GM choice).</p>
     </section>`
   });
 }

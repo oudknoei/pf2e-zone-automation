@@ -58,13 +58,13 @@ const expectedMacros = new Map([
   }]
 ]);
 
-test("Recognize Spell changes rarity on the GM card without rolling again", async () => {
+test("Recognize Spell handles PC and NPC skills and changes rarity without rolling again", async () => {
   const statistics = {
     arcana: { label: "Arcana", rank: 1, withRollOptions: () => ({ check: { mod: 14 } }) },
     nature: { label: "Nature", rank: 0 },
     religion: { label: "Religion", rank: 1, withRollOptions: () => ({ check: { mod: -3 } }) }
   };
-  const actor = { type: "character", name: "Celina", getStatistic: (slug) => statistics[slug] };
+  const actor = { type: "character", name: "Celina", skills: statistics };
   let rolls = 0;
   let renderChat;
   globalThis.Hooks = {
@@ -140,6 +140,25 @@ test("Recognize Spell changes rarity on the GM card without rolling again", asyn
   common.click();
   assert.equal(tableBody.innerHTML, commonRows);
   assert.equal(rolls, 1);
+
+  const npc = {
+    type: "npc",
+    name: "NPC Mage",
+    skills: {
+      arcana: { label: "Arcana", rank: null, proficient: true, withRollOptions: () => ({ check: { mod: 2 } }) },
+      religion: { label: "Religion", rank: null, proficient: false }
+    }
+  };
+  canvas.tokens.controlled = [{ document: { actor: npc } }];
+  const npcMessage = await recognizeSpell();
+  const npcDocument = new JSDOM(npcMessage.content).window.document;
+  const npcRows = npcDocument.querySelector("tbody").rows;
+  assert.deepEqual([...npcDocument.querySelectorAll("thead th")].map((cell) => cell.textContent),
+    ["Rank", "DC", "Arcana"]);
+  assert.equal(npcRows[0].cells[2].textContent, "13");
+  assert.equal(npcRows[1].cells[2].title, "Automatic Success");
+  assert.equal(npcRows[2].cells[2].title, "Failure");
+  assert.equal(rolls, 2);
 });
 
 test("compiled Macro pack provides the module hotbar macros", async () => {
