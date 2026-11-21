@@ -136,7 +136,7 @@ export async function recognizeSpell() {
       <ul class="pza-spell-totals" aria-label="Skill totals">${totals}</ul>
       <div class="pza-spell-rarities" role="group" aria-label="Spell rarity">${buttons}</div>
       <ul class="pza-spell-rank-dcs" aria-label="Spell rank DCs">${renderRankDcs(roll.pwol, "Common")}</ul>
-      <p><strong>Automatic Success (Common only)</strong> With the skill for the spell's tradition, you automatically succeed through rank ${AUTO_RECOGNIZE_RANK[1]} if trained, ${AUTO_RECOGNIZE_RANK[2]} if expert, ${AUTO_RECOGNIZE_RANK[3]} if master, and ${AUTO_RECOGNIZE_RANK[4]} if legendary. Still roll for a possible critical success. Automatic success overrides both failure and critical failure.</p>
+      <p><strong>Automatic Success (Common only)</strong> With the skill for the spell's tradition, you upgrade failure and critical failure to success through rank ${AUTO_RECOGNIZE_RANK[1]} if trained, ${AUTO_RECOGNIZE_RANK[2]} if expert, ${AUTO_RECOGNIZE_RANK[3]} if master, and ${AUTO_RECOGNIZE_RANK[4]} if legendary.</p>
       <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it: ${effectLink}.</p>
       <p><strong>Success</strong> You recognize the spell</p>
       <p><strong>Failure</strong> You fail to recognize the spell.</p>

@@ -109,7 +109,7 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   assert.equal(effectLink.textContent, effectLabel);
   assert.match(document.body.textContent, /\+1 circumstance bonus to AC or your saving throw/);
   assert.match(document.body.textContent, /Automatic Success \(Common only\).*rank 2 if trained, 4 if expert, 6 if master, and 10 if legendary/);
-  assert.match(document.body.textContent, /Automatic success overrides both failure and critical failure/);
+  assert.match(document.body.textContent, /upgrade failure and critical failure to success/);
   assert.equal(document.querySelector("table"), null);
   const [common, uncommon, rare] = document.querySelectorAll("button");
   const totals = document.querySelector(".pza-spell-totals");
