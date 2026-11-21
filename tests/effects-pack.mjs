@@ -13,12 +13,13 @@ import { compiledPackRecords } from "./compiled-pack-records.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const expected = new Map([
-  ["WGhBnNhQNH3uVgP1", "shadow-raid-obscured-vision.webp"],
-  ["j42JjZYGnRM1wf6R", "focusing-hum-protection.webp"],
-  ["Qz16EDTu2GVTtUPV", "toxic-cloud-obscured-vision.webp"]
+  ["WGhBnNhQNH3uVgP1", "effects/shadow-raid-obscured-vision.webp"],
+  ["j42JjZYGnRM1wf6R", "effects/focusing-hum-protection.webp"],
+  ["Qz16EDTu2GVTtUPV", "effects/toxic-cloud-obscured-vision.webp"],
+  ["pzaRecognCrit001", "macros/recognize-spell.webp"]
 ]);
 
-test("compiled Effect pack contains three top-level Items with bundled WebP images", async () => {
+test("compiled Effect pack contains the expected top-level Items with bundled WebP images", async () => {
   const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
   const pack = manifest.packs.find(({ name }) => name === "zone-effects");
 
@@ -56,9 +57,9 @@ test("compiled Effect pack contains three top-level Items with bundled WebP imag
       assert.equal(item.folder, null);
       assert.equal(item.name, sourceItems.get(item._id)?.name);
       assert.deepEqual(item.system.rules, sourceItems.get(item._id)?.system.rules);
-      assert.equal(item.img, `modules/pf2e-zone-automation/assets/effects/${image}`);
+      assert.equal(item.img, `modules/pf2e-zone-automation/assets/${image}`);
 
-      const data = readFileSync(join(root, "assets", "effects", image));
+      const data = readFileSync(join(root, "assets", image));
 
       assert.equal(data.subarray(0, 4).toString("ascii"), "RIFF");
       assert.equal(data.subarray(8, 12).toString("ascii"), "WEBP");

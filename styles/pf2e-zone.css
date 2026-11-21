@@ -1168,3 +1168,36 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
   flex: 0 0 auto;
   margin-left: auto;
 }
+
+.pza-recognize-spell .pza-spell-rarities {
+  display: flex;
+  gap: 4px;
+}
+
+.pza-recognize-spell .pza-spell-rarities button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 24px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.pza-recognize-spell .pza-spell-rarities button[aria-pressed="true"] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pza-recognize-spell .pza-spell-failure {
+  color: light-dark(#a11b21, #ff8a8a);
+  font-weight: normal;
+}
+
+.pza-recognize-spell .pza-spell-success {
+  color: light-dark(#166333, #8ee7a4);
+  font-weight: normal;
+}
+
+.pza-recognize-spell .pza-spell-critical {
+  font-weight: bold;
+}

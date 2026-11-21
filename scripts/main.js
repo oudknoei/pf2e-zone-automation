@@ -14,6 +14,7 @@ import { openSessionNotes, openQuickNote, registerSessionNotesHooks } from "./se
 import { registerSessionNotesSettings, registerSessionNotesSettingsUI } from "./session-notes-settings.js";
 import { registerSessionNotesChat, refreshSessionNotesChat } from "./session-notes-chat.js";
 import { promptAdvanceSessionTime, registerSessionClockHooks } from "./session-notes-clock.js";
+import { recognizeSpell, registerRecognizeSpellChat } from "./recognize-spell.js";
 
 const MODULE_ID = "pf2e-zone-automation";
 const SHARED_IMMUNITIES_SETTING = "sharedImmunities";
@@ -44,9 +45,11 @@ Hooks.once("init", () => {
     createHeroPointReminder,
     openSessionNotes,
     openQuickNote,
-    promptAdvanceSessionTime
+    promptAdvanceSessionTime,
+    recognizeSpell
   };
 
+  registerRecognizeSpellChat();
   registerHeroPointReminderChat();
   registerSessionNotesChat();
 

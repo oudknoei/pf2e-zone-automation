@@ -1,0 +1,16 @@
+{
+  "name": "Recognize Spell",
+  "type": "script",
+  "scope": "global",
+  "command": "const zoneModule = game.modules.get(\"pf2e-zone-automation\");\n\nif (!zoneModule?.active || !zoneModule.api?.recognizeSpell) {\n  ui.notifications.error(\"Enable PF2e Zone Automation first.\");\n} else {\n  await zoneModule.api.recognizeSpell();\n}\n",
+  "author": null,
+  "img": "modules/pf2e-zone-automation/assets/macros/recognize-spell.webp",
+  "folder": null,
+  "sort": 7,
+  "ownership": {
+    "default": 0
+  },
+  "flags": {},
+  "_id": "pzaRecognSpell01",
+  "_key": "!macros!pzaRecognSpell01"
+}

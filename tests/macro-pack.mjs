@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { cpSync, readFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 import { compiledPackRecords } from "./compiled-pack-records.mjs";
+import { recognizeSpell, registerRecognizeSpellChat } from "../scripts/recognize-spell.js";
 
 const root = resolve(import.meta.dirname, "..");
 const expectedMacros = new Map([
@@ -47,8 +49,95 @@ const expectedMacros = new Map([
     image: "icons/svg/clockwork.svg",
     api: "promptAdvanceSessionTime",
     ownership: 0
+  }],
+  ["pzaRecognSpell01", {
+    name: "Recognize Spell",
+    image: "modules/pf2e-zone-automation/assets/macros/recognize-spell.webp",
+    api: "recognizeSpell",
+    ownership: 0
   }]
 ]);
+
+test("Recognize Spell changes rarity on the GM card without rolling again", async () => {
+  const statistics = {
+    arcana: { label: "Arcana", rank: 1, withRollOptions: () => ({ check: { mod: 14 } }) },
+    nature: { label: "Nature", rank: 0 },
+    religion: { label: "Religion", rank: 1, withRollOptions: () => ({ check: { mod: -3 } }) }
+  };
+  const actor = { type: "character", name: "Celina", getStatistic: (slug) => statistics[slug] };
+  let rolls = 0;
+  let renderChat;
+  globalThis.Hooks = {
+    on(event, callback) {
+      assert.equal(event, "renderChatMessageHTML");
+      renderChat = callback;
+    }
+  };
+  globalThis.game = { user: { isGM: true }, pf2e: { settings: { variants: { pwol: { enabled: false } } } } };
+  globalThis.canvas = { tokens: { controlled: [{ document: { actor } }] } };
+  globalThis.Roll = class {
+    constructor(formula) {
+      assert.equal(formula, "1d20");
+    }
+
+    async evaluate() {
+      rolls += 1;
+      return { total: 11 };
+    }
+  };
+  globalThis.ChatMessage = {
+    getWhisperRecipients: () => [{ id: "gm" }],
+    getSpeaker: () => ({}),
+    create: async (data) => data
+  };
+  const effectUuid = "Compendium.pf2e-zone-automation.zone-effects.Item.pzaRecognCrit001";
+  globalThis.foundry = { applications: { ux: { TextEditor: { implementation: {
+    async enrichHTML(text) {
+      assert.equal(text, `@UUID[${effectUuid}]{Recognize Spell Critical Success}`);
+      return `<a class="content-link" draggable="true" data-uuid="${effectUuid}">Recognize Spell Critical Success</a>`;
+    }
+  } } } } };
+
+  registerRecognizeSpellChat();
+  const message = await recognizeSpell();
+  assert.deepEqual(message.whisper, ["gm"]);
+
+  const { document } = new JSDOM(message.content).window;
+  assert.equal(document.querySelector("a.content-link[draggable='true']").dataset.uuid, effectUuid);
+  assert.match(document.body.textContent, /\+1 circumstance bonus to AC or your saving throw/);
+  const [common, uncommon, rare] = document.querySelectorAll("button");
+  const tableBody = document.querySelector("tbody");
+  const commonRows = tableBody.innerHTML;
+  assert.deepEqual([...document.querySelectorAll("thead th")].map((cell) => cell.textContent),
+    ["Rank", "DC", "Arcana", "Religion"]);
+  assert.equal(tableBody.rows.length, 10);
+  assert.equal(tableBody.rows[0].cells[2].className, "pza-spell-success pza-spell-critical");
+  for (const row of [tableBody.rows[0], tableBody.rows[1]]) {
+    const religion = row.cells[3];
+    assert.equal(religion.textContent, "8");
+    assert.equal(religion.className, "pza-spell-success");
+    assert.equal(religion.title, "Automatic Success");
+  }
+  assert.equal(tableBody.rows[2].cells[3].className, "pza-spell-failure pza-spell-critical");
+
+  renderChat(message, document.body);
+  uncommon.click();
+  assert.equal(uncommon.getAttribute("aria-pressed"), "true");
+  assert.equal(tableBody.rows[0].cells[1].textContent, "17");
+  assert.equal(tableBody.rows[0].cells[2].className, "pza-spell-success");
+  assert.equal(tableBody.rows[0].cells[3].className, "pza-spell-failure");
+  assert.equal(tableBody.rows[1].cells[3].className, "pza-spell-failure pza-spell-critical");
+  rare.click();
+  assert.equal(rare.getAttribute("aria-pressed"), "true");
+  assert.equal(uncommon.getAttribute("aria-pressed"), "false");
+  assert.equal(tableBody.rows[0].cells[1].textContent, "20");
+  assert.equal(tableBody.rows[9].cells[1].textContent, "44");
+  assert.equal(tableBody.rows[9].cells[3].className, "pza-spell-failure pza-spell-critical");
+  assert.deepEqual([...tableBody.rows[0].cells].map((cell) => cell.textContent), ["1", "20", "25", "8"]);
+  common.click();
+  assert.equal(tableBody.innerHTML, commonRows);
+  assert.equal(rolls, 1);
+});
 
 test("compiled Macro pack provides the module hotbar macros", async () => {
   const manifest = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));

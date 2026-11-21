@@ -1,0 +1,40 @@
+{
+  "_id": "pzaRecognCrit001",
+  "_key": "!items!pzaRecognCrit001",
+  "name": "Effect: Recognize Spell Critical Success",
+  "type": "effect",
+  "img": "modules/pf2e-zone-automation/assets/macros/recognize-spell.webp",
+  "folder": null,
+  "system": {
+    "description": {
+      "value": "<p>You recognized the triggering spell and gain a +1 circumstance bonus to your AC or saving throw against it. Apply immediately before resolving the spell and remove the effect as soon as it resolves.</p>"
+    },
+    "duration": {
+      "expiry": "turn-start",
+      "sustained": false,
+      "unit": "rounds",
+      "value": 1
+    },
+    "level": {
+      "value": 1
+    },
+    "rules": [
+      {
+        "key": "FlatModifier",
+        "selector": ["ac", "saving-throw"],
+        "type": "circumstance",
+        "value": 1
+      }
+    ],
+    "start": {
+      "initiative": null,
+      "value": 0
+    },
+    "tokenIcon": {
+      "show": true
+    },
+    "traits": {
+      "value": []
+    }
+  }
+}

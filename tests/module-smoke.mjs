@@ -107,6 +107,7 @@ test("Foundry hooks expose the builder and add its Token control", () => {
   assert.equal(typeof module.api.openSessionNotes, "function");
   assert.equal(typeof module.api.openQuickNote, "function");
   assert.equal(typeof module.api.promptAdvanceSessionTime, "function");
+  assert.equal(typeof module.api.recognizeSpell, "function");
   assert.equal(settings.has("pf2e-zone-automation.sessionRecapPrompt"), false);
 
   const sessionSetting = settings.get("pf2e-zone-automation.sessionNotesEnabled");
