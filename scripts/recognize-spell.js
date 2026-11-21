@@ -121,8 +121,7 @@ export async function recognizeSpell() {
         <thead><tr><th scope="col">Rank</th><th scope="col">DC</th>${headings}</tr></thead>
         <tbody>${renderRows(roll, "Common")}</tbody>
       </table>
-      <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it.</p>
-      <p>Drag ${effectLink} onto the character before resolving the spell, then remove it once the spell resolves.</p>
+      <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it: ${effectLink}.</p>
     </section>`
   });
 }

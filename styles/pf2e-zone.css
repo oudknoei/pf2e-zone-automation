@@ -1188,6 +1188,23 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
   text-underline-offset: 2px;
 }
 
+.pza-recognize-spell table {
+  width: 100%;
+  table-layout: auto;
+}
+
+.pza-recognize-spell table :is(thead, tbody) :is(th, td) {
+  padding: 3px 5px;
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.pza-recognize-spell table :is(th, td):nth-child(-n+2) {
+  width: 1%;
+}
+
 .pza-recognize-spell .pza-spell-failure {
   color: light-dark(#a11b21, #ff8a8a);
   font-weight: normal;
