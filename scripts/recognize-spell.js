@@ -106,7 +106,7 @@ export async function recognizeSpell() {
     `<button type="button" data-rarity="${rarity}" aria-pressed="${rarity === "Common"}">${rarity}</button>`
   ).join("");
   const effectLink = await foundry.applications.ux.TextEditor.implementation.enrichHTML(
-    `@UUID[${CRITICAL_SUCCESS_EFFECT}]{Recognize Spell Critical Success}`
+    `@UUID[${CRITICAL_SUCCESS_EFFECT}]{Effect: Critical Success}`
   );
 
   return ChatMessage.create({
@@ -114,14 +114,16 @@ export async function recognizeSpell() {
     whisper,
     flags: { [MODULE_ID]: { [ROLL_FLAG]: roll } },
     content: `<section class="pza-recognize-spell">
-      <h3>Recognize Spell</h3>
-      <p><strong>${escapeHtml(actor.name)}</strong> rolled a <strong>${die}</strong> on the secret d20.</p>
+      <p><strong>${escapeHtml(actor.name)}</strong> rolled to recognize the spell. Use the results below to determine success.</p>
       <div class="pza-spell-rarities" role="group" aria-label="Spell rarity">${buttons}</div>
       <table aria-label="Recognize Spell results">
         <thead><tr><th scope="col">Rank</th><th scope="col">DC</th>${headings}</tr></thead>
         <tbody>${renderRows(roll, "Common")}</tbody>
       </table>
       <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it: ${effectLink}.</p>
+      <p><strong>Success</strong> You recognize the spell</p>
+      <p><strong>Failure</strong> You fail to recognize the spell.</p>
+      <p><strong>Critical Failure</strong> You misidentify the spell as another spell entirely, of the GM’s choice.</p>
     </section>`
   });
 }
