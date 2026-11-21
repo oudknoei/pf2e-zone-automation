@@ -1188,6 +1188,13 @@ body.theme-dark .application:not(.theme-light) .pza-session-notes,
   text-underline-offset: 2px;
 }
 
+.pza-recognize-spell :is(.pza-spell-totals, .pza-spell-rank-dcs) {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  line-height: 1.3;
+}
+
 .pza-recognize-spell table {
   width: 100%;
   table-layout: auto;

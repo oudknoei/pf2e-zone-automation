@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 16,
+  "name": "Drifting Pollen",
+  "mode": "emanation",
+  "areaShape": "circle",
+  "radius": 20,
+  "sideLength": 10,
+  "visibility": "all",
+  "targeting": {
+    "affects": "both",
+    "includeSelf": false,
+    "lineOfEffect": "respect"
+  },
+  "traits": [
+    "impulse",
+    "kineticist",
+    "plant",
+    "primal",
+    "stance",
+    "wood"
+  ],
+  "duration": {
+    "type": "unlimited",
+    "rounds": 1
+  },
+  "activationChoices": {
+    "damageType": {
+      "enabled": false,
+      "options": [
+        "bludgeoning",
+        "piercing",
+        "slashing"
+      ]
+    }
+  },
+  "effects": [
+    {
+      "id": "bDR8VvWg",
+      "name": "Sickened",
+      "triggers": {
+        "activation": true,
+        "enter": true,
+        "turnStart": false,
+        "sourceTurnStart": false,
+        "turnEnd": true,
+        "continuous": false,
+        "traitUse": false,
+        "spellCast": false,
+        "hpThreshold": false
+      },
+      "hitPoints": {
+        "threshold": ""
+      },
+      "traitUse": {
+        "traits": []
+      },
+      "chatAlert": {
+        "enabled": false,
+        "text": "{zone}: {creature} triggered {block}."
+      },
+      "repeat": "once-per-round",
+      "save": {
+        "enabled": true,
+        "type": "fortitude",
+        "choices": [
+          "reflex",
+          "will"
+        ],
+        "dc": {
+          "mode": "actorStatistic",
+          "statistic": "class-spell"
+        },
+        "basic": false
+      },
+      "damage": {
+        "enabled": false,
+        "formula": "",
+        "typeMode": "fixed",
+        "type": "untyped"
+      },
+      "healing": {
+        "enabled": false,
+        "formula": ""
+      },
+      "outcomes": {
+        "criticalSuccess": {
+          "damageMultiplier": 0,
+          "conditions": [],
+          "effects": []
+        },
+        "success": {
+          "damageMultiplier": 0.5,
+          "conditions": [],
+          "effects": []
+        },
+        "failure": {
+          "damageMultiplier": 1,
+          "conditions": [
+            {
+              "slug": "sickened",
+              "value": 1,
+              "removal": "normal",
+              "condition": null
+            },
+            {
+              "slug": "dazzled",
+              "value": null,
+              "removal": "condition-end",
+              "condition": "sickened"
+            }
+          ],
+          "effects": []
+        },
+        "criticalFailure": {
+          "damageMultiplier": 2,
+          "conditions": [
+            {
+              "slug": "sickened",
+              "value": 2,
+              "removal": "normal",
+              "condition": null
+            },
+            {
+              "slug": "dazzled",
+              "value": null,
+              "removal": "condition-end",
+              "condition": "sickened"
+            }
+          ],
+          "effects": []
+        },
+        "noSave": {
+          "damageMultiplier": 1,
+          "conditions": [],
+          "effects": []
+        }
+      },
+      "immunity": {
+        "duration": "none",
+        "starts": [],
+        "recoveryCondition": "sickened",
+        "scope": "effect-block",
+        "group": ""
+      }
+    }
+  ]
+}

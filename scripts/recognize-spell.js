@@ -22,11 +22,24 @@ function degreeOfSuccess(total, dc, die) {
   return degree;
 }
 
-/** Renders each skill total using the outcome for the selected rarity and spell rank. */
-function renderRows({ die, checks, pwol }, rarity) {
-  return SPELL_RANK_DCS.map((baseDc, index) => {
+/** Calculates the DC for a spell's rank and rarity using the roll's proficiency variant. */
+function spellRankDc(rank, rarity, pwol) {
+  return SPELL_RANK_DCS[rank - 1] + RARITIES[rarity] - (pwol ? 2 * rank - 1 : 0);
+}
+
+/** Renders one DC per spell rank. */
+function renderRankDcs(pwol, rarity) {
+  return SPELL_RANK_DCS.map((_, index) => {
     const rank = index + 1;
-    const dc = baseDc + RARITIES[rarity] - (pwol ? 2 * rank - 1 : 0);
+    return `<li>Rank ${rank}: DC ${spellRankDc(rank, rarity, pwol)}</li>`;
+  }).join("");
+}
+
+/** Updates the rarity on chat cards saved with the original results table. */
+function renderRows({ die, checks, pwol }, rarity) {
+  return SPELL_RANK_DCS.map((_, index) => {
+    const rank = index + 1;
+    const dc = spellRankDc(rank, rarity, pwol);
     const cells = checks.map(({ autoRank, total }) => {
       const degree = degreeOfSuccess(total, dc, die);
       const automatic = rarity === "Common" && rank <= autoRank && degree < 2;
@@ -46,8 +59,9 @@ function renderRecognizeSpellChat(message, html) {
 
   const roll = readDocumentFlag(message, MODULE_ID, ROLL_FLAG);
   const card = html.querySelector(".pza-recognize-spell");
-  const tableBody = card?.querySelector("tbody");
-  if (!roll || !tableBody || wiredCards.has(card)) return;
+  const rankDcs = card?.querySelector(".pza-spell-rank-dcs");
+  const results = rankDcs ?? card?.querySelector("tbody");
+  if (!roll || !results || wiredCards.has(card)) return;
 
   wiredCards.add(card);
   const buttons = [...card.querySelectorAll("button[data-rarity]")];
@@ -56,7 +70,7 @@ function renderRecognizeSpellChat(message, html) {
     if (!Object.hasOwn(RARITIES, rarity)) continue;
 
     button.addEventListener("click", () => {
-      tableBody.innerHTML = renderRows(roll, rarity);
+      results.innerHTML = rankDcs ? renderRankDcs(roll.pwol, rarity) : renderRows(roll, rarity);
       for (const option of buttons) option.setAttribute("aria-pressed", String(option === button));
     });
   }
@@ -105,7 +119,7 @@ export async function recognizeSpell() {
   }));
 
   const roll = { die, checks, pwol: game.pf2e.settings.variants.pwol.enabled };
-  const headings = checks.map(({ label }) => `<th scope="col">${escapeHtml(label)}</th>`).join("");
+  const totals = checks.map(({ label, total }) => `<li><strong>${escapeHtml(label)}</strong> ${total}</li>`).join("");
   const buttons = Object.keys(RARITIES).map((rarity) =>
     `<button type="button" data-rarity="${rarity}" aria-pressed="${rarity === "Common"}">${rarity}</button>`
   ).join("");
@@ -118,12 +132,11 @@ export async function recognizeSpell() {
     whisper,
     flags: { [MODULE_ID]: { [ROLL_FLAG]: roll } },
     content: `<section class="pza-recognize-spell">
-      <p><strong>${escapeHtml(actor.name)}</strong> rolled to recognize the spell. Use the results below to determine success.</p>
+      <p><strong>${escapeHtml(actor.name)}</strong> rolled <strong>${die}</strong> on the secret d20.</p>
+      <ul class="pza-spell-totals" aria-label="Skill totals">${totals}</ul>
       <div class="pza-spell-rarities" role="group" aria-label="Spell rarity">${buttons}</div>
-      <table aria-label="Recognize Spell results">
-        <thead><tr><th scope="col">Rank</th><th scope="col">DC</th>${headings}</tr></thead>
-        <tbody>${renderRows(roll, "Common")}</tbody>
-      </table>
+      <ul class="pza-spell-rank-dcs" aria-label="Spell rank DCs">${renderRankDcs(roll.pwol, "Common")}</ul>
+      <p><strong>Automatic Success (Common only)</strong> With the skill for the spell's tradition, you automatically succeed through rank ${AUTO_RECOGNIZE_RANK[1]} if trained, ${AUTO_RECOGNIZE_RANK[2]} if expert, ${AUTO_RECOGNIZE_RANK[3]} if master, and ${AUTO_RECOGNIZE_RANK[4]} if legendary. Still roll for a possible critical success. Automatic success overrides both failure and critical failure.</p>
       <p><strong>Critical Success</strong> You recognize the spell and gain a +1 circumstance bonus to AC or your saving throw against it: ${effectLink}.</p>
       <p><strong>Success</strong> You recognize the spell</p>
       <p><strong>Failure</strong> You fail to recognize the spell.</p>

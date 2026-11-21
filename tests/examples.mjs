@@ -7,6 +7,7 @@ const root = resolve(import.meta.dirname, "..");
 const examples = resolve(root, "examples", "zone-configurations");
 const expectedFiles = [
   "courageous-anthem.json",
+  "drifting-pollen.json",
   "focusing-hum.json",
   "frightful-presence-adult-horned-dragon.json",
   "ghonatine-stench.json",

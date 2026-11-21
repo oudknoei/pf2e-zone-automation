@@ -108,38 +108,44 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   assert.equal(effectLink.dataset.uuid, effectUuid);
   assert.equal(effectLink.textContent, effectLabel);
   assert.match(document.body.textContent, /\+1 circumstance bonus to AC or your saving throw/);
+  assert.match(document.body.textContent, /Automatic Success \(Common only\).*rank 2 if trained, 4 if expert, 6 if master, and 10 if legendary/);
+  assert.match(document.body.textContent, /Automatic success overrides both failure and critical failure/);
+  assert.equal(document.querySelector("table"), null);
   const [common, uncommon, rare] = document.querySelectorAll("button");
-  const tableBody = document.querySelector("tbody");
-  const commonRows = tableBody.innerHTML;
-  assert.deepEqual([...document.querySelectorAll("thead th")].map((cell) => cell.textContent),
-    ["Rank", "DC", "Arcana", "Religion"]);
-  assert.equal(tableBody.rows.length, 10);
-  assert.equal(tableBody.rows[0].cells[2].className, "pza-spell-success pza-spell-critical");
-  for (const row of [tableBody.rows[0], tableBody.rows[1]]) {
-    const religion = row.cells[3];
-    assert.equal(religion.textContent, "8");
-    assert.equal(religion.className, "pza-spell-success");
-    assert.equal(religion.title, "Automatic Success");
-  }
-  assert.equal(tableBody.rows[2].cells[3].className, "pza-spell-failure pza-spell-critical");
+  const totals = document.querySelector(".pza-spell-totals");
+  const dcs = document.querySelector(".pza-spell-rank-dcs");
+  const skillTotals = ["Arcana 25", "Religion 8"];
+  assert.deepEqual([...totals.children].map((line) => line.textContent), skillTotals);
+  const commonDcs = [15, 18, 20, 23, 26, 28, 31, 34, 36, 39];
+  const assertDcs = (adjustment) => {
+    assert.deepEqual([...dcs.children].map((line) => line.textContent),
+      commonDcs.map((dc, index) => `Rank ${index + 1}: DC ${dc + adjustment}`));
+  };
+  assertDcs(0);
 
   renderChat(message, document.body);
   uncommon.click();
   assert.equal(uncommon.getAttribute("aria-pressed"), "true");
-  assert.equal(tableBody.rows[0].cells[1].textContent, "17");
-  assert.equal(tableBody.rows[0].cells[2].className, "pza-spell-success");
-  assert.equal(tableBody.rows[0].cells[3].className, "pza-spell-failure");
-  assert.equal(tableBody.rows[1].cells[3].className, "pza-spell-failure pza-spell-critical");
+  assertDcs(2);
   rare.click();
   assert.equal(rare.getAttribute("aria-pressed"), "true");
   assert.equal(uncommon.getAttribute("aria-pressed"), "false");
-  assert.equal(tableBody.rows[0].cells[1].textContent, "20");
-  assert.equal(tableBody.rows[9].cells[1].textContent, "44");
-  assert.equal(tableBody.rows[9].cells[3].className, "pza-spell-failure pza-spell-critical");
-  assert.deepEqual([...tableBody.rows[0].cells].map((cell) => cell.textContent), ["1", "20", "25", "8"]);
+  assertDcs(5);
+  assert.deepEqual([...totals.children].map((line) => line.textContent), skillTotals);
   common.click();
-  assert.equal(tableBody.innerHTML, commonRows);
+  assertDcs(0);
   assert.equal(rolls, 1);
+
+  const legacy = new JSDOM(`<section class="pza-recognize-spell">
+    <button data-rarity="Common">Common</button><button data-rarity="Rare">Rare</button>
+    <table><tbody></tbody></table></section>`).window.document;
+  renderChat(message, legacy.body);
+  legacy.querySelector("button[data-rarity='Rare']").click();
+  const legacyRows = legacy.querySelector("tbody").rows;
+  assert.equal(legacyRows.length, 10);
+  assert.equal(legacyRows[0].cells[1].textContent, "20");
+  legacy.querySelector("button[data-rarity='Common']").click();
+  assert.equal(legacyRows[0].cells[3].title, "Automatic Success");
 
   const npc = {
     type: "npc",
@@ -152,12 +158,8 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   canvas.tokens.controlled = [{ document: { actor: npc } }];
   const npcMessage = await recognizeSpell();
   const npcDocument = new JSDOM(npcMessage.content).window.document;
-  const npcRows = npcDocument.querySelector("tbody").rows;
-  assert.deepEqual([...npcDocument.querySelectorAll("thead th")].map((cell) => cell.textContent),
-    ["Rank", "DC", "Arcana"]);
-  assert.equal(npcRows[0].cells[2].textContent, "13");
-  assert.equal(npcRows[1].cells[2].title, "Automatic Success");
-  assert.equal(npcRows[2].cells[2].title, "Failure");
+  assert.deepEqual([...npcDocument.querySelectorAll(".pza-spell-totals li")].map((line) => line.textContent),
+    ["Arcana 13"]);
   assert.equal(rolls, 2);
 });
 
