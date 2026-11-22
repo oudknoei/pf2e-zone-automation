@@ -4,6 +4,7 @@ const MODULE_ID = "pf2e-zone-automation";
 const ROLL_FLAG = "recognizeSpell";
 const CRITICAL_SUCCESS_EFFECT = "Compendium.pf2e-zone-automation.zone-effects.Item.pzaRecognCrit001";
 const TRADITION_SKILLS = ["arcana", "nature", "occultism", "religion"];
+const PROFICIENCY_LABELS = ["Untrained", "Trained", "Expert", "Master", "Legendary"];
 const SPELL_RANK_DCS = [15, 18, 20, 23, 26, 28, 31, 34, 36, 39];
 const AUTO_RECOGNIZE_RANK = [0, 2, 4, 6, 10];
 const OUTCOMES = ["Critical Failure", "Failure", "Success", "Critical Success"];
@@ -114,12 +115,15 @@ export async function recognizeSpell() {
   const die = (await new Roll("1d20").evaluate({ allowInteractive: false })).total;
   const checks = skills.map(({ skill, rank }) => ({
     label: skill.label,
+    rank,
     autoRank: AUTO_RECOGNIZE_RANK[rank],
     total: die + skill.withRollOptions(rollOptions).check.mod
   }));
 
   const roll = { die, checks, pwol: game.pf2e.settings.variants.pwol.enabled };
-  const totals = checks.map(({ label, total }) => `<li><strong>${escapeHtml(label)}</strong> ${total}</li>`).join("");
+  const totals = checks.map(({ label, rank, total }) =>
+    `<li><strong>${escapeHtml(label)} (${PROFICIENCY_LABELS[rank]}):</strong> ${total}</li>`
+  ).join("");
   const buttons = Object.keys(RARITIES).map((rarity) =>
     `<button type="button" data-rarity="${rarity}" aria-pressed="${rarity === "Common"}">${rarity}</button>`
   ).join("");

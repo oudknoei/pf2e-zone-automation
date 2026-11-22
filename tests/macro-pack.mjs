@@ -61,7 +61,8 @@ const expectedMacros = new Map([
 test("Recognize Spell handles PC and NPC skills and changes rarity without rolling again", async () => {
   const statistics = {
     arcana: { label: "Arcana", rank: 1, withRollOptions: () => ({ check: { mod: 14 } }) },
-    nature: { label: "Nature", rank: 0 },
+    nature: { label: "Nature", rank: 3, withRollOptions: () => ({ check: { mod: 27 } }) },
+    occultism: { label: "Occultism", rank: 0 },
     religion: { label: "Religion", rank: 1, withRollOptions: () => ({ check: { mod: -3 } }) }
   };
   const actor = { type: "character", name: "Celina", skills: statistics };
@@ -114,7 +115,7 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   const [common, uncommon, rare] = document.querySelectorAll("button");
   const totals = document.querySelector(".pza-spell-totals");
   const dcs = document.querySelector(".pza-spell-rank-dcs");
-  const skillTotals = ["Arcana 25", "Religion 8"];
+  const skillTotals = ["Arcana (Trained): 25", "Nature (Master): 38", "Religion (Trained): 8"];
   assert.deepEqual([...totals.children].map((line) => line.textContent), skillTotals);
   const commonDcs = [15, 18, 20, 23, 26, 28, 31, 34, 36, 39];
   const assertDcs = (adjustment) => {
@@ -145,7 +146,7 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   assert.equal(legacyRows.length, 10);
   assert.equal(legacyRows[0].cells[1].textContent, "20");
   legacy.querySelector("button[data-rarity='Common']").click();
-  assert.equal(legacyRows[0].cells[3].title, "Automatic Success");
+  assert.equal(legacyRows[0].cells[4].title, "Automatic Success");
 
   const npc = {
     type: "npc",
@@ -159,7 +160,7 @@ test("Recognize Spell handles PC and NPC skills and changes rarity without rolli
   const npcMessage = await recognizeSpell();
   const npcDocument = new JSDOM(npcMessage.content).window.document;
   assert.deepEqual([...npcDocument.querySelectorAll(".pza-spell-totals li")].map((line) => line.textContent),
-    ["Arcana 13"]);
+    ["Arcana (Trained): 13"]);
   assert.equal(rolls, 2);
 });
 
